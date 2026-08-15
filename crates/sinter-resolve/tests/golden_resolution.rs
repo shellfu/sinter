@@ -387,3 +387,8 @@ fn resolution_cpp_header_impl() {
 fn resolution_cpp_unreal_macros() {
     check("cpp-unreal-macros");
 }
+
+#[test]
+fn resolution_python_docstring() {
+    check("python-docstring");
+}

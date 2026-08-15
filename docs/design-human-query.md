@@ -92,6 +92,22 @@ where:
 All numerators multiply before any division — no intermediate truncation.
 Ties break by (kind order, file, span.start) — output is stable run to run.
 
+**Family boost** (post-pass, after the formula): a candidate containing
+two or more other candidates is the concept those hits share — its score
+becomes `max(own score, best child score + 1)`. A child belongs to a family via
+its structural Contains-parent, or — for out-of-class definitions whose
+structural parent is the impl file — via its qualified prefix naming
+exactly one candidate of a member-scope kind (`APawn::Refresh` names
+`APawn`; ambiguity counts nothing). Three hard constraints keep it
+evidence-bound: the parent must itself have matched at least one term
+(candidacy is never conjured); the boost is capped by the children's own
+evidence (best child + 1); and container kinds (file, module) never
+family-boost — every file trivially contains its own hits, and surfacing
+files would bury the symbol answers. Provenance shows `family` as a channel.
+Motivating case: a class whose doc lacks one query term while several of
+its methods match both (Black Lantern's `ABLPlayerCharacterV2`); fixture:
+`ask_family_boost_surfaces_parent`.
+
 **Constants are policy under golden discipline**: every point value and
 ratio above lives in one const table in the implementation, and any change
 to any of them requires a fixture that motivates it — never interactive

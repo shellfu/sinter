@@ -66,6 +66,10 @@ struct Collected {
     /// Import-alias name spans: identical local captures are the import
     /// binding itself, not a shadow.
     alias_spans: Vec<(usize, usize)>,
+    /// Explicit doc captures (`@doc`, e.g. Python docstrings): (span, text).
+    /// Attached to the smallest containing definition, overriding any
+    /// sibling-comment doc.
+    docs: Vec<(usize, usize, String)>,
 }
 
 impl Extractor {
@@ -99,6 +103,22 @@ impl Extractor {
 
         let (mut entries, collected) = self.collect(root, source);
         entries.sort_by_key(|e| (e.start, usize::MAX - e.end));
+        // Explicit @doc captures override sibling-comment docs on the
+        // smallest definition containing them (Python docstrings).
+        for (d_start, d_end, text) in &collected.docs {
+            let owner = entries
+                .iter_mut()
+                .filter(|e| e.kind.is_some() && e.start <= *d_start && *d_end <= e.end)
+                .min_by_key(|e| e.end - e.start);
+            if let Some(entry) = owner {
+                let cleaned: Vec<&str> = text.lines().map(str::trim).collect();
+                let trimmed = cleaned.join("\n");
+                let trimmed = trimmed.trim_matches('\n');
+                if !trimmed.is_empty() {
+                    entry.doc = Some(trimmed.to_string());
+                }
+            }
+        }
         // Two patterns may claim the same node (e.g. `const f = () => ...`
         // as variable and function): the more specific, non-variable kind
         // wins; sort puts identical spans adjacent.
@@ -303,6 +323,11 @@ impl Extractor {
                         "import.star" => import_star = true,
                         "local" => match_locals.push(cap.node),
                         "local.type" => local_type = Some(cap.node),
+                        "doc" => out.docs.push((
+                            cap.node.start_byte(),
+                            cap.node.end_byte(),
+                            text(cap.node, source).to_string(),
+                        )),
                         "embed" => out.embeds.push((
                             cap.node.start_byte(),
                             cap.node.end_byte(),

@@ -336,3 +336,80 @@ fn show_card_and_ambiguity() {
     let (ok, out) = sinter(repo, &["show", "nonexistent_thing_xyz"]);
     assert!(!ok, "{out}");
 }
+
+/// Family boost: a class whose doc lacks one term still outranks its own
+/// methods when several of them match both terms — the class is the
+/// concept the hits share (design §1c, Black Lantern case).
+#[test]
+fn ask_family_boost_surfaces_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(
+        repo.join("src/pawn.ts"),
+        r#"// The player character pawn: locomotion and traversal.
+export class PlayerPawn {
+  // Refreshes the character controller control mode.
+  refreshControlMode(): void {}
+  // Reads the character controller mode.
+  getControlMode(): void {}
+  // Applies character controller input routing.
+  routeControllerInput(): void {}
+}
+"#,
+    )
+    .unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+    let (ok, out) = sinter(repo, &["ask", "where is the character controller?"]);
+    assert!(ok, "{out}");
+    let first = out.lines().find(|l| l.starts_with("1. ")).unwrap();
+    assert!(
+        first.contains("class PlayerPawn"),
+        "parent class not surfaced above its matching members:\n{out}"
+    );
+    assert!(first.contains("family"), "family channel missing:\n{out}");
+}
+
+/// Family boost across header/impl: out-of-class definitions name their
+/// class in their qualified prefix — that syntactic link counts as family
+/// even though their structural parent is the impl file.
+#[test]
+fn ask_family_boost_crosses_header_impl() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("pawn")).unwrap();
+    std::fs::write(
+        repo.join("pawn/pawn.h"),
+        r#"// The player character pawn.
+class GAME_API APawn2
+{
+public:
+    void RefreshControlMode();
+    void RouteControllerInput();
+};
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("pawn/pawn.cpp"),
+        r#"#include "pawn/pawn.h"
+
+// Refreshes the character controller mode.
+void APawn2::RefreshControlMode() {}
+
+// Routes character controller input.
+void APawn2::RouteControllerInput() {}
+"#,
+    )
+    .unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+    let (ok, out) = sinter(repo, &["ask", "where is the character controller?"]);
+    assert!(ok, "{out}");
+    let first = out.lines().find(|l| l.starts_with("1. ")).unwrap();
+    assert!(
+        first.contains("class APawn2"),
+        "class not surfaced above impl-side members:\n{out}"
+    );
+}

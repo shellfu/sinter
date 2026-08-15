@@ -4,4 +4,6 @@ class GAME_API APlayerCharacter : public ACharacter
 {
 public:
     APlayerCharacter();
+    void Jump();
+    int GetHealth();
 };

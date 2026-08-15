@@ -17,6 +17,12 @@
   module_name: [(dotted_name) (relative_import)] @import.module
   (wildcard_import) @import.star)
 
+; docstrings are the doc, overriding preceding # comments
+(function_definition
+  body: (block . (expression_statement (string (string_content) @doc))))
+(class_definition
+  body: (block . (expression_statement (string (string_content) @doc))))
+
 (call function: (identifier) @ref.call)
 (call function: (attribute attribute: (identifier) @ref.call) @refpath)
 

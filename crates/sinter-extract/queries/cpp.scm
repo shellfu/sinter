@@ -74,3 +74,19 @@
   type: (class_specifier name: (type_identifier) @_api)
   declarator: (identifier) @name
   (#match? @_api "_API$")) @def.class
+
+; member prototypes inside the misparsed body (plain and `public:`-labeled):
+; containment under the recovered class yields Class::member
+(function_definition
+  type: (class_specifier name: (type_identifier) @_api)
+  body: (compound_statement
+    (declaration
+      declarator: (function_declarator declarator: (identifier) @name)) @def.method)
+  (#match? @_api "_API$"))
+(function_definition
+  type: (class_specifier name: (type_identifier) @_api)
+  body: (compound_statement
+    (labeled_statement
+      (declaration
+        declarator: (function_declarator declarator: (identifier) @name)) @def.method))
+  (#match? @_api "_API$"))

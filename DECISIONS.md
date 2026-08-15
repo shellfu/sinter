@@ -202,5 +202,21 @@ measured on the real repo: `ABLPlayerCharacterV2`'s doc never says
 "controller", so evidence ranks the control-mode FSM (which says both
 words) above it — the class surfaces at #9 with three methods in the top
 11, versus the prototype's #45 of 51. Ranking cannot exceed its evidence;
-if concept-level aggregation is ever wanted, it is a new design
-(family-boost), not a constant tweak.
+concept-level aggregation landed as the designed family-boost (D21).
+
+## D21 — @doc capture, family boost, misparsed-member recovery
+
+Three additions, all language-blind: (1) new universal `@doc` capture — a
+match whose text IS the definition's doc, attached to the smallest
+containing definition and overriding sibling comments; Python docstrings
+are its first consumer (query data only), and the extraction golden runner
+now carries an optional doc column (prefix-matched like resolution
+tuples). (2) `ask` family boost: a candidate whose children (structural
+Contains, or a qualified prefix naming exactly one member-scope candidate
+— the header/impl link) include two or more hits inherits best-child
+score + 1; parents must match a term themselves, container kinds never
+boost. Measured on Black Lantern: the player character class rose from
+#9 to #6, directly above its own methods; hits above it say both query
+terms literally — the evidence ceiling, by design. (3) UE misparsed class
+bodies now yield member prototypes via two additional *_API-gated query
+patterns (plain and access-label-wrapped declarations).

@@ -66,6 +66,11 @@ fn extract_fixture(root: &Path) -> (BTreeSet<Tuple>, BTreeSet<Tuple>, BTreeSet<T
                 n.kind.as_str().to_string(),
                 qualified_of(n.id.as_str()),
                 n.file.clone(),
+                n.doc
+                    .as_deref()
+                    .and_then(|d| d.lines().next())
+                    .unwrap_or("")
+                    .to_string(),
             ]);
         }
         for e in &facts.contains {
@@ -81,19 +86,35 @@ fn extract_fixture(root: &Path) -> (BTreeSet<Tuple>, BTreeSet<Tuple>, BTreeSet<T
     (nodes, contains, references)
 }
 
-fn precision_recall(found: &BTreeSet<Tuple>, expected: &BTreeSet<Tuple>) -> (f64, f64) {
-    let hit = found.intersection(expected).count() as f64;
+/// Expected tuples may be shorter than found tuples (legacy 3-element node
+/// rows vs doc-bearing 4-element): prefix match, like the resolution runner.
+fn tuple_matches(expected: &Tuple, found: &Tuple) -> bool {
+    found.len() >= expected.len() && found[..expected.len()] == expected[..]
+}
+
+fn deltas<'a>(
+    found: &'a BTreeSet<Tuple>,
+    expected: &'a BTreeSet<Tuple>,
+) -> (Vec<&'a Tuple>, Vec<&'a Tuple>, f64, f64) {
+    let missing: Vec<&Tuple> = expected
+        .iter()
+        .filter(|e| !found.iter().any(|f| tuple_matches(e, f)))
+        .collect();
+    let extra: Vec<&Tuple> = found
+        .iter()
+        .filter(|f| !expected.iter().any(|e| tuple_matches(e, f)))
+        .collect();
     let p = if found.is_empty() {
         1.0
     } else {
-        hit / found.len() as f64
+        (found.len() - extra.len()) as f64 / found.len() as f64
     };
     let r = if expected.is_empty() {
         1.0
     } else {
-        hit / expected.len() as f64
+        (expected.len() - missing.len()) as f64 / expected.len() as f64
     };
-    (p, r)
+    (missing, extra, p, r)
 }
 
 /// Fixtures with known engine gaps. CI gates on everything else; a listed
@@ -134,14 +155,14 @@ fn check_inner(fixture: &str) {
             &expected.references.iter().cloned().collect(),
         ),
     ] {
-        let (p, r) = precision_recall(found, expected);
+        let (missing, extra, p, r) = deltas(found, expected);
         println!("{fixture}/{category}: precision {p:.3} recall {r:.3}");
-        for missing in expected.difference(found) {
-            println!("  MISSING  {missing:?}");
+        for m in missing {
+            println!("  MISSING  {m:?}");
             ok = false;
         }
-        for extra in found.difference(expected) {
-            println!("  EXTRA    {extra:?}");
+        for e in extra {
+            println!("  EXTRA    {e:?}");
             ok = false;
         }
     }
@@ -387,4 +408,9 @@ fn golden_cpp_header_impl() {
 #[test]
 fn golden_cpp_unreal_macros() {
     check("cpp-unreal-macros");
+}
+
+#[test]
+fn golden_python_docstring() {
+    check("python-docstring");
 }

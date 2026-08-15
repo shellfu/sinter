@@ -25,6 +25,9 @@ use tree_sitter::Language;
 ///   of the module binds.
 /// - `@local` (+ `@local.type`) — shadowing bindings, optionally typed.
 /// - `@embed`          embedded/promoted type members (Go).
+/// - `@doc`            a node whose text IS the definition's doc (Python
+///   docstrings): attached to the smallest containing definition,
+///   overriding any sibling-comment doc.
 ///
 /// Standard tree-sitter text predicates (`#eq?`, `#any-of?`, ...) are
 /// evaluated by the tree-sitter crate itself and may be used freely

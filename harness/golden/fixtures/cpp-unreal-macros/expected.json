@@ -8,6 +8,17 @@
     [
       "class",
       "APlayerCharacter",
+      "character.h",
+      "Main player character: movement, traversal, input routing."
+    ],
+    [
+      "method",
+      "APlayerCharacter::Jump",
+      "character.h"
+    ],
+    [
+      "method",
+      "APlayerCharacter::GetHealth",
       "character.h"
     ]
   ],
@@ -15,6 +26,14 @@
     [
       "character.h",
       "APlayerCharacter"
+    ],
+    [
+      "APlayerCharacter",
+      "APlayerCharacter::Jump"
+    ],
+    [
+      "APlayerCharacter",
+      "APlayerCharacter::GetHealth"
     ]
   ],
   "references": [

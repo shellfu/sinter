@@ -1,0 +1,20 @@
+{
+  "nodes": [
+    ["file", "engine.py", "engine.py"],
+    ["function", "rebuild", "engine.py", "Rebuilds the derived cache from graph facts."],
+    ["class", "Planner", "engine.py", "Plans incremental work batches."],
+    ["function", "Planner::plan", "engine.py", "Produces the next batch."]
+  ],
+  "contains": [
+    ["engine.py", "rebuild"],
+    ["engine.py", "Planner"],
+    ["Planner", "Planner::plan"]
+  ],
+  "references": [
+    ["calls", "rebuild"]
+  ],
+  "resolved": [
+    ["scope", "calls", "Planner::plan", "rebuild"]
+  ],
+  "unresolved_count": 0
+}

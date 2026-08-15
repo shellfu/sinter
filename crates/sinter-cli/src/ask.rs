@@ -22,6 +22,11 @@ const PT_DOC: i64 = 40;
 const PT_SIGNATURE: i64 = 30;
 const PT_PATH: i64 = 25;
 const HUB_CAP: i64 = 20;
+/// Family boost: a candidate containing >= this many other candidates
+/// inherits its best child's score + 1 — the concept the hits share,
+/// bounded by the children's own evidence
+/// (fixture: ask_family_boost_surfaces_parent).
+const FAMILY_MIN_CHILDREN: usize = 2;
 /// Kind prior as (numerator, denominator).
 fn kind_prior(kind: SymbolKind) -> (i64, i64) {
     match kind {
@@ -104,6 +109,8 @@ struct Hit {
     matched: Vec<String>,
     channels: Vec<&'static str>,
     total_terms: usize,
+    /// Structural Contains-parent, for the family post-pass.
+    parent: Option<String>,
 }
 
 fn score_candidates(store: &Store, terms: &[String]) -> Result<Vec<Hit>> {
@@ -185,8 +192,12 @@ fn score_candidates(store: &Store, terms: &[String]) -> Result<Vec<Hit>> {
         let t = matched.len() as i64;
         let total = terms.len() as i64;
         let mut score = base * t * kn * pn / (total * kd * pd);
-        let in_degree = store.in_edges(&node.id)?.len() as i64;
-        score += in_degree.min(HUB_CAP);
+        let in_edges = store.in_edges(&node.id)?;
+        score += (in_edges.len() as i64).min(HUB_CAP);
+        let parent = in_edges
+            .iter()
+            .find(|e| e.relation == Relation::Contains)
+            .map(|e| e.src.as_str().to_string());
         channels.sort();
         channels.dedup();
         hits.push(Hit {
@@ -195,7 +206,60 @@ fn score_candidates(store: &Store, terms: &[String]) -> Result<Vec<Hit>> {
             matched,
             channels,
             total_terms: terms.len(),
+            parent,
         });
+    }
+    // Family post-pass: a candidate containing other candidates is the
+    // concept those hits share; it inherits its best child's score + 1.
+    // Children link structurally (Contains) or — for out-of-class
+    // definitions — via a qualified prefix naming exactly one candidate
+    // of a member-scope kind.
+    let member_scope = |k: SymbolKind| {
+        matches!(
+            k,
+            SymbolKind::Class
+                | SymbolKind::Struct
+                | SymbolKind::Interface
+                | SymbolKind::Trait
+                | SymbolKind::Enum
+        )
+    };
+    let mut by_name: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+    for hit in &hits {
+        if member_scope(hit.node.kind) {
+            by_name
+                .entry(hit.node.name.as_str())
+                .or_default()
+                .push(hit.node.id.as_str());
+        }
+    }
+    let mut families: std::collections::HashMap<String, (usize, i64)> =
+        std::collections::HashMap::new();
+    for hit in &hits {
+        let structural = hit.parent.clone();
+        let named = qualified_of(hit.node.id.as_str())
+            .rsplit_once("::")
+            .map(|(prefix, _)| prefix.rsplit("::").next().unwrap_or(prefix))
+            .and_then(|owner| match by_name.get(owner).map(Vec::as_slice) {
+                Some([unique]) if *unique != hit.node.id.as_str() => Some(unique.to_string()),
+                _ => None,
+            });
+        for parent in [structural, named].into_iter().flatten() {
+            let entry = families.entry(parent).or_insert((0, 0));
+            entry.0 += 1;
+            entry.1 = entry.1.max(hit.score);
+        }
+    }
+    for hit in &mut hits {
+        if !matches!(hit.node.kind, SymbolKind::File | SymbolKind::Module)
+            && let Some((count, best_child)) = families.get(hit.node.id.as_str())
+            && *count >= FAMILY_MIN_CHILDREN
+            && *best_child + 1 > hit.score
+        {
+            hit.score = *best_child + 1;
+            hit.channels.push("family");
+            hit.channels.sort();
+        }
     }
     // Deterministic order: score desc, then kind order, file, span start.
     hits.sort_by(|a, b| {
