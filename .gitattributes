@@ -1,0 +1,7 @@
+# Normalize to LF regardless of host autocrlf.
+* text=auto eol=lf
+
+# Byte spans in expected.json are offsets into fixture sources; an EOL
+# rewrite on checkout would shift every span. Never convert fixtures.
+# (Last matching line wins, so this must follow the * rule.)
+harness/golden/fixtures/** -text

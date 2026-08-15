@@ -41,11 +41,8 @@ fn extract_fixture(root: &Path) -> (BTreeSet<Tuple>, BTreeSet<Tuple>, BTreeSet<T
     let (mut nodes, mut contains, mut references) =
         (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
     for path in files {
-        let rel = path
-            .strip_prefix(root)
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
+        let rel = sinter_core::rel_display(path.strip_prefix(root).unwrap());
+        assert!(!rel.contains('\\'), "path separator leaked into {rel}");
         let Some(spec) = spec_for_path(&rel) else {
             continue; // non-source fixture support file (go.mod, ...)
         };

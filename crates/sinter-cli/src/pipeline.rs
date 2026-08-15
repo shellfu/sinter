@@ -49,7 +49,7 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
                 p.strip_prefix(&repo)
                     .ok()
                     .or(Some(p.as_path()))
-                    .map(|r| r.to_string_lossy().into_owned())
+                    .map(sinter_core::rel_display)
             })
             .collect()
     });
@@ -59,12 +59,8 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
         if !entry.file_type().is_some_and(|t| t.is_file()) {
             continue;
         }
-        let rel = entry
-            .path()
-            .strip_prefix(&repo)
-            .unwrap_or(entry.path())
-            .to_string_lossy()
-            .into_owned();
+        let rel =
+            sinter_core::rel_display(entry.path().strip_prefix(&repo).unwrap_or(entry.path()));
         if rel.starts_with(".sinter/") || spec_for_path(&rel).is_none() {
             continue;
         }

@@ -34,11 +34,8 @@ fn extract_all(root: &Path) -> (Vec<Node>, Vec<Reference>, Vec<LocalBinding>, Ve
     let (mut nodes, mut references, mut locals, mut embeds) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for path in files {
-        let rel = path
-            .strip_prefix(root)
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
+        let rel = sinter_core::rel_display(path.strip_prefix(root).unwrap());
+        assert!(!rel.contains('\\'), "path separator leaked into {rel}");
         let Some(spec) = spec_for_path(&rel) else {
             continue;
         };
