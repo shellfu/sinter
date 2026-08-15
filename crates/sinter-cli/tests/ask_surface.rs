@@ -24,7 +24,7 @@ fn sinter(repo: &Path, args: &[&str]) -> (bool, String) {
 }
 
 /// Component classes + `character()` constructor-like noise + a documented
-/// controller class. Mirrors the the prototype session where the real answer
+/// controller class. Mirrors the prototype session where the real answer
 /// ranked 45th of 51.
 fn controller_fixture(repo: &Path) {
     std::fs::create_dir_all(repo.join("player/traversal")).unwrap();

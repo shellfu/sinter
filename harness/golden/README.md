@@ -28,14 +28,15 @@ output. Correcting an expectation requires a written semantics argument
 recorded in `DECISIONS.md` (see D14) — a failing test is never by itself a
 reason to edit a fixture.
 
-Current corpus: 43 fixtures (4 basics + 39 idiom fixtures mined from the
-the prototype prototype's changelog: shadowing families, alias/star/dot/relative
-imports, re-export chains, receivers, embeddings, namespace collisions) —
+Current corpus: 49 fixtures across six languages (basics plus idiom
+fixtures mined from the prototype's changelog: shadowing families,
+alias/star/dot/relative imports, re-export chains, receivers, embeddings,
+namespace collisions, macro misparse resilience) —
 extraction and resolution all at P/R 1.0. Both runners carry a `KNOWN_FAIL`
 ratchet (currently empty): a listed fixture that starts passing fails the
 suite until delisted, so the list can only shrink. Every new language or
 resolution rule lands with a fixture here before it ships.
 
-Fixture sources: mine the the prototype prototype's `tests/fixtures/` and its
+Fixture sources: mine the prototype's `tests/fixtures/` and its
 changelog (~839 fix bullets, each naming a real extraction idiom — loop-var
 shadowing, `source "$(dirname ...)"`, re-exports, ...) into fixtures here.

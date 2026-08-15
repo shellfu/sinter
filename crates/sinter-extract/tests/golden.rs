@@ -239,7 +239,7 @@ fn golden_python_untyped_receiver() {
     check("python-untyped-receiver");
 }
 
-// TypeScript idiom fixtures mined from the the prototype prototype changelog.
+// TypeScript idiom fixtures mined from the prototype changelog.
 #[test]
 fn golden_typescript_loop_var_shadow() {
     check("typescript-loop-var-shadow");
@@ -413,4 +413,19 @@ fn golden_cpp_unreal_macros() {
 #[test]
 fn golden_python_docstring() {
     check("python-docstring");
+}
+
+/// Every fixture directory must be registered as a test — an unregistered
+/// fixture is silent coverage loss (D16 audit follow-up).
+#[test]
+fn all_fixtures_registered() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../harness/golden/fixtures");
+    let source = include_str!("golden.rs");
+    for entry in std::fs::read_dir(root).unwrap() {
+        let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+        assert!(
+            source.contains(&format!("check(\"{name}\")")),
+            "fixture {name} has no golden_* test registered"
+        );
+    }
 }
