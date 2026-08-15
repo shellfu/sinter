@@ -232,6 +232,43 @@ export class WorkspaceWorker {
     );
 }
 
+/// Black Lantern finding: trigram closeness to ONE term must not grant
+/// name credit for every term — a symbol close to "controller" but with no
+/// "character" anywhere cannot claim 2/2 coverage.
+#[test]
+fn ask_trigram_credit_is_per_term() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    controller_fixture(repo);
+    std::fs::write(
+        repo.join("player/gym.ts"),
+        r#"// Gym control action registry.
+export class GymControlAction {
+  act(): void {}
+}
+"#,
+    )
+    .unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+    let (ok, out) = sinter(
+        repo,
+        &["ask", "where is the character controller?", "--limit", "10"],
+    );
+    assert!(ok, "{out}");
+    let first = out.lines().find(|l| l.starts_with("1. ")).unwrap();
+    assert!(first.contains("PlayerCharacterV2"), "{out}");
+    for line in out.lines() {
+        let ranked = line.get(..3).is_some_and(|p| p.ends_with(". "));
+        if ranked && line.contains("GymControlAction") {
+            assert!(
+                line.contains("1/2 terms"),
+                "trigram closeness credited across terms:\n{out}"
+            );
+        }
+    }
+}
+
 /// Design §6: on every basic golden fixture, asking for the fixture's
 /// primary symbol must rank its defining node first.
 #[test]

@@ -62,3 +62,15 @@
 (parameter_declaration
   type: (type_identifier) @local.type
   declarator: (identifier) @local)
+
+; Unreal-style classes: an export macro between `class` and the name makes
+; tree-sitter take the macro as the class name and leave the real name as
+; a stray declarator. Match that shape, gated on the *_API convention.
+(declaration
+  type: (class_specifier name: (type_identifier) @_api)
+  declarator: (identifier) @name
+  (#match? @_api "_API$")) @def.class
+(function_definition
+  type: (class_specifier name: (type_identifier) @_api)
+  declarator: (identifier) @name
+  (#match? @_api "_API$")) @def.class

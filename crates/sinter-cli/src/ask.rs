@@ -108,17 +108,21 @@ struct Hit {
 
 fn score_candidates(store: &Store, terms: &[String]) -> Result<Vec<Hit>> {
     // Candidate recall via the TOKENS index (design §4 v2): keyed reads,
-    // never a corpus scan. Trigram extras add fuzzy-name candidates.
+    // never a corpus scan. Trigram extras add fuzzy-name candidates —
+    // tracked PER TERM: closeness to one term is never credit for another
+    // (fixture: ask_trigram_credit_is_per_term).
     let mut nodes = store.candidates_for_terms(terms)?;
     let mut seen: HashSet<String> = nodes.iter().map(|n| n.id.as_str().to_string()).collect();
-    let mut close_ids: HashSet<String> = HashSet::new();
+    let mut close_ids: Vec<HashSet<String>> = Vec::with_capacity(terms.len());
     for term in terms {
+        let mut close = HashSet::new();
         for node in store.search(term, 25)? {
-            close_ids.insert(node.id.as_str().to_string());
+            close.insert(node.id.as_str().to_string());
             if seen.insert(node.id.as_str().to_string()) {
                 nodes.push(node);
             }
         }
+        close_ids.push(close);
     }
     nodes.sort_by(|a, b| a.id.cmp(&b.id));
 
@@ -131,13 +135,13 @@ fn score_candidates(store: &Store, terms: &[String]) -> Result<Vec<Hit>> {
         let mut base = 0i64;
         let mut matched = Vec::new();
         let mut channels: Vec<&'static str> = Vec::new();
-        for term in terms {
+        for (ti, term) in terms.iter().enumerate() {
             let mut term_hit = false;
             if name_l == *term || term.strip_suffix('s') == Some(name_l.as_str()) {
                 base += PT_EXACT_NAME;
                 channels.push("name");
                 term_hit = true;
-            } else if contains_term(&name_l, term) || close_ids.contains(node.id.as_str()) {
+            } else if contains_term(&name_l, term) || close_ids[ti].contains(node.id.as_str()) {
                 base += PT_NAME_CLOSE;
                 channels.push("name");
                 term_hit = true;

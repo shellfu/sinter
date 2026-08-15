@@ -184,3 +184,23 @@ member access (`.`/`->`) splits in `cpp_absolutize` so receiver/typed-
 local tiers see a prefix. TOKENS v2 (schema v3) and the ask
 vendor/soft-stopword penalties landed in the same change set, each behind
 its own fixture.
+
+## D20 — Unreal C++ misparse resilience (Black Lantern findings)
+
+tree-sitter-cpp cannot parse `class GAME_API Name : public Base` — the
+export macro becomes the class name and the body degrades to statements.
+Handled as data, gated on the `*_API` convention: query patterns match the
+two misparse wrapper shapes and recover the real name; the misparsed body's
+member declarations surface as call references that self-suppress against
+the class (no wrong edges), recorded as such in the fixture. A new spec
+primitive `doc_skip_kinds` lets the doc-comment walk step over decorator
+macro lines (`UCLASS(...)`), so UE classes keep their doc — the content
+channel `ask` depends on. The same trial exposed an ask precision bug:
+trigram closeness was one global set, granting name credit for every term;
+now per-term (fixture: ask_trigram_credit_is_per_term). Honest limit,
+measured on the real repo: `ABLPlayerCharacterV2`'s doc never says
+"controller", so evidence ranks the control-mode FSM (which says both
+words) above it — the class surfaces at #9 with three methods in the top
+11, versus the prototype's #45 of 51. Ranking cannot exceed its evidence;
+if concept-level aggregation is ever wanted, it is a new design
+(family-boost), not a constant tweak.

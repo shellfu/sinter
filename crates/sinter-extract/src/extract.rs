@@ -382,7 +382,12 @@ impl Extractor {
                     kind: def.map(|(_, k)| k),
                     qualifier: qualifier.map(|q| text(q, source).to_string()),
                     signature: signature(container, source),
-                    doc: doc_comment(container, source, self.spec.comment_kinds),
+                    doc: doc_comment(
+                        container,
+                        source,
+                        self.spec.comment_kinds,
+                        self.spec.doc_skip_kinds,
+                    ),
                 });
             }
         }
@@ -415,10 +420,15 @@ fn signature(node: TsNode<'_>, source: &str) -> String {
 /// Contiguous comment siblings immediately above the definition (or its
 /// parent declaration), stripped of comment markers. Generic across
 /// languages: comment node kinds come from the spec.
-fn doc_comment(node: TsNode<'_>, source: &str, comment_kinds: &[&str]) -> Option<String> {
-    let comments = preceding_comments(node, comment_kinds).or_else(|| {
+fn doc_comment(
+    node: TsNode<'_>,
+    source: &str,
+    comment_kinds: &[&str],
+    skip_kinds: &[&str],
+) -> Option<String> {
+    let comments = preceding_comments(node, comment_kinds, skip_kinds).or_else(|| {
         node.parent()
-            .and_then(|p| preceding_comments(p, comment_kinds))
+            .and_then(|p| preceding_comments(p, comment_kinds, skip_kinds))
     })?;
     let mut lines = Vec::new();
     for c in comments {
@@ -447,11 +457,23 @@ fn doc_comment(node: TsNode<'_>, source: &str, comment_kinds: &[&str]) -> Option
     }
 }
 
-fn preceding_comments<'t>(node: TsNode<'t>, comment_kinds: &[&str]) -> Option<Vec<TsNode<'t>>> {
+fn preceding_comments<'t>(
+    node: TsNode<'t>,
+    comment_kinds: &[&str],
+    skip_kinds: &[&str],
+) -> Option<Vec<TsNode<'t>>> {
     let mut comments = Vec::new();
     let mut cur = node.prev_named_sibling();
+    let mut skips = 0;
     while let Some(sib) = cur {
         if !comment_kinds.contains(&sib.kind()) {
+            // Step over decorator-style macro lines (UCLASS, UPROPERTY)
+            // that sit between a definition and its doc comment.
+            if skips < 2 && comments.is_empty() && skip_kinds.contains(&sib.kind()) {
+                skips += 1;
+                cur = sib.prev_named_sibling();
+                continue;
+            }
             break;
         }
         comments.push(sib);

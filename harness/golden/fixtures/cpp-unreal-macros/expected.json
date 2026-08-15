@@ -1,0 +1,32 @@
+{
+  "nodes": [
+    [
+      "file",
+      "character.h",
+      "character.h"
+    ],
+    [
+      "class",
+      "APlayerCharacter",
+      "character.h"
+    ]
+  ],
+  "contains": [
+    [
+      "character.h",
+      "APlayerCharacter"
+    ]
+  ],
+  "references": [
+    [
+      "calls",
+      "APlayerCharacter"
+    ],
+    [
+      "calls",
+      "UCLASS"
+    ]
+  ],
+  "resolved": [],
+  "unresolved_count": 2
+}

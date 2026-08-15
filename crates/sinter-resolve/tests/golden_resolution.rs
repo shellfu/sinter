@@ -382,3 +382,8 @@ fn resolution_cpp_basic() {
 fn resolution_cpp_header_impl() {
     check("cpp-header-impl");
 }
+
+#[test]
+fn resolution_cpp_unreal_macros() {
+    check("cpp-unreal-macros");
+}

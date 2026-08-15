@@ -48,6 +48,10 @@ pub struct LanguageSpec {
     /// Receiver keywords (`self`, `this`): a qualified reference through one
     /// binds within the reference's enclosing type.
     pub receivers: &'static [&'static str],
+    /// Node kinds the doc-comment walk may step over (max 2) between a
+    /// definition and its doc — e.g. Unreal's `UCLASS(...)` line, which
+    /// parses as an expression_statement between comment and class.
+    pub doc_skip_kinds: &'static [&'static str],
 }
 
 fn split_all(path: &str, separators: &[&str]) -> Vec<String> {
@@ -304,6 +308,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         path_separators: &["::", "."],
         absolutize: rust_absolutize,
         receivers: &["self", "Self"],
+        doc_skip_kinds: &[],
     },
     LanguageSpec {
         name: "go",
@@ -315,6 +320,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         path_separators: &["/", "."],
         absolutize: go_absolutize,
         receivers: &[],
+        doc_skip_kinds: &[],
     },
     LanguageSpec {
         name: "python",
@@ -326,6 +332,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         path_separators: &["."],
         absolutize: python_absolutize,
         receivers: &["self", "cls"],
+        doc_skip_kinds: &[],
     },
     LanguageSpec {
         name: "typescript",
@@ -337,6 +344,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         path_separators: &["/", "."],
         absolutize: typescript_absolutize,
         receivers: &["this"],
+        doc_skip_kinds: &[],
     },
     LanguageSpec {
         name: "bash",
@@ -348,6 +356,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         path_separators: &["/"],
         absolutize: bash_absolutize,
         receivers: &[],
+        doc_skip_kinds: &[],
     },
     LanguageSpec {
         name: "cpp",
@@ -359,6 +368,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         path_separators: &["/", "::"],
         absolutize: cpp_absolutize,
         receivers: &["this"],
+        doc_skip_kinds: &["expression_statement"],
     },
 ];
 

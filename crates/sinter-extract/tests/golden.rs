@@ -54,7 +54,13 @@ fn extract_fixture(root: &Path) -> (BTreeSet<Tuple>, BTreeSet<Tuple>, BTreeSet<T
             .unwrap()
             .extract(&rel, &source)
             .unwrap();
-        assert!(!facts.has_syntax_errors, "fixture {rel} has syntax errors");
+        // Misparse-resilience fixtures (macro-heavy C++) intentionally
+        // contain grammar ERROR nodes; everything else must parse clean.
+        const SYNTAX_ERRORS_EXPECTED: &[&str] = &["character.h"];
+        assert!(
+            !facts.has_syntax_errors || SYNTAX_ERRORS_EXPECTED.contains(&rel.as_str()),
+            "fixture {rel} has syntax errors"
+        );
         for n in &facts.nodes {
             nodes.insert(vec![
                 n.kind.as_str().to_string(),
@@ -376,4 +382,9 @@ fn golden_cpp_basic() {
 #[test]
 fn golden_cpp_header_impl() {
     check("cpp-header-impl");
+}
+
+#[test]
+fn golden_cpp_unreal_macros() {
+    check("cpp-unreal-macros");
 }
