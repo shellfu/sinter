@@ -1,0 +1,18 @@
+{
+  "nodes": [
+    ["file", "main.py", "main.py"],
+    ["function", "handler", "main.py"],
+    ["function", "via", "main.py"],
+    ["function", "run", "main.py"]
+  ],
+  "contains": [
+    ["main.py", "handler"],
+    ["main.py", "via"],
+    ["main.py", "run"]
+  ],
+  "references": [
+    ["calls", "handler"]
+  ],
+  "resolved": [],
+  "unresolved_count": 2
+}

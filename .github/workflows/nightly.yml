@@ -1,0 +1,17 @@
+name: nightly
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  scale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # R8 budgets at scale: 500k-node synthetic graph, cold <100ms,
+      # warm <50ms. Release mode — the budgets are runtime promises.
+      - run: cargo test --release -p sinter-store --test scale -- --ignored --nocapture
+      - run: cargo test --release -p sinter-cli --test incremental_build -- --nocapture

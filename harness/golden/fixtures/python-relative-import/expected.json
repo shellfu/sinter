@@ -1,0 +1,22 @@
+{
+  "nodes": [
+    ["file", "pkg/__init__.py", "pkg/__init__.py"],
+    ["file", "pkg/util.py", "pkg/util.py"],
+    ["function", "helper", "pkg/util.py"],
+    ["file", "pkg/main.py", "pkg/main.py"],
+    ["function", "run", "pkg/main.py"]
+  ],
+  "contains": [
+    ["pkg/util.py", "helper"],
+    ["pkg/main.py", "run"]
+  ],
+  "references": [
+    ["imports", ".util.helper"],
+    ["calls", "helper"]
+  ],
+  "resolved": [
+    ["import", "imports", "pkg/main.py", "helper"],
+    ["import", "calls", "run", "helper"]
+  ],
+  "unresolved_count": 0
+}

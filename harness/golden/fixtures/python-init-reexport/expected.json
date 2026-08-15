@@ -1,0 +1,24 @@
+{
+  "nodes": [
+    ["file", "pkg/__init__.py", "pkg/__init__.py"],
+    ["file", "pkg/core.py", "pkg/core.py"],
+    ["function", "run", "pkg/core.py"],
+    ["file", "main.py", "main.py"],
+    ["function", "start", "main.py"]
+  ],
+  "contains": [
+    ["pkg/core.py", "run"],
+    ["main.py", "start"]
+  ],
+  "references": [
+    ["imports", "pkg.core.run"],
+    ["imports", "pkg.run"],
+    ["calls", "run"]
+  ],
+  "resolved": [
+    ["import", "imports", "pkg/__init__.py", "run"],
+    ["import", "imports", "main.py", "run"],
+    ["import", "calls", "start", "run"]
+  ],
+  "unresolved_count": 0
+}

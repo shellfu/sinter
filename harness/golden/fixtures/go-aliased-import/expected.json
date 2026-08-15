@@ -1,0 +1,23 @@
+{
+  "nodes": [
+    ["file", "main.go", "main.go"],
+    ["function", "Shout", "main.go"],
+    ["file", "pkg/text/text.go", "pkg/text/text.go"],
+    ["function", "Upper", "pkg/text/text.go"]
+  ],
+  "contains": [
+    ["main.go", "Shout"],
+    ["pkg/text/text.go", "Upper"]
+  ],
+  "references": [
+    ["imports", "example.com/fx/pkg/text"],
+    ["calls", "Upper"],
+    ["imports", "strings"],
+    ["calls", "ToUpper"]
+  ],
+  "resolved": [
+    ["import", "imports", "main.go", "pkg/text/text.go"],
+    ["import", "calls", "Shout", "Upper"]
+  ],
+  "unresolved_count": 2
+}

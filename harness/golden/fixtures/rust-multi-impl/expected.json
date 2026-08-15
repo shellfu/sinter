@@ -1,0 +1,22 @@
+{
+  "nodes": [
+    ["file", "src/lib.rs", "src/lib.rs"],
+    ["struct", "Counter", "src/lib.rs"],
+    ["function", "Counter::new", "src/lib.rs"],
+    ["function", "Counter::reset", "src/lib.rs"],
+    ["function", "make", "src/lib.rs"]
+  ],
+  "contains": [
+    ["src/lib.rs", "Counter"],
+    ["src/lib.rs", "Counter::new"],
+    ["src/lib.rs", "Counter::reset"],
+    ["src/lib.rs", "make"]
+  ],
+  "references": [
+    ["calls", "new"]
+  ],
+  "resolved": [
+    ["scope", "calls", "make", "Counter::new"]
+  ],
+  "unresolved_count": 0
+}

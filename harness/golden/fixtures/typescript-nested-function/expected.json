@@ -1,0 +1,22 @@
+{
+  "nodes": [
+    ["file", "main.ts", "main.ts"],
+    ["function", "outer", "main.ts"],
+    ["function", "outer::inner", "main.ts"],
+    ["function", "leaf", "main.ts"]
+  ],
+  "contains": [
+    ["main.ts", "outer"],
+    ["outer", "outer::inner"],
+    ["main.ts", "leaf"]
+  ],
+  "references": [
+    ["calls", "leaf"],
+    ["calls", "inner"]
+  ],
+  "resolved": [
+    ["scope", "calls", "outer::inner", "leaf"],
+    ["scope", "calls", "outer", "outer::inner"]
+  ],
+  "unresolved_count": 0
+}

@@ -1,0 +1,29 @@
+{
+  "nodes": [
+    ["file", "main.py", "main.py"],
+    ["function", "greet", "main.py"],
+    ["class", "Server", "main.py"],
+    ["function", "Server::start", "main.py"],
+    ["file", "util.py", "util.py"],
+    ["function", "helper", "util.py"]
+  ],
+  "contains": [
+    ["main.py", "greet"],
+    ["main.py", "Server"],
+    ["Server", "Server::start"],
+    ["util.py", "helper"]
+  ],
+  "references": [
+    ["imports", "os.path"],
+    ["imports", "util.helper"],
+    ["calls", "print"],
+    ["calls", "greet"],
+    ["calls", "helper"]
+  ],
+  "resolved": [
+    ["scope", "calls", "Server::start", "greet"],
+    ["import", "calls", "Server::start", "helper"],
+    ["import", "imports", "main.py", "helper"]
+  ],
+  "unresolved_count": 2
+}

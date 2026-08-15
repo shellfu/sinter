@@ -1,0 +1,28 @@
+{
+  "nodes": [
+    ["file", "src/lib.rs", "src/lib.rs"],
+    ["module", "net", "src/lib.rs"],
+    ["function", "base", "src/lib.rs"],
+    ["file", "src/net/mod.rs", "src/net/mod.rs"],
+    ["module", "tcp", "src/net/mod.rs"],
+    ["function", "shared", "src/net/mod.rs"],
+    ["file", "src/net/tcp.rs", "src/net/tcp.rs"],
+    ["function", "open", "src/net/tcp.rs"]
+  ],
+  "contains": [
+    ["src/lib.rs", "net"],
+    ["src/lib.rs", "base"],
+    ["src/net/mod.rs", "tcp"],
+    ["src/net/mod.rs", "shared"],
+    ["src/net/tcp.rs", "open"]
+  ],
+  "references": [
+    ["calls", "shared"],
+    ["calls", "base"]
+  ],
+  "resolved": [
+    ["import", "calls", "open", "shared"],
+    ["import", "calls", "open", "base"]
+  ],
+  "unresolved_count": 0
+}

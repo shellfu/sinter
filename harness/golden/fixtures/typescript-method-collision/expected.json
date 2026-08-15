@@ -1,0 +1,22 @@
+{
+  "nodes": [
+    ["file", "main.ts", "main.ts"],
+    ["class", "Store", "main.ts"],
+    ["method", "Store::save", "main.ts"],
+    ["function", "save", "main.ts"],
+    ["function", "persist", "main.ts"]
+  ],
+  "contains": [
+    ["main.ts", "Store"],
+    ["Store", "Store::save"],
+    ["main.ts", "save"],
+    ["main.ts", "persist"]
+  ],
+  "references": [
+    ["calls", "save"]
+  ],
+  "resolved": [
+    ["scope", "calls", "persist", "save"]
+  ],
+  "unresolved_count": 1
+}

@@ -1,0 +1,28 @@
+{
+  "nodes": [
+    ["file", "src/lib.rs", "src/lib.rs"],
+    ["module", "alpha", "src/lib.rs"],
+    ["module", "beta", "src/lib.rs"],
+    ["function", "start", "src/lib.rs"],
+    ["file", "src/alpha.rs", "src/alpha.rs"],
+    ["function", "init", "src/alpha.rs"],
+    ["file", "src/beta.rs", "src/beta.rs"],
+    ["function", "init", "src/beta.rs"]
+  ],
+  "contains": [
+    ["src/lib.rs", "alpha"],
+    ["src/lib.rs", "beta"],
+    ["src/lib.rs", "start"],
+    ["src/alpha.rs", "init"],
+    ["src/beta.rs", "init"]
+  ],
+  "references": [
+    ["imports", "crate::alpha::init"],
+    ["calls", "init"]
+  ],
+  "resolved": [
+    ["import", "imports", "src/lib.rs", "init"],
+    ["import", "calls", "start", "init"]
+  ],
+  "unresolved_count": 0
+}

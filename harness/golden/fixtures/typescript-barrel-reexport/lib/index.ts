@@ -1,0 +1,1 @@
+export { widget } from "./widget";

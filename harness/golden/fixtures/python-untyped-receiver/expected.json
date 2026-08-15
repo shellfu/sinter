@@ -1,0 +1,16 @@
+{
+  "nodes": [
+    ["file", "main.py", "main.py"],
+    ["function", "get", "main.py"],
+    ["function", "lookup", "main.py"]
+  ],
+  "contains": [
+    ["main.py", "get"],
+    ["main.py", "lookup"]
+  ],
+  "references": [
+    ["calls", "get"]
+  ],
+  "resolved": [],
+  "unresolved_count": 1
+}

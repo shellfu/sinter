@@ -1,0 +1,144 @@
+# Decisions
+
+One paragraph per decision, alternatives named. Costly-to-reverse or contested
+decisions graduate to a full ADR.
+
+## D1 — Storage engine: redb (Phase 1)
+
+redb over SQLite (rusqlite) and sled. Pure Rust keeps the single static binary
+trivial (no C toolchain, no bundled sqlite3), its typed tables and multimap
+tables map directly onto the node table + forward/reverse adjacency we need,
+and cold open + point read is microseconds, comfortably inside the 100ms R5
+budget. SQLite would buy an ad-hoc relational query surface we have no consumer
+for; the trigram index (Phase 5) is a multimap table either way. sled is
+effectively unmaintained. Revisit if Phase 5 query shapes turn genuinely
+relational.
+
+## D2 — Record encoding: postcard
+
+postcard (serde) for node/edge values inside redb. Compact, fast, pure Rust,
+one small dependency. bincode rejected for v2 API churn; JSON stays an export
+format only per R5, never the runtime format.
+
+## D3 — Property testing: proptest
+
+proptest over quickcheck: better strategy composition, actively maintained.
+
+## D4 — Name: sinter
+
+Repository is named `sinter`; kickoff working name `korpus` said rename freely.
+Crates `sinter-core`/`sinter-store`/`sinter-cli`, binary `sinter`.
+
+## D5 — In-memory Graph is BTreeMap + BTreeSet
+
+Deterministic iteration (stable serialization and test output) and free
+dedup of byte-identical edges. Neighbor lookup on the in-memory graph is a
+linear scan — acceptable because all at-scale queries go through the store's
+adjacency tables, never the in-memory graph.
+
+## D6 — Extraction primitive: tree-sitter query captures, languages are data
+
+One generic engine (`sinter-extract`) consumes a fixed capture contract —
+`@def.<kind>`, `@name`, `@scope`, `@qualifier`, `@ref.<rel>`, `@import` —
+and never branches on language. A language is one `LanguageSpec` row
+(grammar fn, `.scm` query, comment node kinds). Adding a language = new row +
+new query file + golden fixture; zero engine edits. Alternative rejected:
+per-language extractor impls (the prototype's forked-resolver mistake, R9).
+Qualification (nesting, impl blocks, Go receivers) is computed generically
+from span containment plus the `@scope`/`@qualifier` captures.
+
+## D7 — Phase 2 ships two languages (Rust + Go), not one
+
+Kickoff said one language first; user directed Go + Rust. Two languages also
+give the extraction abstraction its two required concrete consumers on day
+one, which is what keeps the capture contract honest.
+
+## D8 — Resolution: hand-rolled evidence resolver, not stack-graphs
+
+Kickoff required evaluating `stack-graphs` before hand-rolling. Evaluated
+2026-08-15: github/stack-graphs was archived read-only on 2025-09-09 and is
+explicitly "no longer supported or updated by GitHub". Building the
+resolution foundation on a dead dependency, plus authoring per-language
+`.tsg` rule files ourselves (none exist for Rust/Go at production quality),
+loses its advantage over a small resolver we own. Fallback: `sinter-resolve`
+with three evidence tiers — SCIP index (compiler-grade, `Certain`), import
+matching, same-file scope matching (both `Inferred`). Ambiguity resolves to
+nothing: one candidate or unresolved, never a guess.
+
+## D9 — No type evidence in Phase 3
+
+Method calls through values (`x.foo()`, `self.db.begin()`) need type
+inference we don't have; they stay unresolved rather than name-guessed,
+which is why the measured unresolved rate sits near 90% on real repos
+(sinter self-build 93.7%, skaffold 92.2%). SCIP ingest is the sanctioned
+path to bind them (compilers already did the inference); a native type-
+evidence tier is a Phase 7+ candidate only with a golden-corpus case for it.
+
+## D10 — Incrementality: hand-rolled content-addressed derivation, not salsa
+
+Kickoff offered salsa or a hand-rolled content-addressed DAG. Chose
+hand-rolled: the dependency structure is two levels deep and static
+(file bytes -> FileFacts -> derived tables + resolution), so salsa's dynamic
+dependency tracking buys nothing for its learning and compile cost.
+Mechanism: `FILE_FACTS` is per-file truth keyed by blake3; `build` diffs
+stored vs current hashes, so every build (and every git hook) is
+incremental by construction. Resolution invalidation: an update returns the
+set of definition names it touched; `NAME_REFS` (name -> files referencing
+it) maps that to the exact files to re-resolve. Measured on skaffold
+(~9.2k files): no-op rebuild 73ms, one-file edit 498ms with 4 files
+re-resolved (budget: <1s).
+
+## D11 — MCP server is hand-rolled ndjson JSON-RPC
+
+The needed MCP subset (initialize, tools/list, tools/call, ping over stdio)
+is ~150 lines; an SDK dependency (rmcp) would exceed the code it replaces
+and pin protocol churn. Revisit if sinter needs server-initiated features
+(sampling, notifications, resources).
+
+## D12 — Blast radius excludes Contains edges
+
+`affected`/`path`/`impact` traverse only dependency relations (calls, uses,
+imports, ...). Containment is structure, not dependency: a file does not
+"depend on" the functions it contains for change-impact purposes, and
+including it would make every file node a false dependent of its own
+symbols.
+
+## D13 — Phase 7 expansion validated the language-as-data claim
+
+Python and TypeScript were added by independent agents editing only a `.scm`
+query file and a golden fixture each — zero engine changes, both at P/R 1.0
+first run. One engine primitive was added ahead of them
+(`@import.module`/`@import.name` composition for from-style imports)
+because Rust/Go path-shaped imports don't cover named imports. That is the
+expected shape of future language work: if a language needs engine code,
+the capture contract is wrong, not the language.
+
+## D14 — A call binding to a type is recorded as a use
+
+`model.ID(raw)` is syntactically a call; whether it is a conversion is
+resolution-time knowledge. Extraction honestly emits `calls`; when the
+binding target is a type kind (struct/enum/interface/trait/typealias) the
+edge is relabeled `uses`. Class kinds are exempt — `Server()` instantiation
+really is a call. Similarly, name collisions resolve by namespace: a call
+prefers callables, a use prefers types; any remaining tie is unresolved.
+
+## D15 — Local evidence tiers are language data, not engine policy
+
+The corpus mining showed each language wants different local knowledge:
+Go grants method binding through typed locals (`c *Counter` → `c.Reset()` is
+`Counter::Reset`) and embedded-struct promotion; TypeScript deliberately
+does not (its fixtures keep `store.save()` unresolved); Python and Rust
+bind through receiver keywords (`self`). All of it is expressed as capture
+data (`@local`, `@local.type`, `@embed`) plus one spec field (`receivers`)
+— the resolver implements the mechanisms once and stays language-blind.
+Shadowing is the same machinery: a bare `@local` in scope suppresses any
+outward binding, which killed the fabricated-edge family (params, let,
+loop vars, catch) in all four languages.
+
+## D16 — Known harness limitation: resolved tuples are unqualified
+
+Golden `resolved` tuples are `[evidence, relation, src, dst]` with
+file-unqualified names, so two same-named symbols in different files are
+indistinguishable in assertions. Acceptable while fixtures are small and
+hand-built to avoid the collision; extend the tuple format with file paths
+before trusting precision numbers on larger fixtures.

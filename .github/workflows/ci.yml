@@ -1,0 +1,21 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      # Golden corpus first: accuracy is a measured number (R7); a metric
+      # move fails here with the missing/extra delta printed.
+      - run: cargo test -p sinter-extract --test golden -- --nocapture
+      - run: cargo test -p sinter-resolve --test golden_resolution -- --nocapture
+      - run: cargo test --workspace

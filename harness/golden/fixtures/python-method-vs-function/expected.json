@@ -1,0 +1,26 @@
+{
+  "nodes": [
+    ["file", "util.py", "util.py"],
+    ["function", "start", "util.py"],
+    ["file", "main.py", "main.py"],
+    ["class", "Server", "main.py"],
+    ["function", "Server::start", "main.py"],
+    ["function", "Server::run", "main.py"]
+  ],
+  "contains": [
+    ["util.py", "start"],
+    ["main.py", "Server"],
+    ["Server", "Server::start"],
+    ["Server", "Server::run"]
+  ],
+  "references": [
+    ["imports", "util.start"],
+    ["calls", "start"]
+  ],
+  "resolved": [
+    ["import", "imports", "main.py", "start"],
+    ["scope", "calls", "Server::run", "Server::start"],
+    ["import", "calls", "Server::run", "start"]
+  ],
+  "unresolved_count": 0
+}

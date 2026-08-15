@@ -1,0 +1,22 @@
+{
+  "nodes": [
+    ["file", "pkg/__init__.py", "pkg/__init__.py"],
+    ["file", "pkg/mod.py", "pkg/mod.py"],
+    ["function", "func", "pkg/mod.py"],
+    ["file", "main.py", "main.py"],
+    ["function", "run", "main.py"]
+  ],
+  "contains": [
+    ["pkg/mod.py", "func"],
+    ["main.py", "run"]
+  ],
+  "references": [
+    ["imports", "pkg.mod"],
+    ["calls", "func"]
+  ],
+  "resolved": [
+    ["import", "imports", "main.py", "pkg/mod.py"],
+    ["import", "calls", "run", "func"]
+  ],
+  "unresolved_count": 0
+}

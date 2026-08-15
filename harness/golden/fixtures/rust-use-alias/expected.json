@@ -1,0 +1,23 @@
+{
+  "nodes": [
+    ["file", "src/lib.rs", "src/lib.rs"],
+    ["module", "util", "src/lib.rs"],
+    ["function", "run", "src/lib.rs"],
+    ["file", "src/util.rs", "src/util.rs"],
+    ["function", "log", "src/util.rs"]
+  ],
+  "contains": [
+    ["src/lib.rs", "util"],
+    ["src/lib.rs", "run"],
+    ["src/util.rs", "log"]
+  ],
+  "references": [
+    ["imports", "crate::util::log"],
+    ["calls", "ulog"]
+  ],
+  "resolved": [
+    ["import", "imports", "src/lib.rs", "log"],
+    ["import", "calls", "run", "log"]
+  ],
+  "unresolved_count": 0
+}

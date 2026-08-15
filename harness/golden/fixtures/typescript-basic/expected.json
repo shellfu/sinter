@@ -1,0 +1,29 @@
+{
+  "nodes": [
+    ["file", "main.ts", "main.ts"],
+    ["function", "greet", "main.ts"],
+    ["class", "App", "main.ts"],
+    ["method", "App::run", "main.ts"],
+    ["file", "util.ts", "util.ts"],
+    ["function", "helper", "util.ts"]
+  ],
+  "contains": [
+    ["main.ts", "greet"],
+    ["main.ts", "App"],
+    ["App", "App::run"],
+    ["util.ts", "helper"]
+  ],
+  "references": [
+    ["imports", "./util/helper"],
+    ["imports", "path/join"],
+    ["calls", "log"],
+    ["calls", "greet"],
+    ["calls", "helper"]
+  ],
+  "resolved": [
+    ["import", "imports", "main.ts", "helper"],
+    ["scope", "calls", "App::run", "greet"],
+    ["import", "calls", "App::run", "helper"]
+  ],
+  "unresolved_count": 2
+}

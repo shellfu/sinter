@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if test -r .rustkit/doctrine/core-rules.md; then cat .rustkit/doctrine/core-rules.md; else echo 'RustKit error: required .rustkit/doctrine/core-rules.md is missing or unreadable' >&2; exit 1; fi"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "nodes": [
+    ["file", "util.ts", "util.ts"],
+    ["function", "helper", "util.ts"],
+    ["file", "main.ts", "main.ts"],
+    ["function", "twice", "main.ts"]
+  ],
+  "contains": [
+    ["util.ts", "helper"],
+    ["main.ts", "twice"]
+  ],
+  "references": [
+    ["imports", "./util/helper"],
+    ["calls", "h"]
+  ],
+  "resolved": [
+    ["import", "imports", "main.ts", "helper"],
+    ["import", "calls", "twice", "helper"]
+  ],
+  "unresolved_count": 0
+}

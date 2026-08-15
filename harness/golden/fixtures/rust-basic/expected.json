@@ -1,0 +1,52 @@
+{
+  "nodes": [
+    ["file", "src/lib.rs", "src/lib.rs"],
+    ["module", "util", "src/lib.rs"],
+    ["function", "add", "src/lib.rs"],
+    ["function", "compute", "src/lib.rs"],
+    ["function", "scaled", "src/lib.rs"],
+    ["struct", "Config", "src/lib.rs"],
+    ["function", "Config::new", "src/lib.rs"],
+    ["function", "default_retries", "src/lib.rs"],
+    ["module", "inner", "src/lib.rs"],
+    ["function", "inner::helper", "src/lib.rs"],
+    ["enum", "Mode", "src/lib.rs"],
+    ["trait", "Runner", "src/lib.rs"],
+    ["function", "Runner::run", "src/lib.rs"],
+    ["constant", "MAX", "src/lib.rs"],
+    ["typealias", "Alias", "src/lib.rs"],
+    ["file", "src/util.rs", "src/util.rs"],
+    ["function", "double", "src/util.rs"]
+  ],
+  "contains": [
+    ["src/lib.rs", "util"],
+    ["src/lib.rs", "add"],
+    ["src/lib.rs", "compute"],
+    ["src/lib.rs", "scaled"],
+    ["src/lib.rs", "Config"],
+    ["src/lib.rs", "Config::new"],
+    ["src/lib.rs", "default_retries"],
+    ["src/lib.rs", "inner"],
+    ["inner", "inner::helper"],
+    ["src/lib.rs", "Mode"],
+    ["src/lib.rs", "Runner"],
+    ["Runner", "Runner::run"],
+    ["src/lib.rs", "MAX"],
+    ["src/lib.rs", "Alias"],
+    ["src/util.rs", "double"]
+  ],
+  "references": [
+    ["imports", "std::fmt"],
+    ["imports", "crate::util::double"],
+    ["calls", "add"],
+    ["calls", "double"],
+    ["calls", "default_retries"]
+  ],
+  "resolved": [
+    ["scope", "calls", "compute", "add"],
+    ["scope", "calls", "Config::new", "default_retries"],
+    ["import", "calls", "scaled", "double"],
+    ["import", "imports", "src/lib.rs", "double"]
+  ],
+  "unresolved_count": 1
+}

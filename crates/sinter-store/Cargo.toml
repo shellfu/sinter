@@ -1,0 +1,16 @@
+[package]
+name = "sinter-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Embedded persistent graph store (redb), queryable without loading the world"
+
+[dependencies]
+sinter-core.workspace = true
+redb.workspace = true
+postcard.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "sinter-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Typed code-graph model: nodes, edges, invariants"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

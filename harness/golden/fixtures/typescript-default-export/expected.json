@@ -1,0 +1,21 @@
+{
+  "nodes": [
+    ["file", "config.ts", "config.ts"],
+    ["function", "loadConfig", "config.ts"],
+    ["file", "main.ts", "main.ts"],
+    ["function", "boot", "main.ts"]
+  ],
+  "contains": [
+    ["config.ts", "loadConfig"],
+    ["main.ts", "boot"]
+  ],
+  "references": [
+    ["imports", "./config/loadConfig"],
+    ["calls", "loadConfig"]
+  ],
+  "resolved": [
+    ["import", "imports", "main.ts", "loadConfig"],
+    ["import", "calls", "boot", "loadConfig"]
+  ],
+  "unresolved_count": 0
+}

@@ -1,0 +1,101 @@
+use proptest::prelude::*;
+use sinter_core::{Confidence, Edge, Evidence, Graph, Node, NodeId, Relation, Span, SymbolKind};
+use sinter_store::Store;
+
+fn node(id: &str) -> Node {
+    Node {
+        id: NodeId::new(id),
+        kind: SymbolKind::Function,
+        name: id.to_string(),
+        file: format!("src/{id}.rs"),
+        span: Span { start: 3, end: 40 },
+        signature: format!("fn {id}()"),
+        doc: Some(format!("does {id}")),
+    }
+}
+
+const RELATIONS: [Relation; 6] = [
+    Relation::Calls,
+    Relation::Uses,
+    Relation::Imports,
+    Relation::Contains,
+    Relation::Implements,
+    Relation::Extends,
+];
+
+/// Hand-built graph round-trips through the store byte-exactly (Phase 1 deliverable).
+#[test]
+fn hand_built_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("graph.redb");
+
+    let mut g = Graph::new();
+    for id in ["main", "parse", "Config", "config"] {
+        g.add_node(node(id)).unwrap();
+    }
+    for (s, d, r) in [
+        ("main", "parse", Relation::Calls),
+        ("main", "Config", Relation::Uses),
+        ("main", "Config", Relation::Imports), // parallel edge
+        ("parse", "config", Relation::Calls),
+    ] {
+        g.add_edge(Edge {
+            src: NodeId::new(s),
+            dst: NodeId::new(d),
+            relation: r,
+            evidence: Evidence::Structural,
+            confidence: Confidence::Certain,
+        })
+        .unwrap();
+    }
+
+    let store = Store::create(&path).unwrap();
+    store.write_graph(&g).unwrap();
+    drop(store);
+
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.read_graph().unwrap(), g);
+
+    // Point queries hit indexes, not the whole graph.
+    let main = NodeId::new("main");
+    assert_eq!(store.node(&main).unwrap().unwrap().signature, "fn main()");
+    assert_eq!(store.out_edges(&main).unwrap().len(), 3);
+    assert_eq!(store.in_edges(&NodeId::new("Config")).unwrap().len(), 2);
+    assert_eq!(store.in_edges(&NodeId::new("config")).unwrap().len(), 1);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    /// Any valid graph round-trips through the store unchanged.
+    #[test]
+    fn any_graph_roundtrips(
+        ids in proptest::collection::btree_set("[A-Za-z][A-Za-z0-9_:]{0,15}", 1..20)
+            .prop_map(|s| s.into_iter().collect::<Vec<_>>()),
+        pairs in proptest::collection::vec(
+            (any::<prop::sample::Index>(), any::<prop::sample::Index>(), 0usize..6, 0usize..2),
+            0..40,
+        ),
+    ) {
+        let mut g = Graph::new();
+        for id in &ids {
+            g.add_node(node(id)).unwrap();
+        }
+        for (a, b, r, c) in &pairs {
+            g.add_edge(Edge {
+                src: NodeId::new(a.get(&ids)),
+                dst: NodeId::new(b.get(&ids)),
+                relation: RELATIONS[*r],
+                evidence: if *c == 0 { Evidence::Structural } else { Evidence::Scope },
+                confidence: if *c == 0 { Confidence::Certain } else { Confidence::Inferred },
+            }).unwrap();
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.redb");
+        let store = Store::create(&path).unwrap();
+        store.write_graph(&g).unwrap();
+        drop(store);
+        prop_assert_eq!(Store::open(&path).unwrap().read_graph().unwrap(), g);
+    }
+}

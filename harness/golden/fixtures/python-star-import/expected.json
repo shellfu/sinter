@@ -1,0 +1,21 @@
+{
+  "nodes": [
+    ["file", "util.py", "util.py"],
+    ["function", "helper", "util.py"],
+    ["file", "main.py", "main.py"],
+    ["function", "run", "main.py"]
+  ],
+  "contains": [
+    ["util.py", "helper"],
+    ["main.py", "run"]
+  ],
+  "references": [
+    ["imports", "util.*"],
+    ["calls", "helper"]
+  ],
+  "resolved": [
+    ["import", "imports", "main.py", "util.py"],
+    ["import", "calls", "run", "helper"]
+  ],
+  "unresolved_count": 0
+}

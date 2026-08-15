@@ -1,0 +1,17 @@
+{
+  "nodes": [
+    ["file", "main.ts", "main.ts"],
+    ["function", "handler", "main.ts"],
+    ["function", "guard", "main.ts"]
+  ],
+  "contains": [
+    ["main.ts", "handler"],
+    ["main.ts", "guard"]
+  ],
+  "references": [
+    ["calls", "fn"],
+    ["calls", "handler"]
+  ],
+  "resolved": [],
+  "unresolved_count": 2
+}

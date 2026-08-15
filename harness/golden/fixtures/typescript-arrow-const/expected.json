@@ -1,0 +1,20 @@
+{
+  "nodes": [
+    ["file", "panel.ts", "panel.ts"],
+    ["function", "Panel", "panel.ts"],
+    ["function", "Panel::handleClick", "panel.ts"],
+    ["function", "render", "panel.ts"]
+  ],
+  "contains": [
+    ["panel.ts", "Panel"],
+    ["Panel", "Panel::handleClick"],
+    ["panel.ts", "render"]
+  ],
+  "references": [
+    ["calls", "render"]
+  ],
+  "resolved": [
+    ["scope", "calls", "Panel::handleClick", "render"]
+  ],
+  "unresolved_count": 0
+}

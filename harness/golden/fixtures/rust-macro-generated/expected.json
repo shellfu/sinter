@@ -1,0 +1,19 @@
+{
+  "nodes": [
+    ["file", "src/lib.rs", "src/lib.rs"],
+    ["macro", "make_answer", "src/lib.rs"],
+    ["function", "ask", "src/lib.rs"]
+  ],
+  "contains": [
+    ["src/lib.rs", "make_answer"],
+    ["src/lib.rs", "ask"]
+  ],
+  "references": [
+    ["calls", "make_answer"],
+    ["calls", "answer"]
+  ],
+  "resolved": [
+    ["scope", "calls", "src/lib.rs", "make_answer"]
+  ],
+  "unresolved_count": 1
+}

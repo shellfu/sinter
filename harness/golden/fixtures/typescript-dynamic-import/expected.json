@@ -1,0 +1,21 @@
+{
+  "nodes": [
+    ["file", "heavy.ts", "heavy.ts"],
+    ["function", "crunch", "heavy.ts"],
+    ["file", "main.ts", "main.ts"],
+    ["function", "load", "main.ts"]
+  ],
+  "contains": [
+    ["heavy.ts", "crunch"],
+    ["main.ts", "load"]
+  ],
+  "references": [
+    ["imports", "./heavy"],
+    ["calls", "crunch"]
+  ],
+  "resolved": [
+    ["import", "imports", "load", "heavy.ts"],
+    ["import", "calls", "load", "crunch"]
+  ],
+  "unresolved_count": 0
+}

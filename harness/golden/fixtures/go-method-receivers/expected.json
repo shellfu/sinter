@@ -1,0 +1,30 @@
+{
+  "nodes": [
+    ["file", "metrics.go", "metrics.go"],
+    ["struct", "Counter", "metrics.go"],
+    ["method", "Counter::Value", "metrics.go"],
+    ["method", "Counter::Inc", "metrics.go"],
+    ["method", "Counter::Reset", "metrics.go"],
+    ["file", "gauge.go", "gauge.go"],
+    ["struct", "Gauge", "gauge.go"],
+    ["method", "Gauge::Reset", "gauge.go"],
+    ["function", "ResetAll", "gauge.go"]
+  ],
+  "contains": [
+    ["metrics.go", "Counter"],
+    ["metrics.go", "Counter::Value"],
+    ["metrics.go", "Counter::Inc"],
+    ["metrics.go", "Counter::Reset"],
+    ["gauge.go", "Gauge"],
+    ["gauge.go", "Gauge::Reset"],
+    ["gauge.go", "ResetAll"]
+  ],
+  "references": [
+    ["calls", "Reset"]
+  ],
+  "resolved": [
+    ["scope", "calls", "ResetAll", "Counter::Reset"],
+    ["scope", "calls", "ResetAll", "Gauge::Reset"]
+  ],
+  "unresolved_count": 0
+}

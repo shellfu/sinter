@@ -1,0 +1,21 @@
+{
+  "nodes": [
+    ["file", "main.go", "main.go"],
+    ["function", "Title", "main.go"],
+    ["file", "pkg/words/words.go", "pkg/words/words.go"],
+    ["function", "Capitalize", "pkg/words/words.go"]
+  ],
+  "contains": [
+    ["main.go", "Title"],
+    ["pkg/words/words.go", "Capitalize"]
+  ],
+  "references": [
+    ["imports", "example.com/fx/pkg/words"],
+    ["calls", "Capitalize"]
+  ],
+  "resolved": [
+    ["import", "imports", "main.go", "pkg/words/words.go"],
+    ["import", "calls", "Title", "Capitalize"]
+  ],
+  "unresolved_count": 0
+}

@@ -1,0 +1,23 @@
+{
+  "nodes": [
+    ["file", "base.go", "base.go"],
+    ["struct", "Base", "base.go"],
+    ["method", "Base::Name", "base.go"],
+    ["file", "label.go", "label.go"],
+    ["struct", "Circle", "label.go"],
+    ["function", "Describe", "label.go"]
+  ],
+  "contains": [
+    ["base.go", "Base"],
+    ["base.go", "Base::Name"],
+    ["label.go", "Circle"],
+    ["label.go", "Describe"]
+  ],
+  "references": [
+    ["calls", "Name"]
+  ],
+  "resolved": [
+    ["scope", "calls", "Describe", "Base::Name"]
+  ],
+  "unresolved_count": 0
+}

@@ -1,0 +1,22 @@
+{
+  "nodes": [
+    ["file", "fmt.ts", "fmt.ts"],
+    ["function", "fmt", "fmt.ts"],
+    ["file", "main.ts", "main.ts"],
+    ["function", "render", "main.ts"]
+  ],
+  "contains": [
+    ["fmt.ts", "fmt"],
+    ["main.ts", "render"]
+  ],
+  "references": [
+    ["imports", "./fmt/fmt"],
+    ["calls", "map"],
+    ["calls", "fmt"],
+    ["calls", "toUpperCase"]
+  ],
+  "resolved": [
+    ["import", "imports", "main.ts", "fmt"]
+  ],
+  "unresolved_count": 3
+}

@@ -1,0 +1,26 @@
+{
+  "nodes": [
+    ["file", "config.go", "config.go"],
+    ["struct", "Config", "config.go"],
+    ["variable", "config", "config.go"],
+    ["function", "Load", "config.go"],
+    ["function", "load", "config.go"],
+    ["function", "Boot", "config.go"]
+  ],
+  "contains": [
+    ["config.go", "Config"],
+    ["config.go", "config"],
+    ["config.go", "Load"],
+    ["config.go", "load"],
+    ["config.go", "Boot"]
+  ],
+  "references": [
+    ["calls", "Load"],
+    ["calls", "load"]
+  ],
+  "resolved": [
+    ["scope", "calls", "Boot", "Load"],
+    ["scope", "calls", "Boot", "load"]
+  ],
+  "unresolved_count": 0
+}

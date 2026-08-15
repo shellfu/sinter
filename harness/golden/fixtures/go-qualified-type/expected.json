@@ -1,0 +1,59 @@
+{
+  "nodes": [
+    [
+      "file",
+      "main.go",
+      "main.go"
+    ],
+    [
+      "function",
+      "Wrap",
+      "main.go"
+    ],
+    [
+      "file",
+      "pkg/model/model.go",
+      "pkg/model/model.go"
+    ],
+    [
+      "typealias",
+      "ID",
+      "pkg/model/model.go"
+    ]
+  ],
+  "contains": [
+    [
+      "main.go",
+      "Wrap"
+    ],
+    [
+      "pkg/model/model.go",
+      "ID"
+    ]
+  ],
+  "references": [
+    [
+      "imports",
+      "example.com/fx/pkg/model"
+    ],
+    [
+      "calls",
+      "ID"
+    ]
+  ],
+  "resolved": [
+    [
+      "import",
+      "imports",
+      "main.go",
+      "pkg/model/model.go"
+    ],
+    [
+      "import",
+      "uses",
+      "Wrap",
+      "ID"
+    ]
+  ],
+  "unresolved_count": 0
+}

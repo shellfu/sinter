@@ -1,0 +1,21 @@
+{
+  "nodes": [
+    ["file", "deco.py", "deco.py"],
+    ["function", "register", "deco.py"],
+    ["file", "main.py", "main.py"],
+    ["function", "task", "main.py"]
+  ],
+  "contains": [
+    ["deco.py", "register"],
+    ["main.py", "task"]
+  ],
+  "references": [
+    ["imports", "deco.register"],
+    ["calls", "register"]
+  ],
+  "resolved": [
+    ["import", "imports", "main.py", "register"],
+    ["import", "calls", "main.py", "register"]
+  ],
+  "unresolved_count": 0
+}

@@ -1,0 +1,21 @@
+use sinter_core::GraphError;
+
+#[derive(Debug, thiserror::Error)]
+pub enum StoreError {
+    #[error("database error: {0}")]
+    Database(#[from] redb::DatabaseError),
+    #[error("transaction error: {0}")]
+    Transaction(#[from] redb::TransactionError),
+    #[error("table error: {0}")]
+    Table(#[from] redb::TableError),
+    #[error("storage error: {0}")]
+    Storage(#[from] redb::StorageError),
+    #[error("commit error: {0}")]
+    Commit(#[from] redb::CommitError),
+    #[error("codec error: {0}")]
+    Codec(#[from] postcard::Error),
+    #[error("stored graph violates an invariant: {0}")]
+    Invariant(#[from] GraphError),
+    #[error("cannot reset outdated database: {0}")]
+    Reset(std::io::Error),
+}

@@ -1,0 +1,25 @@
+{
+  "nodes": [
+    ["file", "src/lib.rs", "src/lib.rs"],
+    ["module", "util", "src/lib.rs"],
+    ["function", "twice", "src/lib.rs"],
+    ["function", "shadowed", "src/lib.rs"],
+    ["file", "src/util.rs", "src/util.rs"],
+    ["function", "double", "src/util.rs"]
+  ],
+  "contains": [
+    ["src/lib.rs", "util"],
+    ["src/lib.rs", "twice"],
+    ["src/lib.rs", "shadowed"],
+    ["src/util.rs", "double"]
+  ],
+  "references": [
+    ["imports", "crate::util::double"],
+    ["calls", "double"]
+  ],
+  "resolved": [
+    ["import", "imports", "src/lib.rs", "double"],
+    ["import", "calls", "twice", "double"]
+  ],
+  "unresolved_count": 1
+}

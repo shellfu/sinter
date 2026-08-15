@@ -1,0 +1,24 @@
+{
+  "nodes": [
+    ["file", "lib/widget.ts", "lib/widget.ts"],
+    ["function", "widget", "lib/widget.ts"],
+    ["file", "lib/index.ts", "lib/index.ts"],
+    ["file", "main.ts", "main.ts"],
+    ["function", "draw", "main.ts"]
+  ],
+  "contains": [
+    ["lib/widget.ts", "widget"],
+    ["main.ts", "draw"]
+  ],
+  "references": [
+    ["imports", "./widget/widget"],
+    ["imports", "./lib/widget"],
+    ["calls", "widget"]
+  ],
+  "resolved": [
+    ["import", "imports", "lib/index.ts", "widget"],
+    ["import", "imports", "main.ts", "widget"],
+    ["import", "calls", "draw", "widget"]
+  ],
+  "unresolved_count": 0
+}

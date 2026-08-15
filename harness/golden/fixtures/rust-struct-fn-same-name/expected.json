@@ -1,0 +1,19 @@
+{
+  "nodes": [
+    ["file", "src/lib.rs", "src/lib.rs"],
+    ["struct", "Run", "src/lib.rs"],
+    ["function", "Run", "src/lib.rs"],
+    ["function", "go", "src/lib.rs"]
+  ],
+  "contains": [
+    ["src/lib.rs", "Run"],
+    ["src/lib.rs", "go"]
+  ],
+  "references": [
+    ["calls", "Run"]
+  ],
+  "resolved": [
+    ["scope", "calls", "go", "Run"]
+  ],
+  "unresolved_count": 0
+}

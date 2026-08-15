@@ -1,0 +1,30 @@
+{
+  "nodes": [
+    ["file", "a.go", "a.go"],
+    ["function", "init", "a.go"],
+    ["function", "Run", "a.go"],
+    ["file", "b.go", "b.go"],
+    ["function", "init", "b.go"],
+    ["function", "helper", "b.go"],
+    ["function", "register", "b.go"],
+    ["variable", "names", "b.go"]
+  ],
+  "contains": [
+    ["a.go", "init"],
+    ["a.go", "Run"],
+    ["b.go", "init"],
+    ["b.go", "helper"],
+    ["b.go", "register"],
+    ["b.go", "names"]
+  ],
+  "references": [
+    ["calls", "register"],
+    ["calls", "helper"],
+    ["calls", "append"]
+  ],
+  "resolved": [
+    ["scope", "calls", "init", "register"],
+    ["scope", "calls", "Run", "helper"]
+  ],
+  "unresolved_count": 1
+}

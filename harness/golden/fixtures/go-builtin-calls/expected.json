@@ -1,0 +1,23 @@
+{
+  "nodes": [
+    ["file", "pool.go", "pool.go"],
+    ["function", "New", "pool.go"],
+    ["function", "Grow", "pool.go"]
+  ],
+  "contains": [
+    ["pool.go", "New"],
+    ["pool.go", "Grow"]
+  ],
+  "references": [
+    ["calls", "make"],
+    ["calls", "append"],
+    ["calls", "len"],
+    ["calls", "new"],
+    ["calls", "cap"],
+    ["calls", "New"]
+  ],
+  "resolved": [
+    ["scope", "calls", "Grow", "New"]
+  ],
+  "unresolved_count": 7
+}

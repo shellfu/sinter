@@ -1,0 +1,22 @@
+{
+  "nodes": [
+    ["file", "main.py", "main.py"],
+    ["function", "leaf", "main.py"],
+    ["function", "outer", "main.py"],
+    ["function", "outer::inner", "main.py"]
+  ],
+  "contains": [
+    ["main.py", "leaf"],
+    ["main.py", "outer"],
+    ["outer", "outer::inner"]
+  ],
+  "references": [
+    ["calls", "leaf"],
+    ["calls", "inner"]
+  ],
+  "resolved": [
+    ["scope", "calls", "outer::inner", "leaf"],
+    ["scope", "calls", "outer", "outer::inner"]
+  ],
+  "unresolved_count": 0
+}

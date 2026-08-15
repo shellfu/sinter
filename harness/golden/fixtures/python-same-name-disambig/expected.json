@@ -1,0 +1,24 @@
+{
+  "nodes": [
+    ["file", "util_a.py", "util_a.py"],
+    ["function", "process", "util_a.py"],
+    ["file", "util_b.py", "util_b.py"],
+    ["function", "process", "util_b.py"],
+    ["file", "main.py", "main.py"],
+    ["function", "run", "main.py"]
+  ],
+  "contains": [
+    ["util_a.py", "process"],
+    ["util_b.py", "process"],
+    ["main.py", "run"]
+  ],
+  "references": [
+    ["imports", "util_a.process"],
+    ["calls", "process"]
+  ],
+  "resolved": [
+    ["import", "imports", "main.py", "process"],
+    ["import", "calls", "run", "process"]
+  ],
+  "unresolved_count": 0
+}

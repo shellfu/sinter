@@ -1,0 +1,16 @@
+{
+  "nodes": [
+    ["file", "main.ts", "main.ts"],
+    ["function", "step", "main.ts"],
+    ["function", "runAll", "main.ts"]
+  ],
+  "contains": [
+    ["main.ts", "step"],
+    ["main.ts", "runAll"]
+  ],
+  "references": [
+    ["calls", "step"]
+  ],
+  "resolved": [],
+  "unresolved_count": 1
+}

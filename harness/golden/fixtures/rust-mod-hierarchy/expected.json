@@ -1,0 +1,26 @@
+{
+  "nodes": [
+    ["file", "src/lib.rs", "src/lib.rs"],
+    ["module", "net", "src/lib.rs"],
+    ["function", "boot", "src/lib.rs"],
+    ["file", "src/net/mod.rs", "src/net/mod.rs"],
+    ["module", "tcp", "src/net/mod.rs"],
+    ["file", "src/net/tcp.rs", "src/net/tcp.rs"],
+    ["function", "connect", "src/net/tcp.rs"]
+  ],
+  "contains": [
+    ["src/lib.rs", "net"],
+    ["src/lib.rs", "boot"],
+    ["src/net/mod.rs", "tcp"],
+    ["src/net/tcp.rs", "connect"]
+  ],
+  "references": [
+    ["imports", "crate::net::tcp::connect"],
+    ["calls", "connect"]
+  ],
+  "resolved": [
+    ["import", "imports", "src/lib.rs", "connect"],
+    ["import", "calls", "boot", "connect"]
+  ],
+  "unresolved_count": 0
+}

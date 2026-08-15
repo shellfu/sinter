@@ -1,0 +1,288 @@
+//! The whole build pipeline, incremental by construction (R4): hash-diff the
+//! corpus, re-extract only changed files, re-resolve only what the change
+//! invalidates. Orchestration lives here in the binary only (R6).
+
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+use anyhow::{Context, Result, bail};
+use rayon::prelude::*;
+use sinter_core::{FileFacts, Graph, Reference};
+use sinter_extract::{Extractor, LanguageSpec, spec_for_path};
+use sinter_store::Store;
+
+pub struct BuildReport {
+    pub scanned: usize,
+    pub changed: usize,
+    pub removed: usize,
+    pub reresolved_files: usize,
+    pub syntax_error_files: usize,
+    pub failures: Vec<(String, String)>,
+    pub stats: sinter_resolve::ResolutionStats,
+    pub total_nodes: u64,
+    pub total_edges: u64,
+    pub total_unresolved: u64,
+    pub elapsed: std::time::Duration,
+}
+
+pub fn db_path(repo: &Path) -> PathBuf {
+    repo.join(".sinter").join("graph.redb")
+}
+
+/// One incremental build pass. `only` narrows the scan to an explicit
+/// changed set (watcher/hook fast path); None scans the whole corpus.
+pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
+    let started = Instant::now();
+    let repo = repo
+        .canonicalize()
+        .with_context(|| format!("repo path {}", repo.display()))?;
+    let out_dir = repo.join(".sinter");
+    std::fs::create_dir_all(&out_dir)?;
+    let store = Store::create(db_path(&repo))?;
+
+    // Current corpus: (file, hash) for every language-matched file in scope.
+    let scoped: Option<HashSet<String>> = only.map(|paths| {
+        paths
+            .iter()
+            .filter_map(|p| {
+                p.strip_prefix(&repo)
+                    .ok()
+                    .or(Some(p.as_path()))
+                    .map(|r| r.to_string_lossy().into_owned())
+            })
+            .collect()
+    });
+    let mut current: Vec<String> = Vec::new();
+    for entry in ignore::WalkBuilder::new(&repo).build() {
+        let entry = entry?;
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        let rel = entry
+            .path()
+            .strip_prefix(&repo)
+            .unwrap_or(entry.path())
+            .to_string_lossy()
+            .into_owned();
+        if rel.starts_with(".sinter/") || spec_for_path(&rel).is_none() {
+            continue;
+        }
+        current.push(rel);
+    }
+    let stored: HashMap<String, String> = store.file_hashes()?.into_iter().collect();
+    let hashes: Vec<(String, String)> = current
+        .par_iter()
+        .filter_map(|rel| match std::fs::read(repo.join(rel)) {
+            Ok(bytes) if bytes.is_empty() => None,
+            Ok(bytes) => Some((rel.clone(), blake3::hash(&bytes).to_hex().to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            // Transient read error (permissions, editor race): keep the
+            // stored state instead of tearing the file down as removed.
+            Err(_) => stored.get(rel).map(|h| (rel.clone(), h.clone())),
+        })
+        .collect();
+    let current_set: HashSet<&str> = hashes.iter().map(|(f, _)| f.as_str()).collect();
+    // Scope entries match exactly or as directory prefixes: a directory
+    // rename arrives as one event on the dir, covering its whole subtree.
+    let in_scope = |file: &str| {
+        scoped.as_ref().is_none_or(|s| {
+            s.contains(file)
+                || s.iter().any(|p| {
+                    file.strip_prefix(p.as_str())
+                        .is_some_and(|r| r.starts_with('/'))
+                })
+        })
+    };
+    let changed_files: Vec<&str> = hashes
+        .iter()
+        .filter(|(f, h)| stored.get(f) != Some(h) && in_scope(f))
+        .map(|(f, _)| f.as_str())
+        .collect();
+    let removed: Vec<String> = stored
+        .keys()
+        .filter(|f| !current_set.contains(f.as_str()) && in_scope(f))
+        .cloned()
+        .collect();
+
+    // Extract changed files in parallel, extractors pooled per language.
+    let mut by_lang: Vec<(&'static LanguageSpec, Vec<&str>)> = Vec::new();
+    for rel in &changed_files {
+        let spec = spec_for_path(rel).expect("filtered above");
+        match by_lang.iter_mut().find(|(s, _)| s.name == spec.name) {
+            Some((_, files)) => files.push(rel),
+            None => by_lang.push((spec, vec![rel])),
+        }
+    }
+    let mut changed_facts: Vec<FileFacts> = Vec::new();
+    let mut failures: Vec<(String, String)> = Vec::new();
+    let mut syntax_error_files = 0usize;
+    for (spec, files) in &by_lang {
+        let results: Vec<(String, Result<FileFacts, String>)> = files
+            .par_iter()
+            .map_init(
+                || Extractor::new(spec),
+                |extractor, rel| {
+                    let result = extractor
+                        .as_mut()
+                        .map_err(|e| e.to_string())
+                        .and_then(|ex| {
+                            let source = std::fs::read_to_string(repo.join(rel))
+                                .map_err(|e| e.to_string())?;
+                            ex.extract(rel, &source).map_err(|e| e.to_string())
+                        });
+                    (rel.to_string(), result)
+                },
+            )
+            .collect();
+        for (rel, result) in results {
+            match result {
+                Ok(facts) => {
+                    if facts.has_syntax_errors {
+                        syntax_error_files += 1;
+                    }
+                    changed_facts.push(facts);
+                }
+                Err(message) => failures.push((rel, message)),
+            }
+        }
+    }
+
+    // Validate invariants per changed file before anything persists.
+    for facts in &changed_facts {
+        let mut g = Graph::new();
+        for node in &facts.nodes {
+            g.add_node(node.clone())
+                .with_context(|| format!("invalid facts for {}", facts.file))?;
+        }
+        for edge in &facts.contains {
+            g.add_edge(edge.clone())
+                .with_context(|| format!("invalid facts for {}", facts.file))?;
+        }
+    }
+
+    // Derive: replace per-file state, then re-resolve the invalidated set.
+    let delta = store.update_files(&changed_facts, &removed)?;
+    let mut affected: BTreeSet<String> = store.ref_files(&delta.def_names)?;
+    affected.extend(delta.dependent_files.iter().cloned());
+    for facts in &changed_facts {
+        affected.insert(facts.file.clone());
+    }
+    for file in &removed {
+        affected.remove(file);
+    }
+
+    let mut stats = sinter_resolve::ResolutionStats::default();
+    if !affected.is_empty() {
+        store.remove_resolution_edges(&affected)?;
+        let nodes = store.all_nodes()?;
+        let all_imports = store.all_imports()?;
+        let mut refs: Vec<Reference> = Vec::new();
+        let mut locals: Vec<sinter_core::LocalBinding> = Vec::new();
+        let mut embeds: Vec<sinter_core::Embed> = Vec::new();
+        for file in &affected {
+            if let Some(facts) = store.facts(file)? {
+                refs.extend(facts.references);
+                locals.extend(facts.locals);
+                embeds.extend(facts.embeds);
+            }
+        }
+
+        // Internal evidence first; SCIP then binds what is left, moving
+        // each hit out of its unresolved bucket.
+        let (bindings, resolved_stats, internal_indices) =
+            sinter_resolve::resolve(&nodes, &refs, &locals, &all_imports, &embeds);
+        stats = resolved_stats;
+        let internal_set: HashSet<usize> = internal_indices.into_iter().collect();
+        let mut resolved_idx: HashSet<usize> = HashSet::new();
+        let mut edges = Vec::new();
+        for binding in bindings {
+            resolved_idx.insert(binding.reference);
+            edges.push(binding.edge);
+        }
+        let scip_path = repo.join("index.scip");
+        if scip_path.exists() {
+            let index = sinter_resolve::load_index(&scip_path)?;
+            for binding in sinter_resolve::resolve_with_index(&index, &nodes, &refs, |rel| {
+                std::fs::read_to_string(repo.join(rel)).ok()
+            }) {
+                if resolved_idx.insert(binding.reference) {
+                    stats.scip += 1;
+                    if internal_set.contains(&binding.reference) {
+                        stats.unresolved_internal -= 1;
+                    } else {
+                        stats.unresolved_external -= 1;
+                    }
+                    edges.push(binding.edge);
+                }
+            }
+        }
+        let unresolved: Vec<Reference> = refs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !resolved_idx.contains(i))
+            .map(|(_, r)| r.clone())
+            .collect();
+        store.insert_edges(&edges)?;
+        store.replace_unresolved(&affected, &unresolved)?;
+    }
+
+    if !failures.is_empty() && changed_facts.is_empty() && changed_files.len() == failures.len() {
+        bail!(
+            "every changed file failed extraction; first: {:?}",
+            failures[0]
+        );
+    }
+
+    // Hashes commit only now: every derived table is consistent, so a crash
+    // anywhere above re-runs these files as changed on the next build.
+    store.commit_hashes(&changed_facts)?;
+
+    Ok(BuildReport {
+        scanned: hashes.len(),
+        changed: changed_facts.len(),
+        removed: removed.len(),
+        reresolved_files: affected.len(),
+        syntax_error_files,
+        failures,
+        stats,
+        total_nodes: store.node_count()?,
+        total_edges: store.edge_count()?,
+        total_unresolved: store.unresolved_count()?,
+        elapsed: started.elapsed(),
+    })
+}
+
+pub fn print_report(report: &BuildReport) {
+    println!(
+        "sinter build: {} scanned, {} changed, {} removed, {} files re-resolved, {} syntax-error files, {} failed, {:.1?}",
+        report.scanned,
+        report.changed,
+        report.removed,
+        report.reresolved_files,
+        report.syntax_error_files,
+        report.failures.len(),
+        report.elapsed,
+    );
+    println!(
+        "  resolution (this pass): {} resolved (scip {}, import {}, scope {}), {} unresolved ({} internal, {} external)",
+        report.stats.resolved(),
+        report.stats.scip,
+        report.stats.import,
+        report.stats.scope,
+        report.stats.unresolved(),
+        report.stats.unresolved_internal,
+        report.stats.unresolved_external,
+    );
+    println!(
+        "  accuracy gauge: {:.1}% internal-unresolved (external refs need dependency indexes, not resolver fixes)",
+        report.stats.internal_unresolved_rate() * 100.0,
+    );
+    println!(
+        "  totals: {} nodes, {} edges, {} unresolved refs",
+        report.total_nodes, report.total_edges, report.total_unresolved,
+    );
+    for (rel, message) in &report.failures {
+        eprintln!("  FAILED {rel}: {message}");
+    }
+}

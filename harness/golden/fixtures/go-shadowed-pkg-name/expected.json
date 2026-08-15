@@ -1,0 +1,28 @@
+{
+  "nodes": [
+    ["file", "main.go", "main.go"],
+    ["struct", "Buffer", "main.go"],
+    ["method", "Buffer::Reverse", "main.go"],
+    ["function", "Lib", "main.go"],
+    ["function", "Local", "main.go"],
+    ["file", "pkg/util/util.go", "pkg/util/util.go"],
+    ["function", "Reverse", "pkg/util/util.go"]
+  ],
+  "contains": [
+    ["main.go", "Buffer"],
+    ["main.go", "Buffer::Reverse"],
+    ["main.go", "Lib"],
+    ["main.go", "Local"],
+    ["pkg/util/util.go", "Reverse"]
+  ],
+  "references": [
+    ["imports", "example.com/fx/pkg/util"],
+    ["calls", "Reverse"]
+  ],
+  "resolved": [
+    ["import", "imports", "main.go", "pkg/util/util.go"],
+    ["import", "calls", "Lib", "Reverse"],
+    ["scope", "calls", "Local", "Buffer::Reverse"]
+  ],
+  "unresolved_count": 0
+}

@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/sinter-core",
+    "crates/sinter-store",
+    "crates/sinter-extract",
+    "crates/sinter-resolve",
+    "crates/sinter-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+postcard = { version = "1", features = ["alloc"] }
+redb = "3"
+clap = { version = "4", features = ["derive"] }
+proptest = "1"
+tempfile = "3"
+sinter-core = { path = "crates/sinter-core" }
+sinter-store = { path = "crates/sinter-store" }
+sinter-extract = { path = "crates/sinter-extract" }
+sinter-resolve = { path = "crates/sinter-resolve" }

@@ -1,0 +1,37 @@
+{
+  "nodes": [
+    ["file", "main.go", "main.go"],
+    ["function", "Greet", "main.go"],
+    ["struct", "Server", "main.go"],
+    ["method", "Server::Start", "main.go"],
+    ["interface", "Handler", "main.go"],
+    ["constant", "MaxRetries", "main.go"],
+    ["variable", "debug", "main.go"],
+    ["file", "pkg/util/util.go", "pkg/util/util.go"],
+    ["function", "Reverse", "pkg/util/util.go"]
+  ],
+  "contains": [
+    ["main.go", "Greet"],
+    ["main.go", "Server"],
+    ["main.go", "Server::Start"],
+    ["main.go", "Handler"],
+    ["main.go", "MaxRetries"],
+    ["main.go", "debug"],
+    ["pkg/util/util.go", "Reverse"]
+  ],
+  "references": [
+    ["imports", "fmt"],
+    ["imports", "example.com/go-basic/pkg/util"],
+    ["calls", "Println"],
+    ["calls", "Reverse"],
+    ["calls", "Greet"],
+    ["calls", "len"],
+    ["calls", "string"]
+  ],
+  "resolved": [
+    ["scope", "calls", "Server::Start", "Greet"],
+    ["import", "calls", "Server::Start", "Reverse"],
+    ["import", "imports", "main.go", "pkg/util/util.go"]
+  ],
+  "unresolved_count": 4
+}

@@ -1,0 +1,28 @@
+{
+  "nodes": [
+    ["file", "src/lib.rs", "src/lib.rs"],
+    ["module", "app", "src/lib.rs"],
+    ["module", "internal", "src/lib.rs"],
+    ["file", "src/internal.rs", "src/internal.rs"],
+    ["function", "helper", "src/internal.rs"],
+    ["file", "src/app.rs", "src/app.rs"],
+    ["function", "go", "src/app.rs"]
+  ],
+  "contains": [
+    ["src/lib.rs", "app"],
+    ["src/lib.rs", "internal"],
+    ["src/internal.rs", "helper"],
+    ["src/app.rs", "go"]
+  ],
+  "references": [
+    ["imports", "internal::helper"],
+    ["imports", "crate::helper"],
+    ["calls", "helper"]
+  ],
+  "resolved": [
+    ["import", "imports", "src/lib.rs", "helper"],
+    ["import", "imports", "src/app.rs", "helper"],
+    ["import", "calls", "go", "helper"]
+  ],
+  "unresolved_count": 0
+}

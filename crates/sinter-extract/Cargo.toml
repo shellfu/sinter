@@ -1,0 +1,21 @@
+[package]
+name = "sinter-extract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Language-agnostic tree-sitter extraction: languages are data, the engine never forks"
+
+[dependencies]
+sinter-core.workspace = true
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-go = "0.25"
+tree-sitter-python = "0.25"
+tree-sitter-typescript = "0.23"
+streaming-iterator = "0.1"
+blake3 = "1"
+thiserror.workspace = true
+
+[dev-dependencies]
+serde = { workspace = true }
+serde_json = "1"
