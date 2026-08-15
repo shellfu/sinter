@@ -880,6 +880,7 @@ dependencies = [
  "blake3",
  "clap",
  "ignore",
+ "libc",
  "notify",
  "rayon",
  "serde",

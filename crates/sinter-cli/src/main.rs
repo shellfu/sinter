@@ -1,4 +1,5 @@
 mod affected;
+mod ask;
 mod build;
 mod hooks;
 mod impact;
@@ -6,7 +7,9 @@ mod lookup;
 mod pathcmd;
 mod pipeline;
 mod query;
+mod render;
 mod serve;
+mod show;
 mod watch;
 
 use std::path::PathBuf;
@@ -48,6 +51,22 @@ enum Command {
     Hooks {
         #[command(subcommand)]
         action: HooksAction,
+    },
+    /// Ask a vague question, get a ranked, content-bearing starting point
+    Ask {
+        question: String,
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long, default_value_t = 5)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// One-screen orientation card for a symbol or file
+    Show {
+        symbol: String,
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
     },
     /// Search symbols (exact + trigram), content-bearing results
     Query {
@@ -99,6 +118,11 @@ enum HooksAction {
 }
 
 fn main() -> ExitCode {
+    // Die quietly when the read end of a pipe closes (`sinter ask | head`).
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Build { repo } => build::run(&repo),
@@ -106,6 +130,13 @@ fn main() -> ExitCode {
         Command::Hooks {
             action: HooksAction::Install { repo },
         } => hooks::install(&repo),
+        Command::Ask {
+            question,
+            repo,
+            limit,
+            json,
+        } => ask::run(&repo, &question, limit, json),
+        Command::Show { symbol, repo } => show::run(&repo, &symbol),
         Command::Query {
             symbol,
             repo,

@@ -37,6 +37,8 @@ controller]`. Zero terms after stopwording → print usage hint, exit 1.
 ### 1b. Term → candidate matching (per term, three channels)
 
 1. **Name**: exact via `NAME_NODES`, fuzzy via `TRIGRAMS` (existing).
+   Fuzzy matches score a flat "trigram-close" — deliberately not scaled by
+   shared-gram fraction until a fixture demands it.
 2. **Path**: term appears as a segment/substring of `node.file`
    (case-insensitive). Catches `Player/Traversal/` style answers where the
    concept lives in the path, not the symbol.
@@ -57,20 +59,36 @@ Per candidate node, sum over terms:
 | signature word match | 30 |
 | path segment match | 25 |
 
-Multipliers after summing:
-- **Term coverage** (the anti-hairball rule): matched t of T distinct
-  terms → multiply by t/T. A node matching both `character` and
-  `controller` beats any single-term hit by construction. the prototype OR-ed
-  terms; this is the single biggest precision fix.
-- **Kind prior**: class/struct/interface/trait ×1.5, function/method ×1.2,
-  module/file ×1.0, variable/field/constant ×0.7. Vague "where is X"
-  questions want types, not locals.
-- **Hub bonus**: +min(in_degree, 20) from `IN_EDGES` count. The character
-  controller is depended on; a helper is not.
-- **Test penalty**: file path matches test conventions (`tests/`, `_test.`,
-  `.test.`, `test_`) → ×0.5 unless a term is `test`.
+Exact formula (integer arithmetic, one expression — two implementations
+must produce one ranking):
 
+```
+score = ⌊ (Σ signal points) × t × Kn × Pn  /  (T × Kd × Pd) ⌋  +  min(in_degree, 20)
+```
+
+where:
+- **t/T — term coverage** (the anti-hairball rule): matched t of T
+  distinct terms. A node matching both `character` and `controller` beats
+  any single-term hit by construction. the prototype OR-ed terms; this is the
+  single biggest precision fix.
+- **Kn/Kd — kind prior**: class/struct/interface/trait 3/2,
+  function/method 6/5, module/file 1/1, variable/field/constant 7/10.
+  Vague "where is X" questions want types, not locals.
+- **Pn/Pd — test penalty**: 1/2 when the file path matches test
+  conventions (`tests/`, `_test.`, `.test.`, `test_`) and no query term is
+  `test`; else 1/1.
+- **hub bonus** is added *after* the multiplied base (so a heavily-used
+  test helper stays penalized: the cap of 20 cannot outweigh a 100-point
+  base signal), from the `IN_EDGES` count per candidate.
+
+All numerators multiply before any division — no intermediate truncation.
 Ties break by (kind order, file, span.start) — output is stable run to run.
+
+**Constants are policy under golden discipline**: every point value and
+ratio above lives in one const table in the implementation, and any change
+to any of them requires a fixture that motivates it — never interactive
+tuning against a live repo until the ranking "looks right" (the
+truth-tuning trap, harness rule applies).
 
 ### 1d. Answer shape (one screen, ranked, grouped — never a node dump)
 
@@ -146,6 +164,10 @@ the honesty line the prototype never had. Ambiguous symbol name (multiple
 nodes) → disambiguation list (kind + file each), exit without guessing —
 same contract as the resolver.
 
+`show <file-path>` on a file node is defined: card shows contains
+(top-level symbols), imports (outgoing import edges), and the file's
+unresolved count.
+
 ## 3. `query` unchanged, plus shared polish
 
 `query` stays the exact/trigram tool. Shared output helpers (span→line,
@@ -157,9 +179,10 @@ query/ask/show/affected/path so all verbs render alike.
 Content matching (§1b channel 3) needs doc/signature words. Two options:
 
 - **v1 (ship this): linear scan.** `all_nodes()` decode + word match at ask
-  time. 631 nodes ≈ instant; ~40k nodes (skaffold) ≈ tens of ms. Within
-  the <50ms target at current scale. ponytail: linear scan, add TOKENS
-  table when a repo measurably exceeds ~50ms.
+  time. Fine to ~50k nodes. NOT fine at skaffold scale: that graph is
+  271k nodes (vendor included) and full-node decode measures 150–400ms on
+  reference hardware — v1 cannot meet <50ms there. ponytail: linear scan,
+  TOKENS table (v2) required for corpora past ~50k nodes.
 - **v2 (when measured slow): `TOKENS` multimap** `word → node id`, built in
   `update_files` from doc+signature (lowercased, stopworded), schema bump.
   Same shape as `TRIGRAMS`; no new machinery.
@@ -186,5 +209,8 @@ per candidate is a keyed read — no new index.
 - `ask` on every existing golden fixture repo: top hit for each fixture's
   primary symbol name is the defining node, not a reference site.
 - Determinism: two runs, byte-identical output.
-- Perf gate: `ask` p50 < 50ms on the skaffold-scale corpus.
+- Perf gate: `ask` p50 < 50ms on corpora up to ~50k nodes (v1 linear
+  scan). Skaffold-scale (271k nodes) is explicitly out of the v1 gate and
+  becomes the acceptance gate for the TOKENS v2 index.
 - Zero-hit and ambiguous-`show` paths covered by CLI tests.
+- `--json` output includes the byte span so scripts never re-derive lines.
