@@ -135,10 +135,35 @@ Shadowing is the same machinery: a bare `@local` in scope suppresses any
 outward binding, which killed the fabricated-edge family (params, let,
 loop vars, catch) in all four languages.
 
-## D16 — Known harness limitation: resolved tuples are unqualified
+## D16 — Resolved tuples support full file qualification (fixed)
 
-Golden `resolved` tuples are `[evidence, relation, src, dst]` with
-file-unqualified names, so two same-named symbols in different files are
-indistinguishable in assertions. Acceptable while fixtures are small and
-hand-built to avoid the collision; extend the tuple format with file paths
-before trusting precision numbers on larger fixtures.
+Golden `resolved` tuples originally carried file-unqualified names, making
+same-named symbols in different files indistinguishable. The runner now
+emits fully qualified `[evidence, relation, src, dst, src_file, dst_file]`
+tuples and matches expected tuples by prefix, so legacy 4-tuples keep
+working while collision-prone fixtures use the 6-form
+(`go-same-package-xfile`'s two `init` functions are the proof case). New
+fixtures must use the 6-form whenever a name repeats across files.
+
+## D17 — Unresolved splits into internal vs external
+
+`unresolved_internal` = evidence pointed into the corpus but binding failed
+(ambiguity, missing member on a known module/type) — the resolver accuracy
+gauge, reported per build. `unresolved_external` = no corpus-anchored
+evidence (external imports, builtins, value-receiver calls without type
+evidence) — dependency-index/SCIP territory, not resolver defects.
+Shadow-suppressed references count external: no edge is the correct
+outcome. Measured on skaffold: 81.3% raw unresolved decomposes into a
+12.2% internal gauge (with real scip-go index) + external mass.
+
+## D18 — Bash lands as language #5; sourcing is a glob import
+
+Bash has no module system: a file is its module, and `source`/`.` binds
+every function of the sourced file — modeled with the existing glob-import
+primitive (`@import.star` alongside `@import`). `bash_absolutize` resolves
+the `$(dirname "$0")/...` and `${BASH_SOURCE%/*}/` idioms against the
+sourcing file's directory. `source` is isolated from ordinary commands via
+tree-sitter's built-in `#any-of?` text predicate, which the Rust binding
+evaluates natively — no engine change. Fixture correction recorded per the
+harness rule: `$(dirname "$0")` is a real invocation of `dirname`
+(command substitution executes), so it appears as a call reference.

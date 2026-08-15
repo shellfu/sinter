@@ -327,7 +327,8 @@ impl Extractor {
             }
             if let Some(path_node) = import_path {
                 // Whole-path import (`use a::b`, `import "pkg"`), possibly
-                // with an alias or Go's dot form.
+                // with an alias, Go's dot form, or glob semantics
+                // (`@import.star` alongside: bash `source` binds every name).
                 out.refs.push(RawRef {
                     start: path_node.start_byte(),
                     end: path_node.end_byte(),
@@ -335,7 +336,7 @@ impl Extractor {
                         .trim_matches(['"', '\'', '`'])
                         .to_string(),
                     path: None,
-                    alias,
+                    alias: alias.or_else(|| import_star.then(|| "*".to_string())),
                     relation: Relation::Imports,
                 });
             } else if let (Some(module), Some(item)) = (import_module, import_name) {

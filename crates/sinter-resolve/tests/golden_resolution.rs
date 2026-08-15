@@ -85,6 +85,11 @@ fn check_inner(fixture: &str) {
         .collect();
     let (bindings, stats, _) = resolve(&nodes, &references, &locals, &all_imports, &embeds);
 
+    // Found tuples are fully qualified: [evidence, relation, src, dst,
+    // src_file, dst_file]. Expected tuples may be the 4-element legacy form
+    // (prefix match) or the full 6-element form — same-named symbols in
+    // different files need the latter to be distinguishable (D16).
+    let file_of = |id: &str| id.split_once('#').map_or(id, |(f, _)| f).to_string();
     let found: BTreeSet<Tuple> = bindings
         .iter()
         .map(|b| {
@@ -93,21 +98,31 @@ fn check_inner(fixture: &str) {
                 b.edge.relation.as_str().to_string(),
                 qualified_of(b.edge.src.as_str()).to_string(),
                 qualified_of(b.edge.dst.as_str()).to_string(),
+                file_of(b.edge.src.as_str()),
+                file_of(b.edge.dst.as_str()),
             ]
         })
         .collect();
     let expected_set: BTreeSet<Tuple> = expected.resolved.into_iter().collect();
+    let matches = |e: &Tuple, f: &Tuple| f.len() >= e.len() && f[..e.len()] == e[..];
 
-    let hit = found.intersection(&expected_set).count() as f64;
+    let missing: Vec<&Tuple> = expected_set
+        .iter()
+        .filter(|e| !found.iter().any(|f| matches(e, f)))
+        .collect();
+    let extra: Vec<&Tuple> = found
+        .iter()
+        .filter(|f| !expected_set.iter().any(|e| matches(e, f)))
+        .collect();
     let p = if found.is_empty() {
         1.0
     } else {
-        hit / found.len() as f64
+        (found.len() - extra.len()) as f64 / found.len() as f64
     };
     let r = if expected_set.is_empty() {
         1.0
     } else {
-        hit / expected_set.len() as f64
+        (expected_set.len() - missing.len()) as f64 / expected_set.len() as f64
     };
     println!(
         "{fixture}/resolved: precision {p:.3} recall {r:.3}, unresolved {} (expected {}), rate {:.1}%",
@@ -116,12 +131,12 @@ fn check_inner(fixture: &str) {
         stats.unresolved_rate() * 100.0
     );
     let mut ok = true;
-    for missing in expected_set.difference(&found) {
-        println!("  MISSING  {missing:?}");
+    for m in &missing {
+        println!("  MISSING  {m:?}");
         ok = false;
     }
-    for extra in found.difference(&expected_set) {
-        println!("  EXTRA    {extra:?}");
+    for e in &extra {
+        println!("  EXTRA    {e:?}");
         ok = false;
     }
     assert!(ok, "{fixture}: resolution metric moved — deltas above");
@@ -346,4 +361,14 @@ fn resolution_rust_macro_generated() {
 #[test]
 fn resolution_rust_same_name_modules() {
     check("rust-same-name-modules");
+}
+
+#[test]
+fn resolution_bash_basic() {
+    check("bash-basic");
+}
+
+#[test]
+fn resolution_bash_dirname_source() {
+    check("bash-dirname-source");
 }

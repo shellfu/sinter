@@ -357,3 +357,13 @@ fn golden_rust_macro_generated() {
 fn golden_rust_same_name_modules() {
     check("rust-same-name-modules");
 }
+
+#[test]
+fn golden_bash_basic() {
+    check("bash-basic");
+}
+
+#[test]
+fn golden_bash_dirname_source() {
+    check("bash-dirname-source");
+}

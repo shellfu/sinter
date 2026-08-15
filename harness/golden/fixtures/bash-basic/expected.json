@@ -1,0 +1,22 @@
+{
+  "nodes": [
+    ["file", "main.sh", "main.sh"],
+    ["function", "greet", "main.sh"],
+    ["function", "run", "main.sh"]
+  ],
+  "contains": [
+    ["main.sh", "greet"],
+    ["main.sh", "run"]
+  ],
+  "references": [
+    ["calls", "echo"],
+    ["calls", "greet"],
+    ["calls", "grep"],
+    ["calls", "run"]
+  ],
+  "resolved": [
+    ["scope", "calls", "run", "greet", "main.sh", "main.sh"],
+    ["scope", "calls", "main.sh", "run", "main.sh", "main.sh"]
+  ],
+  "unresolved_count": 2
+}

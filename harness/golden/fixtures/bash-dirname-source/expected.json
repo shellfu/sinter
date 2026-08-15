@@ -1,0 +1,83 @@
+{
+  "nodes": [
+    [
+      "file",
+      "main.sh",
+      "main.sh"
+    ],
+    [
+      "function",
+      "main",
+      "main.sh"
+    ],
+    [
+      "file",
+      "lib/util.sh",
+      "lib/util.sh"
+    ],
+    [
+      "function",
+      "reverse_words",
+      "lib/util.sh"
+    ]
+  ],
+  "contains": [
+    [
+      "main.sh",
+      "main"
+    ],
+    [
+      "lib/util.sh",
+      "reverse_words"
+    ]
+  ],
+  "references": [
+    [
+      "imports",
+      "$(dirname \"$0\")/lib/util.sh"
+    ],
+    [
+      "calls",
+      "main"
+    ],
+    [
+      "calls",
+      "reverse_words"
+    ],
+    [
+      "calls",
+      "echo"
+    ],
+    [
+      "calls",
+      "dirname"
+    ]
+  ],
+  "resolved": [
+    [
+      "import",
+      "imports",
+      "main.sh",
+      "lib/util.sh",
+      "main.sh",
+      "lib/util.sh"
+    ],
+    [
+      "import",
+      "calls",
+      "main",
+      "reverse_words",
+      "main.sh",
+      "lib/util.sh"
+    ],
+    [
+      "scope",
+      "calls",
+      "main.sh",
+      "main",
+      "main.sh",
+      "main.sh"
+    ]
+  ],
+  "unresolved_count": 2
+}

@@ -18,8 +18,15 @@ harness/golden/
 Runners:
 - extraction: `cargo test -p sinter-extract --test golden -- --nocapture`
 - resolution: `cargo test -p sinter-resolve --test golden_resolution -- --nocapture`
-  (checks `resolved` tuples `[evidence, relation, src, dst]` and
-  `unresolved_count`)
+  (checks `resolved` tuples and `unresolved_count`; tuples are
+  `[evidence, relation, src, dst]` or the fully qualified
+  `[evidence, relation, src, dst, src_file, dst_file]` — use the long form
+  whenever same-named symbols exist in different files)
+
+Rule: `expected.json` is derived from language semantics, never from engine
+output. Correcting an expectation requires a written semantics argument
+recorded in `DECISIONS.md` (see D14) — a failing test is never by itself a
+reason to edit a fixture.
 
 Current corpus: 43 fixtures (4 basics + 39 idiom fixtures mined from the
 the prototype prototype's changelog: shadowing families, alias/star/dot/relative

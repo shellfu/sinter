@@ -19,6 +19,16 @@ use tree_sitter::Language;
 ///   (`from util import helper`, `import { helper } from "./util"`): the
 ///   engine joins them with the language's first path separator so the
 ///   import binds the item, not just the module.
+/// - `@import.alias`   local rebinding (`as` clauses, Go dot imports).
+/// - `@import.star`    glob semantics: with `@import.module` (Python `*`)
+///   or alongside a plain `@import` (bash `source`), every top-level name
+///   of the module binds.
+/// - `@local` (+ `@local.type`) — shadowing bindings, optionally typed.
+/// - `@embed`          embedded/promoted type members (Go).
+///
+/// Standard tree-sitter text predicates (`#eq?`, `#any-of?`, ...) are
+/// evaluated by the tree-sitter crate itself and may be used freely
+/// (bash isolates `source` from ordinary commands this way).
 pub struct LanguageSpec {
     pub name: &'static str,
     pub extensions: &'static [&'static str],
@@ -157,6 +167,56 @@ fn python_grammar() -> Language {
     tree_sitter_python::LANGUAGE.into()
 }
 
+fn bash_grammar() -> Language {
+    tree_sitter_bash::LANGUAGE.into()
+}
+
+/// Bash has no module system: a file is its path. `lib/util.sh` ->
+/// ["lib", "util"].
+fn bash_module_path(file: &str) -> Vec<String> {
+    let trimmed = file
+        .strip_suffix(".sh")
+        .or_else(|| file.strip_suffix(".bash"))
+        .unwrap_or(file);
+    trimmed
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// `source` paths: strip `$(dirname "$0")/` and `./` style prefixes and
+/// resolve against the sourcing file's directory; bare paths pass through.
+fn bash_absolutize(path: &str, file: &str) -> Vec<String> {
+    let trimmed = path.trim();
+    let dir_relative = [
+        "$(dirname \"$0\")/",
+        "$(dirname $0)/",
+        "${BASH_SOURCE%/*}/",
+        "./",
+    ]
+    .iter()
+    .find_map(|p| trimmed.strip_prefix(p));
+    let stripped = |s: &str| {
+        s.strip_suffix(".sh")
+            .or_else(|| s.strip_suffix(".bash"))
+            .unwrap_or(s)
+            .to_string()
+    };
+    match dir_relative {
+        Some(rest) => {
+            let mut base = dirname_segments(file);
+            base.extend(rest.split('/').filter(|s| !s.is_empty()).map(stripped));
+            base
+        }
+        None => trimmed
+            .split('/')
+            .filter(|s| !s.is_empty() && *s != ".")
+            .map(stripped)
+            .collect(),
+    }
+}
+
 fn typescript_grammar() -> Language {
     tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
 }
@@ -228,6 +288,17 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         path_separators: &["/", "."],
         absolutize: typescript_absolutize,
         receivers: &["this"],
+    },
+    LanguageSpec {
+        name: "bash",
+        extensions: &["sh", "bash"],
+        grammar: bash_grammar,
+        query_source: include_str!("../queries/bash.scm"),
+        comment_kinds: &["comment"],
+        module_path: bash_module_path,
+        path_separators: &["/"],
+        absolutize: bash_absolutize,
+        receivers: &[],
     },
 ];
 
