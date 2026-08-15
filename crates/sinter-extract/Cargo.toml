@@ -13,6 +13,7 @@ tree-sitter-go = "0.25"
 tree-sitter-python = "0.25"
 tree-sitter-typescript = "0.23"
 tree-sitter-bash = "0.25"
+tree-sitter-cpp = "0.23"
 streaming-iterator = "0.1"
 blake3 = "1"
 thiserror.workspace = true

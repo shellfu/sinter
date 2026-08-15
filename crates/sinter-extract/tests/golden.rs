@@ -367,3 +367,13 @@ fn golden_bash_basic() {
 fn golden_bash_dirname_source() {
     check("bash-dirname-source");
 }
+
+#[test]
+fn golden_cpp_basic() {
+    check("cpp-basic");
+}
+
+#[test]
+fn golden_cpp_header_impl() {
+    check("cpp-header-impl");
+}

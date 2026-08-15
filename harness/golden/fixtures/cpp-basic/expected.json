@@ -1,0 +1,33 @@
+{
+  "nodes": [
+    ["file", "main.cpp", "main.cpp"],
+    ["function", "greet", "main.cpp"],
+    ["module", "math", "main.cpp"],
+    ["function", "math::square", "main.cpp"],
+    ["class", "Counter", "main.cpp"],
+    ["method", "Counter::bump", "main.cpp"],
+    ["file", "util.h", "util.h"],
+    ["function", "clamp", "util.h"]
+  ],
+  "contains": [
+    ["main.cpp", "greet"],
+    ["main.cpp", "math"],
+    ["math", "math::square"],
+    ["main.cpp", "Counter"],
+    ["Counter", "Counter::bump"],
+    ["util.h", "clamp"]
+  ],
+  "references": [
+    ["imports", "util.h"],
+    ["imports", "<cstdio>"],
+    ["calls", "printf"],
+    ["calls", "greet"],
+    ["calls", "clamp"]
+  ],
+  "resolved": [
+    ["import", "imports", "main.cpp", "util.h", "main.cpp", "util.h"],
+    ["scope", "calls", "Counter::bump", "greet", "main.cpp", "main.cpp"],
+    ["import", "calls", "Counter::bump", "clamp", "main.cpp", "util.h"]
+  ],
+  "unresolved_count": 2
+}

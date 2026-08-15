@@ -1,0 +1,25 @@
+{
+  "nodes": [
+    ["file", "player/character.h", "player/character.h"],
+    ["class", "PlayerCharacter", "player/character.h"],
+    ["method", "PlayerCharacter::jump", "player/character.h"],
+    ["file", "player/character.cpp", "player/character.cpp"],
+    ["method", "PlayerCharacter::jump", "player/character.cpp"],
+    ["function", "spawn_and_jump", "player/character.cpp"]
+  ],
+  "contains": [
+    ["player/character.h", "PlayerCharacter"],
+    ["PlayerCharacter", "PlayerCharacter::jump"],
+    ["player/character.cpp", "PlayerCharacter::jump"],
+    ["player/character.cpp", "spawn_and_jump"]
+  ],
+  "references": [
+    ["imports", "player/character.h"],
+    ["calls", "jump"]
+  ],
+  "resolved": [
+    ["import", "imports", "player/character.cpp", "player/character.h", "player/character.cpp", "player/character.h"],
+    ["scope", "calls", "spawn_and_jump", "PlayerCharacter::jump", "player/character.cpp", "player/character.h"]
+  ],
+  "unresolved_count": 0
+}

@@ -1,5 +1,5 @@
 //! Incremental derivation: apply changed/removed file facts and keep every
-//! derived table (nodes, edges, name/trigram indexes, unresolved refs)
+//! derived table (nodes, edges, name/trigram/token indexes, unresolved refs)
 //! consistent for exactly the touched files. Nothing here scans the corpus.
 
 use std::collections::BTreeSet;
@@ -8,10 +8,10 @@ use redb::{ReadableDatabase, ReadableMultimapTable, ReadableTable};
 use sinter_core::{Edge, Evidence, FileFacts, Reference};
 
 use crate::error::StoreError;
-use crate::search::trigrams;
+use crate::search::{node_tokens, trigrams};
 use crate::store::{
     FILE_FACTS, FILE_HASH, IMPORTS, IN_EDGES, NAME_NODES, NAME_REFS, NODES, OUT_EDGES, Store,
-    TRIGRAMS, UNRESOLVED,
+    TOKENS_WORDS, TRIGRAMS, UNRESOLVED,
 };
 
 /// What an update invalidated: definition names whose binding targets may
@@ -50,6 +50,7 @@ impl Store {
             let mut name_refs = txn.open_multimap_table(NAME_REFS)?;
             let mut name_nodes = txn.open_multimap_table(NAME_NODES)?;
             let mut grams = txn.open_multimap_table(TRIGRAMS)?;
+            let mut tokens = txn.open_multimap_table(TOKENS_WORDS)?;
             let mut imports = txn.open_multimap_table(IMPORTS)?;
 
             let touched: Vec<&str> = changed
@@ -95,6 +96,9 @@ impl Store {
                     for gram in trigrams(&node.name) {
                         grams.remove(gram.as_str(), id)?;
                     }
+                    for word in node_tokens(node) {
+                        tokens.remove(word.as_str(), id)?;
+                    }
                     delta.def_names.insert(node.name.clone());
                 }
                 for r in &old.references {
@@ -119,6 +123,9 @@ impl Store {
                     name_nodes.insert(node.name.as_str(), id)?;
                     for gram in trigrams(&node.name) {
                         grams.insert(gram.as_str(), id)?;
+                    }
+                    for word in node_tokens(node) {
+                        tokens.insert(word.as_str(), id)?;
                     }
                     delta.def_names.insert(node.name.clone());
                 }

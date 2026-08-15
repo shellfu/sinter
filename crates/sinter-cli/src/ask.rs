@@ -37,6 +37,9 @@ fn kind_prior(kind: SymbolKind) -> (i64, i64) {
     }
 }
 const TEST_PENALTY: (i64, i64) = (1, 2);
+/// Vendored/generated third-party source: indexed for blast radius, but a
+/// vague question wants project code (fixture: ask_dampens_vendored_paths).
+const VENDOR_PENALTY: (i64, i64) = (1, 2);
 
 const STOPWORDS: &[&str] = &[
     "a", "an", "and", "are", "at", "be", "been", "by", "can", "could", "do", "does", "find", "for",
@@ -45,16 +48,31 @@ const STOPWORDS: &[&str] = &[
     "we", "were", "what", "where", "which", "who", "whom", "will", "with", "would", "you", "your",
 ];
 
+/// Weak verbs that inflate term coverage on unrelated symbols ("work"
+/// matching Workspace). Soft: dropped only when a real term remains, so
+/// asking for a symbol literally named `work` still works.
+/// (fixture: ask_drops_weak_verbs_when_real_terms_remain)
+const SOFT_STOPWORDS: &[&str] = &[
+    "code", "going", "happen", "happens", "stuff", "thing", "things", "use", "used", "uses",
+    "using", "work", "working", "works",
+];
+
 /// Question -> distinct lowercase terms, stopworded (design §1a).
 fn terms_of(question: &str) -> Vec<String> {
     let mut seen = HashSet::new();
-    question
+    let terms: Vec<String> = question
         .to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty() && !STOPWORDS.contains(t))
         .filter(|t| seen.insert(t.to_string()))
         .map(str::to_string)
-        .collect()
+        .collect();
+    let hard: Vec<String> = terms
+        .iter()
+        .filter(|t| !SOFT_STOPWORDS.contains(&t.as_str()))
+        .cloned()
+        .collect();
+    if hard.is_empty() { terms } else { hard }
 }
 
 /// Term matches with a trailing-`s` second chance (variant, not replacement).
@@ -73,6 +91,13 @@ fn is_test_path(file: &str) -> bool {
         || file.contains("test_")
 }
 
+fn is_vendor_path(file: &str) -> bool {
+    let lower = file.to_lowercase();
+    lower.split('/').any(|seg| {
+        matches!(seg, "vendor" | "third_party" | "node_modules") || seg.contains("generated")
+    })
+}
+
 struct Hit {
     node: Node,
     score: i64,
@@ -82,14 +107,20 @@ struct Hit {
 }
 
 fn score_candidates(store: &Store, terms: &[String]) -> Result<Vec<Hit>> {
-    let nodes = store.all_nodes()?;
-    // Fuzzy-name extras per term: ids close by trigram but not substring.
+    // Candidate recall via the TOKENS index (design §4 v2): keyed reads,
+    // never a corpus scan. Trigram extras add fuzzy-name candidates.
+    let mut nodes = store.candidates_for_terms(terms)?;
+    let mut seen: HashSet<String> = nodes.iter().map(|n| n.id.as_str().to_string()).collect();
     let mut close_ids: HashSet<String> = HashSet::new();
     for term in terms {
         for node in store.search(term, 25)? {
             close_ids.insert(node.id.as_str().to_string());
+            if seen.insert(node.id.as_str().to_string()) {
+                nodes.push(node);
+            }
         }
     }
+    nodes.sort_by(|a, b| a.id.cmp(&b.id));
 
     let mut hits = Vec::new();
     for node in nodes {
@@ -138,11 +169,15 @@ fn score_candidates(store: &Store, terms: &[String]) -> Result<Vec<Hit>> {
         }
         // score = ⌊ base × t × Kn × Pn / (T × Kd × Pd) ⌋ + min(in_degree, cap)
         let (kn, kd) = kind_prior(node.kind);
-        let (pn, pd) = if is_test_path(&node.file) && !terms.iter().any(|t| t == "test") {
+        let (mut pn, mut pd) = if is_test_path(&node.file) && !terms.iter().any(|t| t == "test") {
             TEST_PENALTY
         } else {
             (1, 1)
         };
+        if is_vendor_path(&node.file) {
+            pn *= VENDOR_PENALTY.0;
+            pd *= VENDOR_PENALTY.1;
+        }
         let t = matched.len() as i64;
         let total = terms.len() as i64;
         let mut score = base * t * kn * pn / (total * kd * pd);

@@ -167,3 +167,20 @@ tree-sitter's built-in `#any-of?` text predicate, which the Rust binding
 evaluates natively — no engine change. Fixture correction recorded per the
 harness rule: `$(dirname "$0")` is a real invocation of `dirname`
 (command substitution executes), so it appears as a call reference.
+
+## D19 — C++ lands as language #6; header/impl semantics forced 3 engine rules
+
+The cpp-header-impl fixture was authored red (C++ semantics first) and
+drove three generic fixes: (1) an import naming a literal repo file binds
+that file exactly — `#include "player/character.h"` stays unambiguous even
+though header and impl share module [player, character]; (2) `Class` joins
+the member-scope kinds for typed-local/receiver lookup while staying
+exempt from the call→uses relabel (instantiation is a call, D14);
+(3) when a member has both an in-type declaration and an out-of-type
+definition in one module, the declaration inside the type's own file is
+the entity. `#include` itself is a glob import (the bash `source`
+precedent — textual splice makes every top-level name visible), and
+member access (`.`/`->`) splits in `cpp_absolutize` so receiver/typed-
+local tiers see a prefix. TOKENS v2 (schema v3) and the ask
+vendor/soft-stopword penalties landed in the same change set, each behind
+its own fixture.

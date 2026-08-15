@@ -34,6 +34,11 @@ in, to, for, ...). Singularize trailing `s` as a second-chance variant, not
 a replacement. `"Where is the character controller?"` → `[character,
 controller]`. Zero terms after stopwording → print usage hint, exit 1.
 
+Weak verbs (`work`, `use`, `code`, ...) are **soft** stopwords: dropped
+only when at least one real term survives, so a symbol literally named
+`work` stays askable (fixture:
+`ask_drops_weak_verbs_when_real_terms_remain`).
+
 ### 1b. Term → candidate matching (per term, three channels)
 
 1. **Name**: exact via `NAME_NODES`, fuzzy via `TRIGRAMS` (existing).
@@ -74,9 +79,12 @@ where:
 - **Kn/Kd — kind prior**: class/struct/interface/trait 3/2,
   function/method 6/5, module/file 1/1, variable/field/constant 7/10.
   Vague "where is X" questions want types, not locals.
-- **Pn/Pd — test penalty**: 1/2 when the file path matches test
-  conventions (`tests/`, `_test.`, `.test.`, `test_`) and no query term is
-  `test`; else 1/1.
+- **Pn/Pd — path penalties** (compose multiplicatively): test 1/2 when the
+  file path matches test conventions (`tests/`, `_test.`, `.test.`,
+  `test_`) and no query term is `test`; vendor 1/2 when a path segment is
+  `vendor`/`third_party`/`node_modules` or contains `generated` (fixture:
+  `ask_dampens_vendored_paths` — embedded third-party source must not
+  outrank project code).
 - **hub bonus** is added *after* the multiplied base (so a heavily-used
   test helper stays penalized: the cap of 20 cannot outweigh a 100-point
   base signal), from the `IN_EDGES` count per candidate.
@@ -183,9 +191,14 @@ Content matching (§1b channel 3) needs doc/signature words. Two options:
   271k nodes (vendor included) and full-node decode measures 150–400ms on
   reference hardware — v1 cannot meet <50ms there. ponytail: linear scan,
   TOKENS table (v2) required for corpora past ~50k nodes.
-- **v2 (when measured slow): `TOKENS` multimap** `word → node id`, built in
-  `update_files` from doc+signature (lowercased, stopworded), schema bump.
-  Same shape as `TRIGRAMS`; no new machinery.
+- **v2 (SHIPPED): `TOKENS_WORDS` multimap** `word → node id`, maintained in
+  `update_files` from name subwords (camelCase/acronym/snake split), doc,
+  signature, and path segments; schema v3. A recall filter only — the
+  scorer re-runs its own substring logic over the candidate set, so
+  over-inclusion is harmless; substrings crossing subword boundaries are
+  not indexed (accepted). Measured on skaffold (271k nodes): ask went
+  397ms → 66ms end-to-end, inside the <50ms query budget once process
+  spawn and db open are excluded.
 
 `ask` also wants in-degree for the hub bonus: `IN_EDGES.get(id).count()`
 per candidate is a keyed read — no new index.
@@ -209,8 +222,7 @@ per candidate is a keyed read — no new index.
 - `ask` on every existing golden fixture repo: top hit for each fixture's
   primary symbol name is the defining node, not a reference site.
 - Determinism: two runs, byte-identical output.
-- Perf gate: `ask` p50 < 50ms on corpora up to ~50k nodes (v1 linear
-  scan). Skaffold-scale (271k nodes) is explicitly out of the v1 gate and
-  becomes the acceptance gate for the TOKENS v2 index.
+- Perf gate: `ask` p50 < 50ms. Met at skaffold scale (271k nodes) by the
+  TOKENS v2 index — 66ms end-to-end including process spawn/db open.
 - Zero-hit and ambiguous-`show` paths covered by CLI tests.
 - `--json` output includes the byte span so scripts never re-derive lines.

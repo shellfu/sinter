@@ -217,6 +217,55 @@ fn bash_absolutize(path: &str, file: &str) -> Vec<String> {
     }
 }
 
+fn cpp_grammar() -> Language {
+    tree_sitter_cpp::LANGUAGE.into()
+}
+
+/// `player/character.h` and `player/character.cpp` share the module
+/// ["player", "character"] — header/impl pairs resolve into one another.
+fn cpp_module_path(file: &str) -> Vec<String> {
+    let trimmed = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+    trimmed
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Quoted include paths, extension-stripped, `./` resolved against the
+/// including file's directory; `<system>` includes pass through (and stay
+/// external unless a matching module exists in the corpus).
+fn cpp_absolutize(path: &str, file: &str) -> Vec<String> {
+    let trimmed = path.trim().trim_matches(['<', '>']);
+    let no_ext = trimmed.rsplit_once('.').map_or(trimmed, |(stem, ext)| {
+        if matches!(
+            ext,
+            "h" | "hh" | "hpp" | "hxx" | "cpp" | "cc" | "cxx" | "inl"
+        ) {
+            stem
+        } else {
+            trimmed
+        }
+    });
+    if let Some(rest) = no_ext.strip_prefix("./") {
+        let mut base = dirname_segments(file);
+        base.extend(
+            rest.split('/')
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+        );
+        return base;
+    }
+    // Member access (`c.jump`, `this->jump`) must split so the resolver's
+    // receiver/typed-local tiers see a prefix (fixture: cpp-header-impl).
+    no_ext
+        .replace("->", ".")
+        .split(['/', ':', '.'])
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 fn typescript_grammar() -> Language {
     tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
 }
@@ -299,6 +348,17 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         path_separators: &["/"],
         absolutize: bash_absolutize,
         receivers: &[],
+    },
+    LanguageSpec {
+        name: "cpp",
+        extensions: &["cpp", "cc", "cxx", "hpp", "hh", "hxx", "h"],
+        grammar: cpp_grammar,
+        query_source: include_str!("../queries/cpp.scm"),
+        comment_kinds: &["comment"],
+        module_path: cpp_module_path,
+        path_separators: &["/", "::"],
+        absolutize: cpp_absolutize,
+        receivers: &["this"],
     },
 ];
 

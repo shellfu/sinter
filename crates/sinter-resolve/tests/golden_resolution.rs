@@ -372,3 +372,13 @@ fn resolution_bash_basic() {
 fn resolution_bash_dirname_source() {
     check("bash-dirname-source");
 }
+
+#[test]
+fn resolution_cpp_basic() {
+    check("cpp-basic");
+}
+
+#[test]
+fn resolution_cpp_header_impl() {
+    check("cpp-header-impl");
+}

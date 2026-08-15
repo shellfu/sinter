@@ -160,6 +160,78 @@ fn ask_json_carries_span_and_score() {
     assert!(first["matched"].as_array().unwrap().len() == 2);
 }
 
+/// Skaffold-trial finding #2: embedded third-party source must not outrank
+/// project code. A vendored class matching every term still loses to the
+/// project's own documented symbol.
+#[test]
+fn ask_dampens_vendored_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    controller_fixture(repo);
+    std::fs::create_dir_all(repo.join("vendor/thirdlib")).unwrap();
+    std::fs::write(
+        repo.join("vendor/thirdlib/character.ts"),
+        r#"// Vendored character controller helper for character controller demos.
+export class CharacterControllerShim {
+  control(): void {}
+}
+"#,
+    )
+    .unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+    let (ok, out) = sinter(repo, &["ask", "where is the character controller?"]);
+    assert!(ok, "{out}");
+    let first = out.lines().find(|l| l.starts_with("1. ")).unwrap();
+    assert!(
+        first.contains("PlayerCharacterV2"),
+        "vendored shim outranked project code:\n{out}"
+    );
+}
+
+/// Skaffold-trial finding #3: weak verbs ("work") are soft stopwords —
+/// dropped when real terms remain, so they cannot inflate term coverage on
+/// unrelated symbols.
+#[test]
+fn ask_drops_weak_verbs_when_real_terms_remain() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(
+        repo.join("src/cache.ts"),
+        r#"// Incremental cache invalidation for derived state.
+export class CacheInvalidator {
+  invalidate(): void {}
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("src/workspace.ts"),
+        r#"// Workspace working-set utilities for workers at work.
+export class WorkspaceWorker {
+  work(): void {}
+}
+"#,
+    )
+    .unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+    let (ok, out) = sinter(repo, &["ask", "how does the cache invalidation work?"]);
+    assert!(ok, "{out}");
+    // "work" must be dropped: terms are cache + invalidation only.
+    assert!(out.contains("2 terms"), "{out}");
+    let first = out.lines().find(|l| l.starts_with("1. ")).unwrap();
+    assert!(first.contains("CacheInvalidator"), "{out}");
+    // A question that is ONLY weak verbs keeps them (soft, not hard).
+    let (ok, out) = sinter(repo, &["ask", "work"]);
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("WorkspaceWorker") || out.contains("work"),
+        "{out}"
+    );
+}
+
 /// Design §6: on every basic golden fixture, asking for the fixture's
 /// primary symbol must rank its defining node first.
 #[test]

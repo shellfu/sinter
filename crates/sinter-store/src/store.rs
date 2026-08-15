@@ -36,6 +36,11 @@ pub(crate) const NAME_NODES: MultimapTableDefinition<&str, &str> =
 /// lowercased trigram -> node ids, fuzzy query index.
 pub(crate) const TRIGRAMS: MultimapTableDefinition<&str, &str> =
     MultimapTableDefinition::new("trigrams");
+/// lowercased word -> node ids: recall index over name subwords, doc,
+/// signature, and path segments (see `search::node_tokens`). Lets `ask`
+/// gather candidates by keyed reads instead of decoding the node table.
+pub(crate) const TOKENS_WORDS: MultimapTableDefinition<&str, &str> =
+    MultimapTableDefinition::new("tokens_words");
 /// file -> import references only (compact). Re-export chain walking needs
 /// every file's imports without decoding full facts corpus-wide.
 pub(crate) const IMPORTS: MultimapTableDefinition<&str, &[u8]> =
@@ -43,7 +48,7 @@ pub(crate) const IMPORTS: MultimapTableDefinition<&str, &[u8]> =
 /// Single-row schema stamp; a mismatch on open wipes the database (facts
 /// are derivable, a stale-format db is not worth migrating).
 const META: TableDefinition<&str, u32> = TableDefinition::new("meta");
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 
 /// Persistent graph store. Point queries never load the whole graph.
 pub struct Store {
@@ -87,6 +92,7 @@ impl Store {
             txn.open_multimap_table(NAME_REFS)?;
             txn.open_multimap_table(NAME_NODES)?;
             txn.open_multimap_table(TRIGRAMS)?;
+            txn.open_multimap_table(TOKENS_WORDS)?;
             txn.open_multimap_table(IMPORTS)?;
         }
         txn.commit()?;

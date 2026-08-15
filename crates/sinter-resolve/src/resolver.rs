@@ -76,6 +76,9 @@ pub fn qualified_of(id: &str) -> &str {
     }
 }
 
+/// Kinds a "call" landing on means conversion/use, and namespace_pick
+/// prefers for Uses. Class is deliberately absent: instantiation really is
+/// a call (D14).
 fn is_type_kind(kind: SymbolKind) -> bool {
     matches!(
         kind,
@@ -85,6 +88,13 @@ fn is_type_kind(kind: SymbolKind) -> bool {
             | SymbolKind::Trait
             | SymbolKind::TypeAlias
     )
+}
+
+/// Kinds that can own members for typed-local/receiver lookup — Class
+/// included here (a C++ local typed as a class binds its methods;
+/// fixture: cpp-header-impl).
+fn is_member_scope(kind: SymbolKind) -> bool {
+    is_type_kind(kind) || kind == SymbolKind::Class
 }
 
 fn is_callable(kind: SymbolKind) -> bool {
@@ -127,6 +137,8 @@ struct Index<'a> {
     by_file_name: HashMap<(&'a str, &'a str), Vec<FileDef<'a>>>,
     /// (file, qualified) -> def, receiver/type lookups.
     by_file_qualified: HashMap<(&'a str, &'a str), &'a Node>,
+    /// exact file path -> file node (includes naming a literal repo file).
+    file_nodes: HashMap<&'a str, &'a Node>,
     /// name -> (absolute module segments, def).
     by_name: HashMap<&'a str, Vec<(Vec<String>, &'a Node)>>,
     /// last module segment -> (module segments, file node).
@@ -164,6 +176,7 @@ fn build_index<'a>(
     let mut index = Index {
         by_file_name: HashMap::new(),
         by_file_qualified: HashMap::new(),
+        file_nodes: HashMap::new(),
         by_name: HashMap::new(),
         by_module_tail: HashMap::new(),
         files_of_module: HashMap::new(),
@@ -186,6 +199,7 @@ fn build_index<'a>(
         };
         let file_module = (spec.module_path)(&node.file);
         if node.kind == SymbolKind::File {
+            index.file_nodes.insert(node.file.as_str(), node);
             if let Some(tail) = file_module.last() {
                 index
                     .by_module_tail
@@ -322,7 +336,7 @@ impl<'a> Index<'a> {
             .get(&(file, name))
             .into_iter()
             .flatten()
-            .filter(|d| is_type_kind(d.node.kind))
+            .filter(|d| is_member_scope(d.node.kind))
             .map(|d| d.node)
             .collect();
         if let [node] = same_file.as_slice() {
@@ -334,7 +348,7 @@ impl<'a> Index<'a> {
             .and_then(|m| m.get(name))
             .into_iter()
             .flatten()
-            .filter(|n| is_type_kind(n.kind))
+            .filter(|n| is_member_scope(n.kind))
             .copied()
             .collect();
         match in_module.as_slice() {
@@ -364,6 +378,17 @@ impl<'a> Index<'a> {
             .map(|(_, n)| *n)
             .collect();
         if let [node] = direct.as_slice() {
+            return Some(node);
+        }
+        // Header/impl pairs declare and define the same member in one
+        // module: the declaration inside the type's own file IS the
+        // entity (fixture: cpp-header-impl).
+        let in_type_file: Vec<&Node> = direct
+            .iter()
+            .filter(|n| n.file == ty.file)
+            .copied()
+            .collect();
+        if let [node] = in_type_file.as_slice() {
             return Some(node);
         }
         let spec = spec_for_path(&ty.file)?;
@@ -569,7 +594,17 @@ fn resolve_one<'a>(
 ) -> (Option<&'a Node>, Evidence, bool) {
     if r.relation == Relation::Imports {
         let glob = matches!(r.alias.as_deref(), Some("*") | Some("."));
-        let segments = (spec.absolutize)(strip_glob(&r.name), &r.file);
+        let raw = strip_glob(&r.name);
+        // An import naming a literal repo file binds it exactly — this is
+        // how `#include "player/character.h"` stays unambiguous even though
+        // header and impl share one module (fixture: cpp-header-impl).
+        if let Some(node) = index
+            .file_nodes
+            .get(raw.trim().trim_matches(['<', '>', '"']))
+        {
+            return (Some(node), Evidence::Import, true);
+        }
+        let segments = (spec.absolutize)(raw, &r.file);
         let target = if glob {
             unique_best(
                 index
