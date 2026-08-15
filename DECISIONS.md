@@ -220,3 +220,20 @@ boost. Measured on Black Lantern: the player character class rose from
 terms literally — the evidence ceiling, by design. (3) UE misparsed class
 bodies now yield member prototypes via two additional *_API-gated query
 patterns (plain and access-label-wrapped declarations).
+
+## D22 — Maintenance posture: two fixes, three triggers, three declines
+
+Fixed now: cross-platform CI matrix (workflow in-tree; runs only if the
+repo is ever pushed — remote actions require explicit instruction) and the
+D16 corpus audit (the two same-name-disambiguation fixtures were
+themselves file-blind; upgraded to 6-tuples, plus a runner self-test that
+every fixture directory is registered). Trigger-gated, written down:
+new language packs only when a real repository raises a real question
+(never from a coverage list); a graph export (e.g. GraphML) only when
+visualization is actually wanted; a public benchmark only if the project
+goes public. Declined: doc-to-code linking (a different product — if ever,
+a separate binary writing tagged edges into the store), per-assistant
+distribution (MCP is the adapter; forked integration docs are how the
+prototype drowned), and parked engine debts (interface dispatch,
+multi-file package imports, workspace crate prefixes) which keep the
+no-fix-without-a-motivating-fixture rule.
