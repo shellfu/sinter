@@ -413,3 +413,23 @@ void APawn2::RouteControllerInput() {}
         "class not surfaced above impl-side members:\n{out}"
     );
 }
+
+/// `sinter install` writes the embedded skill card; rerunning refreshes it.
+#[test]
+fn install_writes_skill_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("skills/sinter");
+    let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
+        .args(["install", "--dir"])
+        .arg(&target)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let card = std::fs::read_to_string(target.join("SKILL.md")).unwrap();
+    assert!(card.contains("name: sinter"), "frontmatter missing");
+    assert!(card.contains("sinter ask"), "routing missing");
+    assert!(
+        !card.to_lowercase().contains("retry"),
+        "no orchestration in prose"
+    );
+}

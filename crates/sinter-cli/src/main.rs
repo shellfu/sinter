@@ -3,6 +3,7 @@ mod ask;
 mod build;
 mod hooks;
 mod impact;
+mod install;
 mod lookup;
 mod pathcmd;
 mod pipeline;
@@ -46,6 +47,12 @@ enum Command {
     Watch {
         #[arg(default_value = ".")]
         repo: PathBuf,
+    },
+    /// Install the Claude Code skill card (embedded, drift-proof)
+    Install {
+        /// Target directory (default: ~/.claude/skills/sinter)
+        #[arg(long)]
+        dir: Option<PathBuf>,
     },
     /// Install git hooks that refresh the graph after commits/checkouts
     Hooks {
@@ -127,6 +134,7 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::Build { repo } => build::run(&repo),
         Command::Watch { repo } => watch::run(&repo),
+        Command::Install { dir } => install::run(dir),
         Command::Hooks {
             action: HooksAction::Install { repo },
         } => hooks::install(&repo),
