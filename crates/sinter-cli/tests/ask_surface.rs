@@ -536,3 +536,37 @@ fn install_for_cursor_and_agents() {
     let body_line = "never treat it as stale-proof";
     assert!(skill.contains(body_line) && agents.contains(body_line) && rule.contains(body_line));
 }
+
+/// Git hooks install appends to an existing hook rather than clobbering
+/// it, and rerunning is a no-op.
+#[test]
+fn hooks_install_preserves_existing_hooks() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::write(repo.join("a.rs"), "pub fn f() {}\n").unwrap();
+    Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    let hook = repo.join(".git/hooks/post-commit");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\necho user-hook\n").unwrap();
+
+    let (ok, out) = sinter(repo, &["hooks", "install"]);
+    assert!(ok, "{out}");
+    let (ok, out) = sinter(repo, &["hooks", "install"]); // idempotent
+    assert!(ok, "{out}");
+    assert!(out.contains("already installed"), "{out}");
+
+    let content = std::fs::read_to_string(&hook).unwrap();
+    assert!(
+        content.contains("echo user-hook"),
+        "clobbered user hook:\n{content}"
+    );
+    assert_eq!(
+        content.matches("sinter build").count(),
+        1,
+        "duplicated:\n{content}"
+    );
+}

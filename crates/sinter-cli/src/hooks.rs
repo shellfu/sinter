@@ -12,9 +12,20 @@ pub fn install(repo: &Path) -> Result<()> {
         bail!("{} is not a git repository", repo.display());
     }
     std::fs::create_dir_all(&hooks_dir)?;
+    const MARKER: &str = "# managed by `sinter hooks install`";
+    let line = format!("{MARKER}\nsinter build . >/dev/null 2>&1 || true\n");
     for hook in ["post-commit", "post-checkout", "post-merge"] {
         let path = hooks_dir.join(hook);
-        let script = "#!/bin/sh\n# installed by `sinter hooks install`\nsinter build . >/dev/null 2>&1 || true\n";
+        // Never clobber a user's existing hook: append the managed line to
+        // it instead; rerunning is a no-op once the marker is present.
+        let script = match std::fs::read_to_string(&path) {
+            Ok(existing) if existing.contains(MARKER) => {
+                println!("already installed {}", path.display());
+                continue;
+            }
+            Ok(existing) => format!("{}\n{line}", existing.trim_end()),
+            Err(_) => format!("#!/bin/sh\n{line}"),
+        };
         std::fs::write(&path, script).with_context(|| format!("write {}", path.display()))?;
         #[cfg(unix)]
         {
