@@ -212,6 +212,24 @@ fn workspace_impact_crosses_members() {
 }
 
 #[test]
+fn init_workspace_scaffolds_without_clobber() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let (ok, out) = sinter(root, &["init", "--workspace", "--name", "shop"]);
+    assert!(ok, "{out}");
+    let manifest = std::fs::read_to_string(root.join("ws.toml")).unwrap();
+    assert!(manifest.contains("name = \"shop\""), "{manifest}");
+    // Template must parse as a valid (empty) workspace as written.
+    let (ok, out) = sinter(root, &["workspace", "ws.toml"]);
+    assert!(ok, "{out}");
+    // Second run refuses to overwrite.
+    let (ok, out) = sinter(root, &["init", "--workspace"]);
+    assert!(!ok, "{out}");
+    assert!(out.contains("refusing to overwrite"), "{out}");
+    assert!(manifest == std::fs::read_to_string(root.join("ws.toml")).unwrap());
+}
+
+#[test]
 fn workspace_stale_and_declared_errors() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();

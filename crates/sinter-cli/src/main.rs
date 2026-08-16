@@ -53,6 +53,12 @@ enum Command {
         /// Also write the Cursor rule file
         #[arg(long)]
         cursor: bool,
+        /// Write a starter workspace manifest instead (path defaults to ws.toml)
+        #[arg(long, value_name = "MANIFEST")]
+        workspace: Option<Option<PathBuf>>,
+        /// Workspace name for --workspace (defaults to manifest's parent dir name)
+        #[arg(long, requires = "workspace")]
+        name: Option<String>,
     },
     /// Build or incrementally refresh the graph for a repository
     Build {
@@ -181,7 +187,38 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Workspace { manifest } => workspace::run(&manifest),
-        Command::Init { repo, cursor } => {
+        Command::Init {
+            repo,
+            cursor,
+            workspace,
+            name,
+        } => {
+            if let Some(manifest) = workspace {
+                let path = manifest.unwrap_or_else(|| PathBuf::from("ws.toml"));
+                let ws_name = name.unwrap_or_else(|| {
+                    path.canonicalize()
+                        .ok()
+                        .and_then(|p| {
+                            p.parent()
+                                .and_then(|d| d.file_name())
+                                .map(|n| n.to_string_lossy().into_owned())
+                        })
+                        .or_else(|| {
+                            std::env::current_dir().ok().and_then(|d| {
+                                d.file_name().map(|n| n.to_string_lossy().into_owned())
+                            })
+                        })
+                        .unwrap_or_else(|| "workspace".to_string())
+                });
+                return match init::run_workspace(&path, &ws_name) {
+                    Ok(true) => ExitCode::SUCCESS,
+                    Ok(false) => ExitCode::FAILURE,
+                    Err(e) => {
+                        eprintln!("error: {e:#}");
+                        ExitCode::FAILURE
+                    }
+                };
+            }
             return match init::run(&repo, cursor) {
                 Ok(true) => ExitCode::SUCCESS,
                 Ok(false) => ExitCode::FAILURE,

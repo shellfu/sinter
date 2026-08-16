@@ -84,6 +84,7 @@ is auditable, in the same spirit as the edges.
 | `sinter impact <rev-range>` | Changed symbols → blast radius → affected tests |
 | `sinter serve` | MCP server over stdio for agent use |
 | `sinter workspace <manifest>` | Build all members of a cross-repo workspace + refresh boundary links |
+| `sinter init --workspace` | Write a starter workspace manifest (never overwrites) |
 | `sinter install --for <targets>` | Write agent cards (claude, cursor, agents/AGENTS.md); `--mcp` registers the server |
 | `sinter doctor [repo]` | Diagnose installation + graph; every finding names its fix |
 | `sinter version` | Version, graph schema, language packs |
