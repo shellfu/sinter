@@ -531,10 +531,25 @@ fn install_for_cursor_and_agents() {
     let rule = std::fs::read_to_string(repo.join(".cursor/rules/sinter.mdc")).unwrap();
     assert!(rule.contains("alwaysApply"), "cursor frontmatter missing");
     assert!(rule.contains("sinter ask"), "routing missing");
-    // Same body everywhere: no per-assistant content forks.
+    // Two tiers, one source: skill and cursor rule share the full card
+    // (loaded on demand); AGENTS.md gets the compact always-in-context
+    // block. Both are embedded in the binary — no per-assistant forks —
+    // and a unit test pins their command surfaces together.
     let skill = std::fs::read_to_string(skills.join("SKILL.md")).unwrap();
     let body_line = "never treat it as stale-proof";
-    assert!(skill.contains(body_line) && agents.contains(body_line) && rule.contains(body_line));
+    assert!(skill.contains(body_line) && rule.contains(body_line));
+    assert!(!agents.contains(body_line), "AGENTS.md got the full card");
+    for verb in [
+        "sinter ask",
+        "sinter affected",
+        "sinter path",
+        "sinter impact",
+    ] {
+        assert!(
+            agents.contains(verb) && skill.contains(verb),
+            "{verb} missing"
+        );
+    }
 }
 
 /// Git hooks install appends to an existing hook rather than clobbering

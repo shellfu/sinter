@@ -20,6 +20,34 @@ pub fn card_body() -> &'static str {
         .unwrap_or(SKILL)
 }
 
+/// Compact always-in-context block for AGENTS.md. Deliberately smaller
+/// than the skill card (which loads on demand): an always-on block gets
+/// skimmed, so it carries only the behavior rules and routing. Keep the
+/// two in sync when verbs change — `agents_block_routes_match_card`
+/// enforces the command surface.
+const AGENTS_CARD: &str = r#"## sinter
+
+This repo has a code knowledge graph at `.sinter/` (derived state — never
+commit or edit it). For any codebase-structure question, query it before
+grepping; results are ranked, scoped, and content-bearing.
+
+| Question | Command |
+|---|---|
+| Vague/conceptual: "where is X handled" | `sinter ask "<question>"` |
+| Orient on a symbol (signature, docs, callers) | `sinter show <symbol>` |
+| What depends on X / blast radius | `sinter affected <symbol>` |
+| How does A reach B | `sinter path <A> <B>` |
+| What does this diff/PR affect | `sinter impact <rev-range>` |
+
+- After modifying code: `sinter build` (fast no-op when fresh; skip if
+  git hooks or `sinter watch` are active).
+- "unresolved" and candidate lists are real answers — refine and rerun,
+  never guess a binding.
+- Cross-repo workspace? Add `--workspace <manifest.toml>`; symbols may
+  be `member:Symbol`.
+- Anything else: `sinter --help`; graph problems: `sinter doctor`.
+"#;
+
 const AGENTS_BEGIN: &str =
     "<!-- BEGIN sinter (managed by `sinter install`; edits inside are overwritten) -->";
 const AGENTS_END: &str = "<!-- END sinter -->";
@@ -53,7 +81,7 @@ pub fn agents(repo: &Path) -> Result<PathBuf> {
 
 {}
 {AGENTS_END}",
-        card_body().trim_end()
+        AGENTS_CARD.trim_end()
     );
     let merged = match (existing.find(AGENTS_BEGIN), existing.find(AGENTS_END)) {
         (Some(start), Some(end)) if end > start => {
@@ -77,8 +105,9 @@ pub fn agents(repo: &Path) -> Result<PathBuf> {
 }
 
 /// True when this content is current with the embedded card (drift check).
+/// AGENTS.md carries the compact block, everything else the full card.
 pub fn block_current(content: &str) -> bool {
-    content.contains(card_body().trim_end())
+    content.contains(card_body().trim_end()) || content.contains(AGENTS_CARD.trim_end())
 }
 
 /// Default install location for the skill card.
@@ -170,4 +199,35 @@ pub fn run(dir: Option<PathBuf>) -> Result<()> {
     println!("installed {}", path.display());
     println!("rerun `sinter install` after upgrading sinter to refresh the card");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The compact AGENTS block and the full skill card are separate
+    /// constants; this is the seam that keeps them from drifting: every
+    /// verb the compact block routes to must appear in the full card,
+    /// and both must state the load-bearing behavior rules.
+    #[test]
+    fn agents_block_routes_match_card() {
+        let card = card_body();
+        for chunk in AGENTS_CARD.split("`sinter ").skip(1) {
+            let verb = chunk.split([' ', '`', '\n']).next().unwrap();
+            if verb.starts_with('-') {
+                continue; // flag, not a verb
+            }
+            assert!(
+                card.contains(&format!("sinter {verb}")),
+                "compact block routes `sinter {verb}` but the full card never mentions it"
+            );
+        }
+        for rule in ["never", "unresolved", "sinter build", "--workspace"] {
+            assert!(
+                AGENTS_CARD.contains(rule),
+                "compact block lost rule: {rule}"
+            );
+            assert!(card.contains(rule), "full card lost rule: {rule}");
+        }
+    }
 }
