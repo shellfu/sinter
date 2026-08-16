@@ -32,6 +32,60 @@ use tree_sitter::Language;
 /// Standard tree-sitter text predicates (`#eq?`, `#any-of?`, ...) are
 /// evaluated by the tree-sitter crate itself and may be used freely
 /// (bash isolates `source` from ordinary commands this way).
+/// A package manifest declares the mapping between a package's *name*
+/// (what imports say) and its *directory* (what module paths say) — a
+/// naming root the file tree alone cannot reveal. Reading it is
+/// evidence, exactly like reading an import statement. Pure data; the
+/// engine never branches on language.
+pub struct ManifestSpec {
+    /// Manifest file basename ("Cargo.toml", "go.mod").
+    pub filename: &'static str,
+    /// Key whose value is the package name ("name" for `name = "x"`,
+    /// "module" for `module x`).
+    pub name_key: &'static str,
+    /// Path-head aliases meaning "this package's root" ("crate").
+    pub self_names: &'static [&'static str],
+    /// Normalizes the declared name to reference form (dashes to
+    /// underscores for Rust).
+    pub normalize: fn(&str) -> String,
+}
+
+/// A discovered package root: files under `dir` belong to package `name`
+/// for language `language`.
+#[derive(Debug, Clone)]
+pub struct ModuleRoot {
+    pub name: String,
+    /// Repo-relative directory of the manifest ("" for repo root).
+    pub dir: String,
+    pub language: &'static str,
+}
+
+/// Parse one candidate file into a module root, if its basename matches
+/// a language's manifest spec. `rel_path` is repo-relative.
+pub fn manifest_root(rel_path: &str, content: &str) -> Option<ModuleRoot> {
+    let base = rel_path.rsplit('/').next()?;
+    let spec = LANGUAGES
+        .iter()
+        .find(|l| l.manifest.is_some_and(|m| m.filename == base))?;
+    let m = spec.manifest?;
+    let name = content.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix(m.name_key)?;
+        let rest = rest.trim_start();
+        let rest = rest.strip_prefix('=').unwrap_or(rest).trim();
+        let name = rest.trim_matches('"').trim();
+        (!name.is_empty() && !name.contains(' ')).then(|| name.to_string())
+    })?;
+    let dir = rel_path
+        .rsplit_once('/')
+        .map(|(d, _)| d.to_string())
+        .unwrap_or_default();
+    Some(ModuleRoot {
+        name: (m.normalize)(&name),
+        dir,
+        language: spec.name,
+    })
+}
+
 pub struct LanguageSpec {
     pub name: &'static str,
     pub extensions: &'static [&'static str],
@@ -55,7 +109,21 @@ pub struct LanguageSpec {
     /// definition and its doc — e.g. Unreal's `UCLASS(...)` line, which
     /// parses as an expression_statement between comment and class.
     pub doc_skip_kinds: &'static [&'static str],
+    /// Package manifest shape, when the language has one that names
+    /// module roots (see ManifestSpec).
+    pub manifest: Option<&'static ManifestSpec>,
 }
+
+fn rust_normalize(name: &str) -> String {
+    name.replace('-', "_")
+}
+
+static RUST_MANIFEST: ManifestSpec = ManifestSpec {
+    filename: "Cargo.toml",
+    name_key: "name",
+    self_names: &["crate"],
+    normalize: rust_normalize,
+};
 
 fn split_all(path: &str, separators: &[&str]) -> Vec<String> {
     let mut segments = vec![path.to_string()];
@@ -336,6 +404,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         absolutize: rust_absolutize,
         receivers: &["self", "Self"],
         doc_skip_kinds: &[],
+        manifest: Some(&RUST_MANIFEST),
     },
     LanguageSpec {
         name: "go",
@@ -348,6 +417,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         absolutize: go_absolutize,
         receivers: &[],
         doc_skip_kinds: &[],
+        manifest: None,
     },
     LanguageSpec {
         name: "python",
@@ -360,6 +430,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         absolutize: python_absolutize,
         receivers: &["self", "cls"],
         doc_skip_kinds: &[],
+        manifest: None,
     },
     LanguageSpec {
         name: "typescript",
@@ -372,6 +443,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         absolutize: typescript_absolutize,
         receivers: &["this"],
         doc_skip_kinds: &[],
+        manifest: None,
     },
     LanguageSpec {
         name: "bash",
@@ -384,6 +456,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         absolutize: bash_absolutize,
         receivers: &[],
         doc_skip_kinds: &[],
+        manifest: None,
     },
     LanguageSpec {
         name: "proto",
@@ -396,6 +469,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         absolutize: proto_absolutize,
         receivers: &[],
         doc_skip_kinds: &[],
+        manifest: None,
     },
     LanguageSpec {
         name: "cpp",
@@ -408,6 +482,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         absolutize: cpp_absolutize,
         receivers: &["this"],
         doc_skip_kinds: &["expression_statement"],
+        manifest: None,
     },
 ];
 

@@ -67,6 +67,28 @@ fn check(fixture: &str) {
     }
 }
 
+/// Collect package manifests the same way the pipeline does (fixtures
+/// are tiny; plain recursion, no ignore rules needed).
+fn walk_manifests(root: &Path) -> Vec<sinter_extract::ModuleRoot> {
+    fn walk(dir: &Path, top: &Path, out: &mut Vec<sinter_extract::ModuleRoot>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, top, out);
+            } else if let (Ok(rel), Ok(content)) =
+                (path.strip_prefix(top), std::fs::read_to_string(&path))
+            {
+                let rel = rel.to_string_lossy().replace('\\', "/");
+                out.extend(sinter_extract::manifest_root(&rel, &content));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, root, &mut out);
+    out.sort_by(|a, b| (&a.dir, &a.name).cmp(&(&b.dir, &b.name)));
+    out
+}
+
 fn check_inner(fixture: &str) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../harness/golden/fixtures")
@@ -80,7 +102,8 @@ fn check_inner(fixture: &str) {
         .filter(|r| r.relation == Relation::Imports)
         .cloned()
         .collect();
-    let (bindings, stats, _) = resolve(&nodes, &references, &locals, &all_imports, &embeds);
+    let roots: Vec<sinter_extract::ModuleRoot> = walk_manifests(&root);
+    let (bindings, stats, _) = resolve(&nodes, &references, &locals, &all_imports, &embeds, &roots);
 
     // Found tuples are fully qualified: [evidence, relation, src, dst,
     // src_file, dst_file]. Expected tuples may be the 4-element legacy form
@@ -417,4 +440,13 @@ fn resolution_proto_basic() {
 #[test]
 fn resolution_proto_include_root() {
     check("proto-include-root");
+}
+
+/// Mined from a real Rust workspace: Cargo.toml declares the crate name
+/// (`acme-util` -> `acme_util`) that cross-crate `use` paths say, while
+/// the directory says `crates/util` — a naming root only the manifest
+/// reveals. Also pins `crate::` self-alias translation.
+#[test]
+fn resolution_rust_workspace_crates() {
+    check("rust-workspace-crates");
 }

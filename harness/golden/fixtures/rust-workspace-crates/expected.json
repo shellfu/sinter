@@ -1,0 +1,84 @@
+{
+  "nodes": [
+    [
+      "file",
+      "crates/util/src/lib.rs",
+      "crates/util/src/lib.rs"
+    ],
+    [
+      "function",
+      "double",
+      "crates/util/src/lib.rs",
+      "Doubles a value."
+    ],
+    [
+      "file",
+      "crates/app/src/main.rs",
+      "crates/app/src/main.rs"
+    ],
+    [
+      "function",
+      "helper",
+      "crates/app/src/main.rs",
+      "Local helper."
+    ],
+    [
+      "function",
+      "main",
+      "crates/app/src/main.rs"
+    ]
+  ],
+  "contains": [
+    [
+      "crates/util/src/lib.rs",
+      "double"
+    ],
+    [
+      "crates/app/src/main.rs",
+      "helper"
+    ],
+    [
+      "crates/app/src/main.rs",
+      "main"
+    ]
+  ],
+  "references": [
+    [
+      "imports",
+      "acme_util::double"
+    ],
+    [
+      "calls",
+      "double"
+    ],
+    [
+      "calls",
+      "helper"
+    ],
+    [
+      "calls",
+      "double"
+    ]
+  ],
+  "resolved": [
+    [
+      "import",
+      "imports",
+      "crates/app/src/main.rs",
+      "double"
+    ],
+    [
+      "import",
+      "calls",
+      "main",
+      "double"
+    ],
+    [
+      "import",
+      "calls",
+      "main",
+      "helper"
+    ]
+  ],
+  "unresolved_count": 0
+}

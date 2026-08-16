@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use sinter_core::{
     Edge, Embed, Evidence, LocalBinding, Node, NodeId, Reference, Relation, SymbolKind,
 };
-use sinter_extract::spec_for_path;
+use sinter_extract::{LanguageSpec, ModuleRoot, spec_for_path};
 
 pub struct Binding {
     pub edge: Edge,
@@ -154,11 +154,64 @@ struct Index<'a> {
     locals: HashMap<(&'a str, &'a str), Vec<LocalRange<'a>>>,
     /// owner node id -> embedded type names.
     embeds: HashMap<&'a str, Vec<&'a str>>,
+    /// Discovered package roots (manifest-declared name <-> directory).
+    roots: Vec<ModuleRoot>,
 }
 
-fn module_of(node: &Node) -> Vec<String> {
+/// Module key of a file, manifest-aware: under a discovered package
+/// root, the key is rooted at the *declared package name* (with the
+/// language's self-alias, e.g. Rust's "crate", replaced by it) so that
+/// cross-package imports naming the package match. Outside any root the
+/// plain module_path applies — single-package repos are unchanged.
+fn key_of(spec: &LanguageSpec, roots: &[ModuleRoot], file: &str) -> Vec<String> {
+    let Some((manifest, root)) = spec.manifest.zip(root_of(spec, roots, file)) else {
+        return (spec.module_path)(file);
+    };
+    let rel = if root.dir.is_empty() {
+        file
+    } else {
+        &file[root.dir.len() + 1..]
+    };
+    let mut key = (spec.module_path)(rel);
+    match key.first() {
+        Some(head) if manifest.self_names.contains(&head.as_str()) => {
+            key[0] = root.name.clone();
+        }
+        _ => key.insert(0, root.name.clone()),
+    }
+    key
+}
+
+/// Deepest package root containing `file` for this language.
+fn root_of<'r>(spec: &LanguageSpec, roots: &'r [ModuleRoot], file: &str) -> Option<&'r ModuleRoot> {
+    roots
+        .iter()
+        .filter(|r| r.language == spec.name)
+        .filter(|r| r.dir.is_empty() || file.starts_with(&format!("{}/", r.dir)))
+        .max_by_key(|r| r.dir.len())
+}
+
+/// Rewrite a reference path's self-alias head ("crate::x") to the
+/// enclosing package's declared name, so it matches manifest-aware keys.
+fn expand(
+    spec: &LanguageSpec,
+    roots: &[ModuleRoot],
+    file: &str,
+    mut segments: Vec<String>,
+) -> Vec<String> {
+    if let Some(manifest) = spec.manifest
+        && let Some(head) = segments.first()
+        && manifest.self_names.contains(&head.as_str())
+        && let Some(root) = root_of(spec, roots, file)
+    {
+        segments[0] = root.name.clone();
+    }
+    segments
+}
+
+fn module_of(node: &Node, roots: &[ModuleRoot]) -> Vec<String> {
     let mut module = spec_for_path(&node.file)
-        .map(|s| (s.module_path)(&node.file))
+        .map(|s| key_of(s, roots, &node.file))
         .unwrap_or_default();
     let qualified = qualified_of(node.id.as_str());
     if let Some((prefix, _)) = qualified.rsplit_once("::") {
@@ -172,6 +225,7 @@ fn build_index<'a>(
     all_imports: &'a [Reference],
     locals: &'a [LocalBinding],
     embeds: &'a [Embed],
+    roots: &[ModuleRoot],
 ) -> Index<'a> {
     let mut index = Index {
         by_file_name: HashMap::new(),
@@ -184,6 +238,7 @@ fn build_index<'a>(
         imports: HashMap::new(),
         locals: HashMap::new(),
         embeds: HashMap::new(),
+        roots: roots.to_vec(),
     };
     // Pass 1: qualified -> kind per file, for ancestor-kind checks.
     let mut kind_of: HashMap<(&str, &str), SymbolKind> = HashMap::new();
@@ -197,7 +252,7 @@ fn build_index<'a>(
         let Some(spec) = spec_for_path(&node.file) else {
             continue;
         };
-        let file_module = (spec.module_path)(&node.file);
+        let file_module = key_of(spec, roots, &node.file);
         if node.kind == SymbolKind::File {
             index.file_nodes.insert(node.file.as_str(), node);
             if let Some(tail) = file_module.last() {
@@ -275,7 +330,7 @@ fn build_index<'a>(
         };
         let glob = matches!(r.alias.as_deref(), Some("*") | Some("."));
         let raw = strip_glob(&r.name);
-        let segments = (spec.absolutize)(raw, &r.file);
+        let segments = expand(spec, roots, &r.file, (spec.absolutize)(raw, &r.file));
         let binding = match (&r.alias, glob) {
             (Some(alias), false) => alias.clone(),
             _ => segments.last().cloned().unwrap_or_default(),
@@ -362,7 +417,7 @@ impl<'a> Index<'a> {
         if depth == 0 {
             return None;
         }
-        let mut module = module_of(ty);
+        let mut module = module_of(ty, &self.roots);
         module.extend(
             qualified_of(ty.id.as_str())
                 .rsplit("::")
@@ -392,7 +447,7 @@ impl<'a> Index<'a> {
             return Some(node);
         }
         let spec = spec_for_path(&ty.file)?;
-        let file_module = (spec.module_path)(&ty.file);
+        let file_module = key_of(spec, &self.roots, &ty.file);
         for embedded in self.embeds.get(ty.id.as_str()).into_iter().flatten() {
             if let Some(embedded_ty) = self.type_def(&ty.file, &file_module, embedded)
                 && let Some(node) = self.member_of(embedded_ty, name, depth - 1)
@@ -536,9 +591,10 @@ pub fn resolve(
     locals: &[LocalBinding],
     all_imports: &[Reference],
     embeds: &[Embed],
+    roots: &[ModuleRoot],
 ) -> (Vec<Binding>, ResolutionStats, Vec<usize>) {
     let t = std::time::Instant::now();
-    let index = build_index(nodes, all_imports, locals, embeds);
+    let index = build_index(nodes, all_imports, locals, embeds, roots);
     if std::env::var_os("SINTER_TIMING").is_some() {
         eprintln!("index build: {:?}", t.elapsed());
     }
@@ -554,7 +610,7 @@ pub fn resolve(
                 .enclosing
                 .clone()
                 .unwrap_or_else(|| NodeId::new(r.file.clone()));
-            let file_module = (spec.module_path)(&r.file);
+            let file_module = key_of(spec, &index.roots, &r.file);
             let imports = index.imports.get(r.file.as_str());
             let (target, evidence, internal) = resolve_one(&index, spec, r, &file_module, imports);
             match target {
@@ -623,7 +679,7 @@ fn resolve_one<'a>(
         {
             return (Some(node), Evidence::Import, true);
         }
-        let segments = (spec.absolutize)(raw, &r.file);
+        let segments = expand(spec, &index.roots, &r.file, (spec.absolutize)(raw, &r.file));
         let target = if glob {
             index.import_file(&segments)
         } else {
@@ -636,7 +692,12 @@ fn resolve_one<'a>(
     if let Some(path) = &r.path {
         // Qualified reference: receiver, typed local, shadow, absolute
         // path, then imports — strongest local knowledge first.
-        let segments = (spec.absolutize)(path, &r.file);
+        let segments = expand(
+            spec,
+            &index.roots,
+            &r.file,
+            (spec.absolutize)(path, &r.file),
+        );
         let prefix = segments
             .len()
             .checked_sub(2)
@@ -788,7 +849,7 @@ pub fn resolve_boundary(
     references: &[Reference],
     owner_imports: &[Reference],
 ) -> Vec<Binding> {
-    let index = build_index(foreign_nodes, owner_imports, &[], &[]);
+    let index = build_index(foreign_nodes, owner_imports, &[], &[], &[]);
     let mut bindings = Vec::new();
     for (i, r) in references.iter().enumerate() {
         let Some(spec) = spec_for_path(&r.file) else {
