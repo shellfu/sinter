@@ -30,25 +30,30 @@ pub(crate) const FILE_HASH: TableDefinition<&str, &str> = TableDefinition::new("
 /// resolution invalidation index.
 pub(crate) const NAME_REFS: MultimapTableDefinition<&str, &str> =
     MultimapTableDefinition::new("name_refs");
-/// symbol name -> node ids, exact-match query index.
-pub(crate) const NAME_NODES: MultimapTableDefinition<&str, &str> =
+/// symbol name -> interned node ids, exact-match query index.
+pub(crate) const NAME_NODES: MultimapTableDefinition<&str, u32> =
     MultimapTableDefinition::new("name_nodes");
-/// lowercased trigram -> node ids, fuzzy query index.
-pub(crate) const TRIGRAMS: MultimapTableDefinition<&str, &str> =
+/// lowercased trigram -> interned node ids, fuzzy query index.
+pub(crate) const TRIGRAMS: MultimapTableDefinition<&str, u32> =
     MultimapTableDefinition::new("trigrams");
-/// lowercased word -> node ids: recall index over name subwords, doc,
-/// signature, and path segments (see `search::node_tokens`). Lets `ask`
-/// gather candidates by keyed reads instead of decoding the node table.
-pub(crate) const TOKENS_WORDS: MultimapTableDefinition<&str, &str> =
+/// lowercased word -> interned node ids: recall index over name subwords,
+/// doc, signature, and path segments (see `search::node_tokens`).
+/// Values are interned (u32) — node-id strings repeated dozens of times
+/// were 58% of stored bytes before interning (bench finding).
+pub(crate) const TOKENS_WORDS: MultimapTableDefinition<&str, u32> =
     MultimapTableDefinition::new("tokens_words");
+/// Interner: u32 -> node id string and its reverse. Index tables store the
+/// u32; readers translate back on materialization.
+pub(crate) const INTERN: TableDefinition<u32, &str> = TableDefinition::new("intern");
+pub(crate) const INTERN_REV: TableDefinition<&str, u32> = TableDefinition::new("intern_rev");
 /// file -> import references only (compact). Re-export chain walking needs
 /// every file's imports without decoding full facts corpus-wide.
 pub(crate) const IMPORTS: MultimapTableDefinition<&str, &[u8]> =
     MultimapTableDefinition::new("imports");
 /// Single-row schema stamp; a mismatch on open wipes the database (facts
 /// are derivable, a stale-format db is not worth migrating).
-const META: TableDefinition<&str, u32> = TableDefinition::new("meta");
-const SCHEMA_VERSION: u32 = 3;
+pub(crate) const META: TableDefinition<&str, u32> = TableDefinition::new("meta");
+const SCHEMA_VERSION: u32 = 4;
 
 impl Store {
     /// The schema version this binary writes.
@@ -111,6 +116,8 @@ impl Store {
             txn.open_multimap_table(TRIGRAMS)?;
             txn.open_multimap_table(TOKENS_WORDS)?;
             txn.open_multimap_table(IMPORTS)?;
+            txn.open_table(INTERN)?;
+            txn.open_table(INTERN_REV)?;
         }
         txn.commit()?;
         Ok(store)
@@ -226,9 +233,24 @@ impl Store {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(FILE_FACTS)?;
         match table.get(file)? {
-            Some(guard) => Ok(Some(postcard::from_bytes(guard.value())?)),
+            Some(guard) => Ok(Some(crate::update::decode_facts(guard.value())?)),
             None => Ok(None),
         }
+    }
+
+    /// Reclaim free pages. Worth running after bulk rebuilds; skipped on
+    /// incremental updates (it rewrites the file and would blow the <1s
+    /// one-file-edit budget). redb compaction is iterative — repeat until
+    /// it reports no further progress (bounded).
+    pub fn compact(&mut self) -> Result<bool, StoreError> {
+        let mut any = false;
+        for _ in 0..16 {
+            if !self.db.compact()? {
+                break;
+            }
+            any = true;
+        }
+        Ok(any)
     }
 
     /// Every stored import reference — re-export chain-walking input.

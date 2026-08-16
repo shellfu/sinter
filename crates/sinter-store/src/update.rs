@@ -10,9 +10,21 @@ use sinter_core::{Edge, Evidence, FileFacts, Reference};
 use crate::error::StoreError;
 use crate::search::{node_tokens, trigrams};
 use crate::store::{
-    FILE_FACTS, FILE_HASH, IMPORTS, IN_EDGES, NAME_NODES, NAME_REFS, NODES, OUT_EDGES, Store,
-    TOKENS_WORDS, TRIGRAMS, UNRESOLVED,
+    FILE_FACTS, FILE_HASH, IMPORTS, IN_EDGES, INTERN, INTERN_REV, META, NAME_NODES, NAME_REFS,
+    NODES, OUT_EDGES, Store, TOKENS_WORDS, TRIGRAMS, UNRESOLVED,
 };
+
+/// FileFacts blobs are zstd-compressed postcard (19% of stored bytes at
+/// level 1 cost ~µs per file; read only on incremental paths, never hot).
+pub(crate) fn encode_facts(facts: &FileFacts) -> Result<Vec<u8>, StoreError> {
+    let raw = postcard::to_allocvec(facts)?;
+    zstd::encode_all(raw.as_slice(), 1).map_err(StoreError::Compress)
+}
+
+pub(crate) fn decode_facts(bytes: &[u8]) -> Result<FileFacts, StoreError> {
+    let raw = zstd::decode_all(bytes).map_err(StoreError::Compress)?;
+    Ok(postcard::from_bytes(&raw)?)
+}
 
 /// What an update invalidated: definition names whose binding targets may
 /// have changed, and files that held resolution edges into the touched
@@ -52,6 +64,10 @@ impl Store {
             let mut grams = txn.open_multimap_table(TRIGRAMS)?;
             let mut tokens = txn.open_multimap_table(TOKENS_WORDS)?;
             let mut imports = txn.open_multimap_table(IMPORTS)?;
+            let mut intern = txn.open_table(INTERN)?;
+            let mut intern_rev = txn.open_table(INTERN_REV)?;
+            let mut meta = txn.open_table(META)?;
+            let mut next_intern = meta.get("intern_next")?.map(|g| g.value()).unwrap_or(0);
 
             let touched: Vec<&str> = changed
                 .iter()
@@ -63,7 +79,7 @@ impl Store {
             for file in &touched {
                 let Some(old): Option<FileFacts> = facts_table
                     .get(*file)?
-                    .map(|g| postcard::from_bytes(g.value()))
+                    .map(|g| decode_facts(g.value()))
                     .transpose()?
                 else {
                     continue;
@@ -92,12 +108,17 @@ impl Store {
                     out.remove_all(id)?;
                     inn.remove_all(id)?;
                     nodes.remove(id)?;
-                    name_nodes.remove(node.name.as_str(), id)?;
-                    for gram in trigrams(&node.name) {
-                        grams.remove(gram.as_str(), id)?;
-                    }
-                    for word in node_tokens(node) {
-                        tokens.remove(word.as_str(), id)?;
+                    let interned_opt = intern_rev.get(id)?.map(|g| g.value());
+                    if let Some(interned) = interned_opt {
+                        name_nodes.remove(node.name.as_str(), interned)?;
+                        for gram in trigrams(&node.name) {
+                            grams.remove(gram.as_str(), interned)?;
+                        }
+                        for word in node_tokens(node) {
+                            tokens.remove(word.as_str(), interned)?;
+                        }
+                        intern.remove(interned)?;
+                        intern_rev.remove(id)?;
                     }
                     delta.def_names.insert(node.name.clone());
                 }
@@ -113,19 +134,30 @@ impl Store {
             // Install new derived state for changed files.
             for facts in changed {
                 let file = facts.file.as_str();
-                facts_table.insert(file, postcard::to_allocvec(facts)?.as_slice())?;
+                facts_table.insert(file, encode_facts(facts)?.as_slice())?;
                 // content hash is deliberately NOT written here: it commits
                 // last (commit_hashes), so a crash mid-derivation re-runs
                 // these files as changed instead of freezing the damage.
                 for node in &facts.nodes {
                     let id = node.id.as_str();
                     nodes.insert(id, postcard::to_allocvec(node)?.as_slice())?;
-                    name_nodes.insert(node.name.as_str(), id)?;
+                    let interned_existing = intern_rev.get(id)?.map(|g| g.value());
+                    let interned = match interned_existing {
+                        Some(existing) => existing,
+                        None => {
+                            let assigned = next_intern;
+                            next_intern += 1;
+                            intern.insert(assigned, id)?;
+                            intern_rev.insert(id, assigned)?;
+                            assigned
+                        }
+                    };
+                    name_nodes.insert(node.name.as_str(), interned)?;
                     for gram in trigrams(&node.name) {
-                        grams.insert(gram.as_str(), id)?;
+                        grams.insert(gram.as_str(), interned)?;
                     }
                     for word in node_tokens(node) {
-                        tokens.insert(word.as_str(), id)?;
+                        tokens.insert(word.as_str(), interned)?;
                     }
                     delta.def_names.insert(node.name.clone());
                 }
@@ -141,6 +173,7 @@ impl Store {
                     }
                 }
             }
+            meta.insert("intern_next", next_intern)?;
         }
         txn.commit()?;
         Ok(delta)
@@ -185,7 +218,7 @@ impl Store {
             for file in files {
                 let Some(facts): Option<FileFacts> = facts_table
                     .get(file.as_str())?
-                    .map(|g| postcard::from_bytes(g.value()))
+                    .map(|g| decode_facts(g.value()))
                     .transpose()?
                 else {
                     continue;

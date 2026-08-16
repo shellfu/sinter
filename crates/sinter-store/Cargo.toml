@@ -10,6 +10,7 @@ sinter-core.workspace = true
 redb.workspace = true
 postcard.workspace = true
 thiserror.workspace = true
+zstd = "0.13"
 
 [dev-dependencies]
 proptest.workspace = true

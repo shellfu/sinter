@@ -30,10 +30,17 @@ pub fn db_path(repo: &Path) -> PathBuf {
     repo.join(".sinter").join("graph.redb")
 }
 
-/// Human-readable size of the graph database file.
+/// Human-readable size of the graph database file — real allocated blocks
+/// where available (redb files are sparse; apparent length overstates).
 pub fn db_size(repo: &Path) -> String {
     match std::fs::metadata(db_path(repo)) {
         Ok(meta) => {
+            #[cfg(unix)]
+            let bytes = {
+                use std::os::unix::fs::MetadataExt;
+                meta.blocks() * 512
+            };
+            #[cfg(not(unix))]
             let bytes = meta.len();
             if bytes >= 1 << 30 {
                 format!("{:.1}G", bytes as f64 / (1u64 << 30) as f64)
@@ -84,7 +91,7 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
         .with_context(|| format!("repo path {}", repo.display()))?;
     let out_dir = repo.join(".sinter");
     std::fs::create_dir_all(&out_dir)?;
-    let store = Store::create(db_path(&repo))?;
+    let mut store = Store::create(db_path(&repo))?;
 
     // Current corpus: (file, hash) for every language-matched file in scope.
     let scoped: Option<HashSet<String>> = only.map(|paths| {
@@ -255,6 +262,14 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
     // Hashes commit only now: every derived table is consistent, so a crash
     // anywhere above re-runs these files as changed on the next build.
     store.commit_hashes(&changed_facts)?;
+
+    // Reclaim free pages after bulk (re)builds; never on incremental
+    // updates — compaction rewrites the file and would blow the <1s
+    // one-file-edit budget. Half the redb file was page slack on the
+    // benchmark corpus before this.
+    if changed_facts.len() * 2 >= hashes.len() && !changed_facts.is_empty() {
+        store.compact()?;
+    }
 
     Ok(BuildReport {
         scanned: hashes.len(),

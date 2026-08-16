@@ -237,3 +237,18 @@ distribution (MCP is the adapter; forked integration docs are how the
 prototype drowned), and parked engine debts (interface dispatch,
 multi-file package imports, workspace crate prefixes) which keep the
 no-fix-without-a-motivating-fixture rule.
+
+## D23 — Artifact size: intern + compress + compact (bench-motivated)
+
+The head-to-head bench promoted db size from watch item to fix (skaffold
+artifact exceeded its checkout). Measurement before surgery showed the
+whale was not the double-sided edges (8%) but repeated node-id strings in
+the token/trigram index values (58%) plus uncompressed FileFacts (19%).
+Schema v4: index tables store interned u32 ids (INTERN/INTERN_REV tables,
+monotonic counter in META); FileFacts blobs are zstd(1); bulk builds end
+with iterative compaction (never incremental builds — the <1s edit budget
+rules it out); db_size reports real allocated blocks (redb files are
+sparse). Results: Black Lantern 87M -> 32.6M (parity with the prototype's
+32M despite storing signatures/docs/evidence it lacks); skaffold real
+663M vs the prototype's 462M; every speed budget held or improved.
+Single-copy edges and posting-list tokens remain in reserve, unneeded.

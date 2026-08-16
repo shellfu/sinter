@@ -18,4 +18,8 @@ pub enum StoreError {
     Invariant(#[from] GraphError),
     #[error("cannot reset outdated database: {0}")]
     Reset(std::io::Error),
+    #[error("facts compression error: {0}")]
+    Compress(std::io::Error),
+    #[error("compaction error: {0}")]
+    Compaction(#[from] redb::CompactionError),
 }

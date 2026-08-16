@@ -60,3 +60,24 @@ the expected symbol.
   reads above; the skaffold 2.2G (larger than the 356M checkout, grown
   by the TOKENS index) upgrades the db-size watch item to the top of the
   fix-on-demand list.
+
+## Size optimization pass (post-benchmark, same day)
+
+The size gap was the benchmark's one adverse finding. Per-table
+measurement showed 58% of stored bytes were node-id strings repeated in
+the token/trigram indexes, 19% uncompressed FileFacts blobs, and nearly
+half the file was page slack / sparse apparent size. Fixes (schema v4):
+interned u32 ids in all index tables, zstd(1) on FileFacts, iterative
+compaction after bulk builds only, and size reporting switched to real
+allocated blocks.
+
+| repo | before (real) | after (real) | graphify |
+|---|---|---|---|
+| Black Lantern | 87M | 32.6M | 32M |
+| skaffold | ~2.1G apparent / not measured real | 663M | 462M |
+
+Stored bytes on skaffold: 1161MB -> 310MB (tokens 405->19.5MB, trigrams
+271->13.3MB, file_facts 217->28.4MB). Speed guardrails all improved or
+held: full build 46s -> 35s, no-op 63ms, one-file edit 850ms, ask 81ms.
+Remaining lever in reserve if ever needed: posting-list token index
+(per-word blobs instead of per-entry multimap rows).

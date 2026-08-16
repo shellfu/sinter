@@ -7,7 +7,7 @@ use redb::ReadableDatabase;
 use sinter_core::{Node, NodeId};
 
 use crate::error::StoreError;
-use crate::store::{NAME_NODES, Store, TOKENS_WORDS};
+use crate::store::{INTERN, NAME_NODES, Store, TOKENS_WORDS};
 
 /// Lowercased character trigrams of a name; names shorter than 3 chars
 /// index as one whole-name gram.
@@ -85,19 +85,13 @@ impl Store {
     pub fn nodes_named(&self, name: &str) -> Result<Vec<Node>, StoreError> {
         let txn = self.db.begin_read()?;
         let table = txn.open_multimap_table(NAME_NODES)?;
-        let mut ids = Vec::new();
+        let mut interned = BTreeSet::new();
         for guard in table.get(name)? {
-            ids.push(guard?.value().to_string());
+            interned.insert(guard?.value());
         }
         drop(table);
         drop(txn);
-        let mut nodes = Vec::new();
-        for id in ids {
-            if let Some(node) = self.node(&NodeId::new(id))? {
-                nodes.push(node);
-            }
-        }
-        Ok(nodes)
+        self.decode_ids(interned)
     }
 
     /// Nodes indexed under this exact lowercase token (see `node_tokens`).
@@ -121,19 +115,31 @@ impl Store {
     fn token_ids<'a>(
         &self,
         words: impl Iterator<Item = &'a str>,
-    ) -> Result<BTreeSet<String>, StoreError> {
+    ) -> Result<BTreeSet<u32>, StoreError> {
         let txn = self.db.begin_read()?;
         let table = txn.open_multimap_table(TOKENS_WORDS)?;
         let mut ids = BTreeSet::new();
         for word in words {
             for guard in table.get(word)? {
-                ids.insert(guard?.value().to_string());
+                ids.insert(guard?.value());
             }
         }
         Ok(ids)
     }
 
-    fn decode_ids(&self, ids: BTreeSet<String>) -> Result<Vec<Node>, StoreError> {
+    /// Interned ids -> nodes, in id order (deterministic).
+    fn decode_ids(&self, interned: BTreeSet<u32>) -> Result<Vec<Node>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(INTERN)?;
+        let mut ids = Vec::new();
+        for i in interned {
+            if let Some(guard) = table.get(i)? {
+                ids.push(guard.value().to_string());
+            }
+        }
+        drop(table);
+        drop(txn);
+        ids.sort();
         let mut nodes = Vec::new();
         for id in ids {
             if let Some(node) = self.node(&NodeId::new(id))? {
@@ -148,16 +154,25 @@ impl Store {
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Node>, StoreError> {
         let txn = self.db.begin_read()?;
         let table = txn.open_multimap_table(crate::store::TRIGRAMS)?;
-        let mut hits: HashMap<String, usize> = HashMap::new();
+        let mut hits: HashMap<u32, usize> = HashMap::new();
         let query_grams = trigrams(query);
         for gram in &query_grams {
             for guard in table.get(gram.as_str())? {
-                *hits.entry(guard?.value().to_string()).or_default() += 1;
+                *hits.entry(guard?.value()).or_default() += 1;
             }
         }
         drop(table);
+        // Rank by shared grams, tie-broken by resolved id string for
+        // deterministic output.
+        let intern = txn.open_table(INTERN)?;
+        let mut ranked: Vec<(String, usize)> = Vec::new();
+        for (interned, shared) in hits {
+            if let Some(guard) = intern.get(interned)? {
+                ranked.push((guard.value().to_string(), shared));
+            }
+        }
+        drop(intern);
         drop(txn);
-        let mut ranked: Vec<(String, usize)> = hits.into_iter().collect();
         ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let mut nodes = Vec::new();
         for (id, shared) in ranked.into_iter().take(limit.max(1)) {
