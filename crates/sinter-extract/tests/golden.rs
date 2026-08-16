@@ -440,3 +440,12 @@ fn golden_proto_basic() {
 fn golden_proto_include_root() {
     check("proto-include-root");
 }
+
+/// Mined from a real Rust workspace: Cargo.toml declares the crate name
+/// (`acme-util` -> `acme_util`) that cross-crate `use` paths say, while
+/// the directory says `crates/util` — a naming root only the manifest
+/// reveals. Also pins `crate::` self-alias translation.
+#[test]
+fn golden_rust_workspace_crates() {
+    check("rust-workspace-crates");
+}

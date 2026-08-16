@@ -9,7 +9,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
 use sinter_core::{FileFacts, Graph, Reference};
-use sinter_extract::{Extractor, LanguageSpec, spec_for_path};
+use sinter_extract::{Extractor, LanguageSpec, ModuleRoot, manifest_root, spec_for_path};
 use sinter_store::Store;
 
 pub struct BuildReport {
@@ -57,19 +57,46 @@ pub fn db_size(repo: &Path) -> String {
 /// Walk the repo and hash every language-matched file. `stored` supplies
 /// fallback hashes for transiently unreadable files.
 pub fn scan_hashes(repo: &Path, stored: &HashMap<String, String>) -> Result<Vec<(String, String)>> {
+    Ok(scan(repo, stored)?.hashes)
+}
+
+/// One walk, two harvests: language files to hash, and package manifests
+/// (Cargo.toml, ...) whose declared names become module roots for the
+/// resolver. Piggybacked so incremental builds never walk twice.
+/// (file, blake3) rows plus the manifest-declared module roots.
+pub struct Scan {
+    pub hashes: Vec<(String, String)>,
+    pub roots: Vec<ModuleRoot>,
+}
+
+pub fn scan(repo: &Path, stored: &HashMap<String, String>) -> Result<Scan> {
     let mut current: Vec<String> = Vec::new();
+    let mut roots: Vec<ModuleRoot> = Vec::new();
     for entry in ignore::WalkBuilder::new(repo).build() {
         let entry = entry?;
         if !entry.file_type().is_some_and(|t| t.is_file()) {
             continue;
         }
         let rel = sinter_core::rel_display(entry.path().strip_prefix(repo).unwrap_or(entry.path()));
-        if rel.starts_with(".sinter/") || spec_for_path(&rel).is_none() {
+        if rel.starts_with(".sinter/") {
+            continue;
+        }
+        if spec_for_path(&rel).is_none() {
+            let base = rel.rsplit('/').next().unwrap_or(&rel);
+            if sinter_extract::LANGUAGES
+                .iter()
+                .any(|l| l.manifest.is_some_and(|m| m.filename == base))
+                && let Ok(content) = std::fs::read_to_string(entry.path())
+                && let Some(root) = manifest_root(&rel, &content)
+            {
+                roots.push(root);
+            }
             continue;
         }
         current.push(rel);
     }
-    Ok(current
+    roots.sort_by(|a, b| (&a.dir, &a.name).cmp(&(&b.dir, &b.name)));
+    let hashes = current
         .par_iter()
         .filter_map(|rel| match std::fs::read(repo.join(rel)) {
             Ok(bytes) if bytes.is_empty() => None,
@@ -79,7 +106,8 @@ pub fn scan_hashes(repo: &Path, stored: &HashMap<String, String>) -> Result<Vec<
             // stored state instead of tearing the file down as removed.
             Err(_) => stored.get(rel).map(|h| (rel.clone(), h.clone())),
         })
-        .collect())
+        .collect();
+    Ok(Scan { hashes, roots })
 }
 
 /// One incremental build pass. `only` narrows the scan to an explicit
@@ -106,7 +134,10 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
             .collect()
     });
     let stored: HashMap<String, String> = store.file_hashes()?.into_iter().collect();
-    let hashes: Vec<(String, String)> = scan_hashes(&repo, &stored)?;
+    let Scan {
+        hashes,
+        roots: module_roots,
+    } = scan(&repo, &stored)?;
     let current_set: HashSet<&str> = hashes.iter().map(|(f, _)| f.as_str()).collect();
     // Scope entries match exactly or as directory prefixes: a directory
     // rename arrives as one event on the dir, covering its whole subtree.
@@ -216,7 +247,7 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
         // Internal evidence first; SCIP then binds what is left, moving
         // each hit out of its unresolved bucket.
         let (bindings, resolved_stats, internal_indices) =
-            sinter_resolve::resolve(&nodes, &refs, &locals, &all_imports, &embeds);
+            sinter_resolve::resolve(&nodes, &refs, &locals, &all_imports, &embeds, &module_roots);
         stats = resolved_stats;
         let internal_set: HashSet<usize> = internal_indices.into_iter().collect();
         let mut resolved_idx: HashSet<usize> = HashSet::new();

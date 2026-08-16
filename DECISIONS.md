@@ -293,3 +293,27 @@ and unique-or-nothing on ambiguity; bare qualified references still
 never bind this loosely. Measured on acme: +190 import edges,
 proto contract files fully resolved. Pinned by fixture
 proto-include-root (nested root, bare sibling refs via oneof + map).
+
+## D26 — Package manifests as module-root evidence (Rust workspace crates)
+
+The workspace-crate-prefix debt (D22) fired on the same corpus as D25:
+`use acme_common::x` names a crate whose directory is
+`crates/common` — a naming root the file tree cannot reveal, so every
+cross-crate path stayed unresolved and rust module keys collapsed to
+["crate", ...]. A package manifest *declares* that mapping; reading it
+is evidence, exactly like reading an import. Mechanism is language-as-
+data: LanguageSpec gains an optional ManifestSpec (filename, name key,
+self-alias heads, name normalizer) — Rust: Cargo.toml / name /
+["crate"] / dash-to-underscore; go.mod fits the same slot when wanted.
+The scan walk harvests manifests in the same pass that hashes files
+(zero extra walks; ignore rules keep target/ out), and the resolver
+roots each file's module key at its nearest manifest's declared name,
+translating self-alias heads ("crate::x") to match. No manifest -> no
+translation: single-package repos and the whole prior corpus behave
+identically, which the 52 pre-existing fixtures prove. Measured on the
+mining corpus: resolved 19.5k -> 26.6k (+7.1k import edges);
+internal-unresolved *rose* 1860 -> 5317 because crate-anchored paths
+that were misfiled as external are now honestly internal — the next
+mining surface (re-export chains, deeper module nesting). Pinned by
+fixture rust-workspace-crates (cross-crate use, qualified call,
+crate:: self-alias).
