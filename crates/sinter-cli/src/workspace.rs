@@ -349,9 +349,11 @@ pub fn stale_members(ws: &Workspace) -> Result<Vec<String>> {
 pub struct WsReached {
     pub member: String,
     pub node: Node,
-    pub depth: usize,
     pub relation: Relation,
     pub evidence: Evidence,
+    /// (member, node id) this dependent was reached from — the tree
+    /// parent for rendering; BFS order alone misattributes children.
+    pub parent: (String, String),
 }
 
 pub fn dependents(
@@ -389,9 +391,9 @@ pub fn dependents(
                 out.push(WsReached {
                     member: member.clone(),
                     node,
-                    depth: depth + 1,
                     relation: edge.relation,
                     evidence: edge.evidence,
+                    parent: (member.clone(), id.clone()),
                 });
                 queue.push_back((key.0, key.1, depth + 1));
             }
@@ -412,9 +414,9 @@ pub fn dependents(
                 out.push(WsReached {
                     member: link.src_member.clone(),
                     node,
-                    depth: depth + 1,
                     relation: link.relation,
                     evidence: link.evidence,
+                    parent: (member.clone(), id.clone()),
                 });
                 queue.push_back((key.0, key.1, depth + 1));
             }

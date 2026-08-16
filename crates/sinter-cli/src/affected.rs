@@ -24,16 +24,34 @@ pub fn run(
         qualified_of(node.id.as_str()),
         node.file
     );
+    // Render as a real tree: each dependent indents under the node it
+    // actually reaches (via.dst), not under whatever BFS printed last.
+    let mut children: std::collections::HashMap<&str, Vec<&sinter_store::Reached>> =
+        std::collections::HashMap::new();
     for r in &reached {
+        children.entry(r.via.dst.as_str()).or_default().push(r);
+    }
+    let mut stack: Vec<(&sinter_store::Reached, usize)> = Vec::new();
+    if let Some(roots) = children.get(node.id.as_str()) {
+        for r in roots.iter().rev() {
+            stack.push((r, 1));
+        }
+    }
+    while let Some((r, depth)) = stack.pop() {
         println!(
             "  {}{} {}  {}  [{}/{}]",
-            "  ".repeat(r.depth - 1),
+            "  ".repeat(depth - 1),
             qualified_of(r.node.id.as_str()),
             r.node.kind.as_str(),
             r.node.file,
             r.via.relation.as_str(),
             r.via.evidence.as_str(),
         );
+        if let Some(kids) = children.get(r.node.id.as_str()) {
+            for kid in kids.iter().rev() {
+                stack.push((kid, depth + 1));
+            }
+        }
     }
     Ok(())
 }
@@ -57,10 +75,24 @@ pub fn run_workspace(
         qualified_of(node.id.as_str()),
         node.file
     );
+    let mut children: std::collections::HashMap<(&str, &str), Vec<&crate::workspace::WsReached>> =
+        std::collections::HashMap::new();
     for r in &reached {
+        children
+            .entry((r.parent.0.as_str(), r.parent.1.as_str()))
+            .or_default()
+            .push(r);
+    }
+    let mut stack: Vec<(&crate::workspace::WsReached, usize)> = Vec::new();
+    if let Some(roots) = children.get(&(member.as_str(), node.id.as_str())) {
+        for r in roots.iter().rev() {
+            stack.push((r, 1));
+        }
+    }
+    while let Some((r, depth)) = stack.pop() {
         println!(
             "  {}{}:{} {}  {}  [{}/{}]",
-            "  ".repeat(r.depth - 1),
+            "  ".repeat(depth - 1),
             r.member,
             qualified_of(r.node.id.as_str()),
             r.node.kind.as_str(),
@@ -68,6 +100,11 @@ pub fn run_workspace(
             r.relation.as_str(),
             r.evidence.as_str(),
         );
+        if let Some(kids) = children.get(&(r.member.as_str(), r.node.id.as_str())) {
+            for kid in kids.iter().rev() {
+                stack.push((kid, depth + 1));
+            }
+        }
     }
     Ok(())
 }
