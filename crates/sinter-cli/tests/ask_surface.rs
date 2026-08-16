@@ -590,3 +590,43 @@ fn version_subcommand_matches_flag() {
     assert!(sub.contains("graph schema v"), "{sub}");
     assert!(sub.contains("rust"), "{sub}");
 }
+
+/// `sinter init` onboards a repo end to end: graph built, hooks installed,
+/// AGENTS.md block + MCP registered, doctor clean (skill dir overridden is
+/// not possible here, so only repo-level outcomes assert).
+#[test]
+fn init_onboards_repo() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::write(repo.join("a.rs"), "pub fn f() {}\n").unwrap();
+    Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+
+    let (_, out) = sinter(repo, &["init"]);
+    assert!(out.contains("== build =="), "{out}");
+    assert!(repo.join(".sinter/graph.redb").exists(), "{out}");
+    assert!(
+        std::fs::read_to_string(repo.join(".git/hooks/post-commit"))
+            .unwrap()
+            .contains("sinter build"),
+        "{out}"
+    );
+    assert!(
+        std::fs::read_to_string(repo.join("AGENTS.md"))
+            .unwrap()
+            .contains("BEGIN sinter"),
+        "{out}"
+    );
+    let mcp: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(repo.join(".mcp.json")).unwrap()).unwrap();
+    assert_eq!(mcp["mcpServers"]["sinter"]["command"], "sinter");
+    assert!(out.contains("== doctor =="), "{out}");
+    // Idempotent: second init changes nothing and still succeeds.
+    let (_, again) = sinter(repo, &["init"]);
+    assert!(again.contains("0 changed"), "{again}");
+    let agents = std::fs::read_to_string(repo.join("AGENTS.md")).unwrap();
+    assert_eq!(agents.matches("BEGIN sinter").count(), 1, "{agents}");
+}

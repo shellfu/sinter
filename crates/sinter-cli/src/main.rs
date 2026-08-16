@@ -4,6 +4,7 @@ mod build;
 mod doctor;
 mod hooks;
 mod impact;
+mod init;
 mod install;
 mod lookup;
 mod pathcmd;
@@ -39,6 +40,14 @@ struct FilterArgs {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Onboard a repo: build + git hooks + agent integration + MCP, then doctor
+    Init {
+        #[arg(default_value = ".")]
+        repo: PathBuf,
+        /// Also write the Cursor rule file
+        #[arg(long)]
+        cursor: bool,
+    },
     /// Build or incrementally refresh the graph for a repository
     Build {
         #[arg(default_value = ".")]
@@ -150,6 +159,16 @@ fn main() -> ExitCode {
     }
     let cli = Cli::parse();
     let result = match cli.command {
+        Command::Init { repo, cursor } => {
+            return match init::run(&repo, cursor) {
+                Ok(true) => ExitCode::SUCCESS,
+                Ok(false) => ExitCode::FAILURE,
+                Err(e) => {
+                    eprintln!("sinter: {e:#}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
         Command::Build { repo } => build::run(&repo),
         Command::Watch { repo } => watch::run(&repo),
         Command::Doctor { repo } => {

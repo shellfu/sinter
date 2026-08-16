@@ -33,13 +33,16 @@ Build the binary from the workspace root (requires a Rust toolchain):
 cargo build --release
 ```
 
-Index a repository. The first run builds everything; every later run is an
-incremental hash-diff, so the same command also refreshes after edits,
-branch switches, and pulls:
+Onboard a repository — builds the graph, installs git hooks, registers
+agent integration (AGENTS.md block, MCP, Claude skill), and finishes with
+a doctor report:
 
 ```
-./target/release/sinter build /path/to/repo
+./target/release/sinter init /path/to/repo
 ```
+
+After that, `sinter build` refreshes the graph (incremental hash-diff —
+fast no-op when nothing changed; the git hooks run it automatically):
 
 The report ends with the honesty line — how much of the graph is
 evidence-bound, and how much would need a dependency index:

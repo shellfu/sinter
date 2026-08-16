@@ -29,10 +29,13 @@ in prose. If the user types `/sinter`, use this card before anything else.
 
 ## Setup check
 
-If `.sinter/graph.redb` does not exist in the target repo, build it first
-(incremental; safe to run anytime, fast when nothing changed):
+If `.sinter/graph.redb` does not exist in the target repo, onboard it —
+one command builds the graph, installs git hooks, and registers agent
+integration, ending with a doctor report:
 
-    sinter build <repo>
+    sinter init <repo>
+
+(`sinter build <repo>` alone refreshes an existing graph.)
 
 ## Routing
 
