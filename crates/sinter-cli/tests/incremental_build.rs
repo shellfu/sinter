@@ -36,17 +36,22 @@ fn one_file_edit_is_incremental_and_fast() {
     let full_elapsed = full_started.elapsed();
     assert!(first.contains("300 scanned, 300 changed"), "{first}");
 
-    // No-op rebuild: nothing re-extracted.
+    // No-op rebuild: nothing re-extracted. Its duration is the measured
+    // scan floor (spawn + walk + hash 300 files) every build pays.
+    let noop_started = Instant::now();
     let noop = sinter(repo, &["build"]);
+    let noop_elapsed = noop_started.elapsed();
     assert!(noop.contains("300 scanned, 0 changed"), "{noop}");
 
-    // One-file edit: exactly one re-extracted, and materially faster than
-    // the full build on the same host. The gate is relative because this
-    // is a debug binary on arbitrary hardware (a fixed 1s flaked on shared
-    // CI runners at 1.5s with nothing regressed); the absolute <1s edit
-    // budget for 1M-LOC repos is the nightly release-mode gate's job.
-    // What this must catch is the incremental path silently doing
-    // full-corpus work again — then edit time converges on full time.
+    // One-file edit: exactly one re-extracted. The timing gate compares
+    // work ABOVE the scan floor: on hosts with slow file I/O (Windows CI)
+    // the floor dominates both builds, so edit-vs-full wall clock ratios
+    // are meaningless — a 0.5x gate failed there at 0.64x with nothing
+    // regressed. Subtracting the no-op floor cancels the fixed cost on
+    // every platform. What this must catch is the incremental path
+    // silently redoing full-corpus work — then above-floor work converges
+    // on the full build's. Absolute edit-latency budgets are the nightly
+    // release-mode gate's job.
     std::fs::write(
         repo.join("src/m7.rs"),
         "pub fn f7() -> u32 { 77 }\npub fn g7() -> u32 { f7() }\n",
@@ -56,9 +61,12 @@ fn one_file_edit_is_incremental_and_fast() {
     let edit = sinter(repo, &["build"]);
     let elapsed = started.elapsed();
     assert!(edit.contains("300 scanned, 1 changed"), "{edit}");
+    let edit_work = elapsed.saturating_sub(noop_elapsed);
+    let full_work = full_elapsed.saturating_sub(noop_elapsed);
     assert!(
-        elapsed < full_elapsed.mul_f64(0.5).max(Duration::from_millis(250)),
-        "incremental update took {elapsed:?} vs full build {full_elapsed:?}"
+        edit_work < full_work.mul_f64(0.5).max(Duration::from_millis(250)),
+        "incremental work {edit_work:?} vs full-build work {full_work:?} \
+         (edit {elapsed:?}, full {full_elapsed:?}, scan floor {noop_elapsed:?})"
     );
 
     // Deletion is incremental too.
