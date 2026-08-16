@@ -41,10 +41,9 @@ a doctor report:
 ./target/release/sinter init /path/to/repo
 ```
 
-After that, `sinter build` refreshes the graph (incremental hash-diff —
-fast no-op when nothing changed; the git hooks run it automatically):
-
-The report ends with the honesty line — how much of the graph is
+After that, `sinter build` refreshes the graph — an incremental hash-diff
+that is a fast no-op when nothing changed; the git hooks run it
+automatically. The build report ends with the honesty line — how much of the graph is
 evidence-bound, and how much would need a dependency index:
 
 ```
@@ -70,6 +69,7 @@ is auditable, in the same spirit as the edges.
 
 | Command | Purpose |
 |---|---|
+| `sinter init [repo]` | Onboard a repo: build + hooks + agent integration + doctor |
 | `sinter build [repo]` | Build or incrementally refresh the graph |
 | `sinter watch [repo]` | Keep the graph fresh from filesystem events |
 | `sinter hooks install` | Git hooks that refresh after commit/checkout/merge |
@@ -80,6 +80,9 @@ is auditable, in the same spirit as the edges.
 | `sinter path <from> <to>` | Shortest dependency path with per-step evidence |
 | `sinter impact <rev-range>` | Changed symbols → blast radius → affected tests |
 | `sinter serve` | MCP server over stdio for agent use |
+| `sinter install --for <targets>` | Write agent cards (claude, cursor, agents/AGENTS.md); `--mcp` registers the server |
+| `sinter doctor [repo]` | Diagnose installation + graph; every finding names its fix |
+| `sinter version` | Version, graph schema, language packs |
 
 `affected`, `path`, and every MCP tool accept `--evidence
 scip,import,scope` and `--certain` to restrict traversal to stronger
