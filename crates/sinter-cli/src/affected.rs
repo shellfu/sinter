@@ -26,13 +26,13 @@ pub fn run(
     );
     for r in &reached {
         println!(
-            "  {}{} {}  {}  [{}/{:?}]",
+            "  {}{} {}  {}  [{}/{}]",
             "  ".repeat(r.depth - 1),
             qualified_of(r.node.id.as_str()),
             r.node.kind.as_str(),
             r.node.file,
             r.via.relation.as_str(),
-            r.via.confidence,
+            r.via.evidence.as_str(),
         );
     }
     Ok(())
