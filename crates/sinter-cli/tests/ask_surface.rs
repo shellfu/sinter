@@ -490,3 +490,49 @@ fn install_mcp_merges_project_config() {
     let (_, out) = sinter(repo, &["doctor"]);
     assert!(out.contains("MCP server registered"), "{out}");
 }
+
+/// Multi-assistant install: one embedded card body, thin per-target
+/// writers. AGENTS.md merge preserves surrounding content and is
+/// idempotent; cursor gets its own rule file.
+#[test]
+fn install_for_cursor_and_agents() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::write(
+        repo.join("AGENTS.md"),
+        "# Existing house rules\n\nKeep these.\n",
+    )
+    .unwrap();
+    let skills = dir.path().join("skills");
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_sinter"))
+            .args(["install", "--for", "all", "--dir"])
+            .arg(&skills)
+            .args(["--repo"])
+            .arg(repo)
+            .output()
+            .unwrap()
+    };
+    assert!(run().status.success());
+    assert!(run().status.success()); // idempotent
+
+    let agents = std::fs::read_to_string(repo.join("AGENTS.md")).unwrap();
+    assert!(
+        agents.contains("Existing house rules"),
+        "clobbered host content"
+    );
+    assert_eq!(
+        agents.matches("BEGIN sinter").count(),
+        1,
+        "block duplicated"
+    );
+    assert!(agents.contains("sinter ask"), "routing missing");
+
+    let rule = std::fs::read_to_string(repo.join(".cursor/rules/sinter.mdc")).unwrap();
+    assert!(rule.contains("alwaysApply"), "cursor frontmatter missing");
+    assert!(rule.contains("sinter ask"), "routing missing");
+    // Same body everywhere: no per-assistant content forks.
+    let skill = std::fs::read_to_string(skills.join("SKILL.md")).unwrap();
+    let body_line = "never treat it as stale-proof";
+    assert!(skill.contains(body_line) && agents.contains(body_line) && rule.contains(body_line));
+}

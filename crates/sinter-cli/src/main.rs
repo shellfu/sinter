@@ -54,15 +54,19 @@ enum Command {
         #[arg(default_value = ".")]
         repo: PathBuf,
     },
-    /// Install the Claude Code skill card (embedded, drift-proof)
+    /// Install the assistant integration card (embedded, drift-proof)
     Install {
-        /// Target directory (default: ~/.claude/skills/sinter)
+        /// Targets: claude (global skill), cursor (.cursor/rules),
+        /// agents (AGENTS.md managed block: Codex/Gemini/etc), all
+        #[arg(long = "for", value_delimiter = ',', default_value = "claude")]
+        targets: Vec<String>,
+        /// Claude skill directory override (default: ~/.claude/skills/sinter)
         #[arg(long)]
         dir: Option<PathBuf>,
         /// Also register the MCP server in the repo's project-scope .mcp.json
         #[arg(long)]
         mcp: bool,
-        /// Repo for --mcp registration
+        /// Repo for cursor/agents/--mcp targets
         #[arg(long, default_value = ".")]
         repo: PathBuf,
     },
@@ -156,9 +160,12 @@ fn main() -> ExitCode {
                 }
             };
         }
-        Command::Install { dir, mcp, repo } => {
-            install::run(dir).and_then(|()| if mcp { install::mcp(&repo) } else { Ok(()) })
-        }
+        Command::Install {
+            targets,
+            dir,
+            mcp,
+            repo,
+        } => install::run_targets(&targets, dir, mcp, &repo),
         Command::Hooks {
             action: HooksAction::Install { repo },
         } => hooks::install(&repo),

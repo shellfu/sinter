@@ -1,6 +1,6 @@
 ---
-name: sinter
-description: Answer any question about a codebase's structure — where something is, what depends on it, how symbols connect, what a change affects — by querying the sinter code graph. Use for "where is X", "what calls/uses X", "what breaks if I change X", "how does A reach B", and PR/diff impact. If .sinter/ exists in the repo, treat the question as a sinter query first.
+description: Query the sinter code graph for any codebase-structure question
+alwaysApply: false
 ---
 
 # sinter

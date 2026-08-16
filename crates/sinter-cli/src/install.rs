@@ -9,6 +9,78 @@ use serde_json::{Value, json};
 
 pub const SKILL: &str = include_str!("../skill/SKILL.md");
 
+/// Card body without the Claude-specific YAML frontmatter — the single
+/// source every assistant adapter wraps. One content, many writers:
+/// forked per-assistant content is the failure mode this design forbids.
+pub fn card_body() -> &'static str {
+    SKILL
+        .strip_prefix("---")
+        .and_then(|rest| rest.split_once("---"))
+        .map(|(_, body)| body.trim_start_matches('\n'))
+        .unwrap_or(SKILL)
+}
+
+const AGENTS_BEGIN: &str =
+    "<!-- BEGIN sinter (managed by `sinter install`; edits inside are overwritten) -->";
+const AGENTS_END: &str = "<!-- END sinter -->";
+
+/// Write the Cursor project rule (own file, native .mdc format).
+pub fn cursor(repo: &Path) -> Result<PathBuf> {
+    let dir = repo.join(".cursor").join("rules");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("sinter.mdc");
+    let content = format!(
+        "---
+description: Query the sinter code graph for any codebase-structure question
+alwaysApply: false
+---
+
+{}",
+        card_body()
+    );
+    std::fs::write(&path, content)?;
+    Ok(path)
+}
+
+/// Merge a managed sinter block into the repo's AGENTS.md (the convention
+/// Codex, Gemini, and most non-Claude agents read). Existing content is
+/// preserved; an existing sinter block is replaced in place — idempotent.
+pub fn agents(repo: &Path) -> Result<PathBuf> {
+    let path = repo.join("AGENTS.md");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let block = format!(
+        "{AGENTS_BEGIN}
+
+{}
+{AGENTS_END}",
+        card_body().trim_end()
+    );
+    let merged = match (existing.find(AGENTS_BEGIN), existing.find(AGENTS_END)) {
+        (Some(start), Some(end)) if end > start => {
+            let after = existing[end + AGENTS_END.len()..].to_string();
+            format!("{}{}{}", &existing[..start], block, after)
+        }
+        _ if existing.trim().is_empty() => format!(
+            "{block}
+"
+        ),
+        _ => format!(
+            "{}
+
+{block}
+",
+            existing.trim_end()
+        ),
+    };
+    std::fs::write(&path, merged)?;
+    Ok(path)
+}
+
+/// True when this content is current with the embedded card (drift check).
+pub fn block_current(content: &str) -> bool {
+    content.contains(card_body().trim_end())
+}
+
 /// Default install location for the skill card.
 pub fn default_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
@@ -52,6 +124,38 @@ pub fn mcp(repo: &Path) -> Result<()> {
     println!("registered sinter MCP server in {}", path.display());
     println!("(project scope; for Claude Desktop or other clients, add the equivalent");
     println!(" command `sinter serve --repo <repo>` to that client's own MCP config)");
+    Ok(())
+}
+
+/// Dispatch `--for` targets. Unknown names fail loudly with the list.
+pub fn run_targets(
+    targets: &[String],
+    dir: Option<PathBuf>,
+    mcp_flag: bool,
+    repo: &Path,
+) -> Result<()> {
+    let expanded: Vec<&str> = if targets.iter().any(|t| t == "all") {
+        vec!["claude", "cursor", "agents"]
+    } else {
+        targets.iter().map(String::as_str).collect()
+    };
+    for target in expanded {
+        match target {
+            "claude" => run(dir.clone())?,
+            "cursor" => {
+                let path = cursor(&repo.canonicalize()?)?;
+                println!("installed {}", path.display());
+            }
+            "agents" => {
+                let path = agents(&repo.canonicalize()?)?;
+                println!("merged managed sinter block into {}", path.display());
+            }
+            other => bail!("unknown install target `{other}` (claude, cursor, agents, all)"),
+        }
+    }
+    if mcp_flag {
+        mcp(repo)?;
+    }
     Ok(())
 }
 

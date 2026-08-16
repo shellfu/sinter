@@ -110,6 +110,25 @@ pub fn run(repo: &Path) -> Result<bool> {
             );
         }
     }
+    for (label, path) in [
+        ("cursor rule", repo.join(".cursor/rules/sinter.mdc")),
+        ("AGENTS.md block", repo.join("AGENTS.md")),
+    ] {
+        match std::fs::read_to_string(&path) {
+            Ok(content) if !content.contains("sinter") => {}
+            Ok(content) if install::block_current(&content) => {
+                r.ok(&format!("{label} installed and current"));
+            }
+            Ok(content) if content.contains("BEGIN sinter") || label == "cursor rule" => {
+                let _ = content;
+                r.warn(
+                    &format!("{label} is stale (differs from this binary's embedded card)"),
+                    "rerun `sinter install --for cursor,agents`",
+                );
+            }
+            _ => {}
+        }
+    }
     let mcp_registered = std::fs::read_to_string(repo.join(".mcp.json"))
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
