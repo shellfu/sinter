@@ -1,0 +1,56 @@
+Best matches (3 terms: stale, files, detected):
+
+1. function file_of_id    [doc+name+sig 1/3 terms]
+   crates/sinter-store/src/update.rs:29
+   /// File a node id belongs to: `{file}#...` or a bare file-node id.
+   fn file_of_id(id: &str) -> &str
+   used by 1 files
+
+2. function Store::file_hashes    [doc+name+sig 1/3 terms]
+   crates/sinter-store/src/store.rs:214
+   /// (file, content hash) for every stored file — the changed-set diff base.
+   pub fn file_hashes(&self) -> Result<Vec<(String, String)>, StoreError>
+
+3. function Store::update_files    [doc+name+sig 1/3 terms]
+   crates/sinter-store/src/update.rs:36
+   /// Apply extraction results: `changed` files get their derived state
+   pub fn update_files( &self, changed: &[FileFacts]…ved: &[String], ) -> Result<NameDelta, StoreError>
+
+4. function Store::ref_files    [doc+name+sig 1/3 terms]
+   crates/sinter-store/src/update.rs:165
+   /// Files containing references with any of these names — the set an
+   pub fn ref_files(&self, names: &BTreeSet<String>) -> Result<BTreeSet<String>, StoreError>
+
+5. struct FileFacts    [name+sig 1/3 terms]
+   crates/sinter-core/src/facts.rs:11
+   pub struct FileFacts
+   used by 1 files
+
+6. struct ModuleFiles    [name+sig 1/3 terms]
+   crates/sinter-resolve/src/resolver.rs:107
+   struct ModuleFiles<'a>
+
+7. struct FileDef    [name+sig 1/3 terms]
+   crates/sinter-resolve/src/resolver.rs:126
+   struct FileDef<'a>
+
+8. function line_of    [doc+sig 1/3 terms]
+   crates/sinter-cli/src/render.rs:9
+   /// 1-based line of a byte offset, from the file's current content.
+   pub fn line_of(repo: &Path, file: &str, byte: u64) -> Option<usize>
+   used by 2 files
+
+9. constant FILE_FACTS    [doc+name+sig 1/3 terms]
+   crates/sinter-store/src/store.rs:26
+   /// Per-file extraction truth, content-addressed. Every derived table
+   pub(crate) const FILE_FACTS: TableDefinition<&str, &[u8]> = TableDefinition::new("file_facts");
+   used by 1 files
+
+10. constant FILE_HASH    [doc+name+sig 1/3 terms]
+   crates/sinter-store/src/store.rs:28
+   /// file -> content hash, decoded without touching the facts blob.
+   pub(crate) const FILE_HASH: TableDefinition<&str, &str> = TableDefinition::new("file_hash");
+   used by 1 files
+
+78 more matches below cutoff · `sinter ask --limit 20` to widen
+Next: sinter show file_of_id · sinter affected file_of_id

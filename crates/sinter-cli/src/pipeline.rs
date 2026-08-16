@@ -30,6 +30,23 @@ pub fn db_path(repo: &Path) -> PathBuf {
     repo.join(".sinter").join("graph.redb")
 }
 
+/// Human-readable size of the graph database file.
+pub fn db_size(repo: &Path) -> String {
+    match std::fs::metadata(db_path(repo)) {
+        Ok(meta) => {
+            let bytes = meta.len();
+            if bytes >= 1 << 30 {
+                format!("{:.1}G", bytes as f64 / (1u64 << 30) as f64)
+            } else if bytes >= 1 << 20 {
+                format!("{:.1}M", bytes as f64 / (1u64 << 20) as f64)
+            } else {
+                format!("{}K", bytes >> 10)
+            }
+        }
+        Err(_) => "?".to_string(),
+    }
+}
+
 /// Walk the repo and hash every language-matched file. `stored` supplies
 /// fallback hashes for transiently unreadable files.
 pub fn scan_hashes(repo: &Path, stored: &HashMap<String, String>) -> Result<Vec<(String, String)>> {

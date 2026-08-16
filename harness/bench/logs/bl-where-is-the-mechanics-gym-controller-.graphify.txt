@@ -1,0 +1,37 @@
+Traversal: BFS depth=2 | Start: ['Where the two surfaces differ across a join plane, the plane must be solid.', "Where the cell's door sits, ON THE CELL'S OWN WALL.      The door must land on t", 'Where this sits in Stage 11A'] | 19 nodes found
+
+NODE interiors.py [src=Art/Blender/GeoNodes/addon/black_lantern_architecture/interiors.py loc=L1 community=161]
+NODE Rect [src=Art/Blender/GeoNodes/addon/black_lantern_architecture/interiors.py loc=L132 community=104]
+NODE plan_storey() [src=Art/Blender/GeoNodes/addon/black_lantern_architecture/interiors.py loc=L1063 community=36]
+NODE plan_shopfront_storey() [src=Art/Blender/GeoNodes/addon/black_lantern_architecture/interiors.py loc=L1148 community=36]
+NODE Bellward Kit Assembly Proof — a Bellward building generated in Unreal [src=Stage11A_BellwardUnrealIntegration/BellwardAssemblyProof.md loc=L1 community=311]
+NODE validate_belward_combined_envelope_closure.py [src=Art/Blender/Scripts/validate_belward_combined_envelope_closure.py loc=L1 community=286]
+NODE _door_onto() [src=Art/Blender/GeoNodes/addon/black_lantern_architecture/interiors.py loc=L1272 community=36]
+NODE _round_grid() [src=Art/Blender/GeoNodes/addon/black_lantern_architecture/interiors.py loc=L592 community=36]
+NODE surface() [src=Art/Blender/Scripts/validate_belward_combined_envelope_closure.py loc=L70 community=286]
+NODE gate_join() [src=Art/Blender/Scripts/validate_belward_combined_envelope_closure.py loc=L100 community=286]
+NODE What this proves [src=Stage11A_BellwardUnrealIntegration/BellwardAssemblyProof.md loc=L5 community=311]
+NODE Result [src=Stage11A_BellwardUnrealIntegration/BellwardAssemblyProof.md loc=L10 community=311]
+NODE To view it [src=Stage11A_BellwardUnrealIntegration/BellwardAssemblyProof.md loc=L30 community=311]
+NODE BellwardAssemblyProof.md [src=Stage11A_BellwardUnrealIntegration/BellwardAssemblyProof.md loc=L1 community=311]
+NODE Where the cell's door sits, ON THE CELL'S OWN WALL.      The door must land on t [src=Art/Blender/GeoNodes/addon/black_lantern_architecture/interiors.py loc=L1274 community=36]
+NODE Where this sits in Stage 11A [src=Stage11A_BellwardUnrealIntegration/BellwardAssemblyProof.md loc=L36 community=311]
+NODE Known gaps (minor) [src=Stage11A_BellwardUnrealIntegration/BellwardAssemblyProof.md loc=L21 community=311]
+NODE Where the two surfaces differ across a join plane, the plane must be solid. [src=Art/Blender/Scripts/validate_belward_combined_envelope_closure.py loc=L101 community=286]
+NODE Scripts [src=Stage11A_BellwardUnrealIntegration/BellwardAssemblyProof.md loc=L42 community=311]
+EDGE Where this sits in Stage 11A --contains [EXTRACTED]--> Bellward Kit Assembly Proof — a Bellward building generated in Unreal
+EDGE Where the cell's door sits, ON THE CELL'S OWN WALL.      The door must land on t --rationale_for [EXTRACTED]--> _door_onto()
+EDGE Where the two surfaces differ across a join plane, the plane must be solid. --rationale_for [EXTRACTED]--> gate_join()
+EDGE _door_onto() --contains [EXTRACTED]--> interiors.py
+EDGE _door_onto() --references [EXTRACTED context=parameter_type]--> Rect
+EDGE _door_onto() --calls [EXTRACTED context=call]--> _round_grid()
+EDGE _door_onto() --calls [EXTRACTED context=call]--> plan_storey()
+EDGE _door_onto() --calls [EXTRACTED context=call]--> plan_shopfront_storey()
+EDGE Bellward Kit Assembly Proof — a Bellward building generated in Unreal --contains [EXTRACTED]--> BellwardAssemblyProof.md
+EDGE Bellward Kit Assembly Proof — a Bellward building generated in Unreal --contains [EXTRACTED]--> Known gaps (minor)
+EDGE Bellward Kit Assembly Proof — a Bellward building generated in Unreal --contains [EXTRACTED]--> Result
+EDGE Bellward Kit Assembly Proof — a Bellward building generated in Unreal --contains [EXTRACTED]--> Scripts
+EDGE Bellward Kit Assembly Proof — a Bellward building generated in Unreal --contains [EXTRACTED]--> To view it
+EDGE Bellward Kit Assembly Proof — a Bellward building generated in Unreal --contains [EXTRACTED]--> What this proves
+EDGE gate_join() --contains [EXTRACTED]--> validate_belward_combined_envelope_closure.py
+EDGE gate_join() --calls [EXTRACTED context=call]--> surface()

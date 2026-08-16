@@ -92,10 +92,11 @@ pub fn run(repo: &Path) -> Result<bool> {
     }
 
     r.ok(&format!(
-        "{} nodes, {} edges, {} unresolved refs",
+        "{} nodes, {} edges, {} unresolved refs, {} on disk",
         store.node_count()?,
         store.edge_count()?,
         store.unresolved_count()?,
+        pipeline::db_size(&repo),
     ));
 
     if repo.join(".git").exists() {

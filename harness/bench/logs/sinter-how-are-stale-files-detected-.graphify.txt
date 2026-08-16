@@ -1,0 +1,67 @@
+Traversal: BFS depth=2 | Start: ['show.rs', 'show_card_and_ambiguity()', '2. New verb: `sinter show <symbol>`'] | 48 nodes found
+
+NODE ask_surface.rs [src=crates/sinter-cli/tests/ask_surface.rs loc=L1 community=12]
+NODE sinter() [src=crates/sinter-cli/tests/ask_surface.rs loc=L10 community=12]
+NODE Graph [src=crates/sinter-core/src/graph.rs loc=L17 community=9]
+NODE impact.rs [src=crates/sinter-cli/src/impact.rs loc=L1 community=10]
+NODE open_store() [src=crates/sinter-cli/src/lookup.rs loc=L14 community=3]
+NODE Design: human interaction layer (`ask`, `show`, richer `query`) [src=docs/design-human-query.md loc=L1 community=20]
+NODE unique_symbol() [src=crates/sinter-cli/src/lookup.rs loc=L57 community=3]
+NODE controller_fixture() [src=crates/sinter-cli/tests/ask_surface.rs loc=L29 community=12]
+NODE run() [src=crates/sinter-cli/src/show.rs loc=L44 community=10]
+NODE show.rs [src=crates/sinter-cli/src/show.rs loc=L1 community=10]
+NODE Command [src=crates/sinter-cli/src/main.rs loc=L28 community=13]
+NODE line_of() [src=crates/sinter-cli/src/render.rs loc=L9 community=8]
+NODE 1. New verb: `sinter ask "<question>"` [src=docs/design-human-query.md loc=L27 community=20]
+NODE Path [src=crates/sinter-cli/tests/ask_surface.rs loc=L10 community=12]
+NODE ask_dampens_vendored_paths() [src=crates/sinter-cli/tests/ask_surface.rs loc=L167 community=12]
+NODE BTreeMap [src=crates/sinter-core/src/graph.rs loc=L18 community=10]
+NODE ask_ranks_documented_controller_first() [src=crates/sinter-cli/tests/ask_surface.rs loc=L88 community=12]
+NODE show_card_and_ambiguity() [src=crates/sinter-cli/tests/ask_surface.rs loc=L314 community=12]
+NODE names() [src=crates/sinter-cli/src/show.rs loc=L16 community=10]
+NODE evidence_tally() [src=crates/sinter-cli/src/show.rs loc=L32 community=10]
+NODE ask_json_carries_span_and_score() [src=crates/sinter-cli/tests/ask_surface.rs loc=L148 community=12]
+NODE ask_trigram_credit_is_per_term() [src=crates/sinter-cli/tests/ask_surface.rs loc=L239 community=12]
+NODE copy_tree() [src=crates/sinter-cli/tests/ask_surface.rs loc=L300 community=12]
+NODE ask_zero_hits_and_stopword_only() [src=crates/sinter-cli/tests/ask_surface.rs loc=L131 community=12]
+NODE ask_finds_primaries_across_golden_fixtures() [src=crates/sinter-cli/tests/ask_surface.rs loc=L275 community=12]
+NODE Edge [src=crates/sinter-cli/src/show.rs loc=L16 community=10]
+NODE install_mcp_merges_project_config() [src=crates/sinter-cli/tests/ask_surface.rs loc=L463 community=12]
+NODE doctor_diagnoses_and_clears() [src=crates/sinter-cli/tests/ask_surface.rs loc=L440 community=12]
+NODE ask_family_boost_crosses_header_impl() [src=crates/sinter-cli/tests/ask_surface.rs loc=L378 community=12]
+NODE String [src=crates/sinter-cli/src/show.rs loc=L16 community=10]
+NODE ask_drops_weak_verbs_when_real_terms_remain() [src=crates/sinter-cli/tests/ask_surface.rs loc=L196 community=12]
+NODE hooks_install_preserves_existing_hooks() [src=crates/sinter-cli/tests/ask_surface.rs loc=L543 community=12]
+NODE Result [src=crates/sinter-cli/src/show.rs loc=L44 community=10]
+NODE Path [src=crates/sinter-cli/src/show.rs loc=L44 community=10]
+NODE ask_family_boost_surfaces_parent() [src=crates/sinter-cli/tests/ask_surface.rs loc=L344 community=12]
+NODE init_onboards_repo() [src=crates/sinter-cli/tests/ask_surface.rs loc=L598 community=12]
+NODE install_writes_skill_card() [src=crates/sinter-cli/tests/ask_surface.rs loc=L419 community=12]
+NODE Non-goals [src=docs/design-human-query.md loc=L20 community=20]
+NODE install_for_cursor_and_agents() [src=crates/sinter-cli/tests/ask_surface.rs loc=L498 community=12]
+NODE 5. What this deliberately does not copy from the prototype [src=docs/design-human-query.md loc=L222 community=20]
+NODE 6. Acceptance (golden-style, before implementation counts as done) [src=docs/design-human-query.md loc=L232 community=20]
+NODE 4. Store addition (the only non-CLI change) [src=docs/design-human-query.md loc=L201 community=20]
+NODE 2. New verb: `sinter show <symbol>` [src=docs/design-human-query.md loc=L161 community=20]
+NODE design-human-query.md [src=docs/design-human-query.md loc=L1 community=20]
+NODE Goal [src=docs/design-human-query.md loc=L6 community=20]
+NODE version_subcommand_matches_flag() [src=crates/sinter-cli/tests/ask_surface.rs loc=L577 community=12]
+NODE String [src=crates/sinter-cli/tests/ask_surface.rs loc=L10 community=12]
+NODE 3. `query` unchanged, plus shared polish [src=docs/design-human-query.md loc=L195 community=20]
+EDGE show.rs --imports_from [EXTRACTED context=import]--> BTreeMap
+EDGE show.rs --imports_from [EXTRACTED context=import]--> Path
+EDGE show.rs --imports_from [EXTRACTED context=import]--> Result
+EDGE show.rs --contains [EXTRACTED]--> evidence_tally()
+EDGE show.rs --contains [EXTRACTED]--> names()
+EDGE show.rs --contains [EXTRACTED]--> run()
+EDGE 2. New verb: `sinter show <symbol>` --contains [EXTRACTED]--> Design: human interaction layer (`ask`, `show`, richer `query`)
+EDGE show_card_and_ambiguity() --contains [EXTRACTED]--> ask_surface.rs
+EDGE show_card_and_ambiguity() --calls [EXTRACTED context=call]--> sinter()
+EDGE show_card_and_ambiguity() --calls [EXTRACTED context=call]--> controller_fixture()
+EDGE Design: human interaction layer (`ask`, `show`, richer `query`) --contains [EXTRACTED]--> design-human-query.md
+EDGE Design: human interaction layer (`ask`, `show`, richer `query`) --contains [EXTRACTED]--> 1. New verb: `sinter ask "<question>"`
+EDGE Design: human interaction layer (`ask`, `show`, richer `query`) --contains [EXTRACTED]--> 3. `query` unchanged, plus shared polish
+EDGE Design: human interaction layer (`ask`, `show`, richer `query`) --contains [EXTRACTED]--> 4. Store addition (the only non-CLI change)
+EDGE Design: human interaction layer (`ask`, `show`, richer `query`) --contains [EXTRACTED]--> 5. What this deliberately does not copy from the prototype
+EDGE Design: human interaction layer (`ask`, `show`, richer `query`) --contains [EXTRACTED]--> 6. Acceptance (golden-style, before implementation counts as done)
+... (truncated — 0 more nodes cut by ~2000-token budget. Narrow with context_filter=['call'] or use get_node for a specific symbol)

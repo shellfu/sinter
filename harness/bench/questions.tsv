@@ -1,0 +1,12 @@
+# repo	question	expected_symbol_substring
+bl	where is the character controller?	PlayerCharacterV2
+bl	where is the control mode state machine?	ControlMode
+bl	where is the mechanics gym controller?	MechanicsGymController
+sinter	where is the trigram search?	search
+sinter	how are stale files detected?	scan_hashes
+sinter	where is the evidence based resolver?	resolve
+proto	where is the incremental cache invalidation?	cache
+proto	where is the graph builder?	build_from_json
+proto	where is community detection?	cluster
+skaffold	where is the docker image builder?	Builder
+skaffold	how does file sync to the cluster work?	sync

@@ -1,0 +1,55 @@
+Best matches (2 terms: character, controller):
+
+1. class UBLBuildControllerGymCommandlet    [doc+name+path+sig 2/2 terms]
+   Game/Source/BlackLanternEditor/Public/Commandlets/BLBuildControllerGymCommandlet.h:12
+   /// * Builds the zoned V2 controller gym: one zone per character mechanic, on a wide grid with
+   class BLACKLANTERNEDITOR_API UBLBuildControllerGymCommandlet final : public UCommandlet
+   contains 1
+
+2. enum EBLControlMode    [doc+name 2/2 terms]
+   Game/Source/BlackLantern/Public/Player/BLPlayerControlMode.h:15
+   /// * The behavioural spine of the thief: an explicit control-mode FSM with data-driven policy.
+   enum class EBLControlMode : uint8
+
+3. struct FBLControlModePolicy    [doc+name 2/2 terms]
+   Game/Source/BlackLantern/Public/Player/BLPlayerControlMode.h:50
+   /// * There is no camera or cursor policy here any more.
+   struct FBLControlModePolicy
+
+4. file Game/Source/BlackLantern/Private/World/Actors/BLMechanicsGymControllerActor.cpp    [name+path 2/2 terms]
+   Game/Source/BlackLantern/Private/World/Actors/BLMechanicsGymControllerActor.cpp:1
+   contains 8
+
+5. file Game/Source/BlackLantern/Public/World/Actors/BLMechanicsGymControllerActor.h    [name+path 2/2 terms]
+   Game/Source/BlackLantern/Public/World/Actors/BLMechanicsGymControllerActor.h:1
+   contains 3
+
+6. class ABLPlayerCharacterV2    [doc+family+name+path+sig 1/2 terms]
+   Game/Source/BlackLantern/Public/Player/BLPlayerCharacterV2.h:42
+   /// * Small replacement locomotion character. CharacterMovement remains authoritative for normal
+   class BLACKLANTERN_API ABLPlayerCharacterV2 : public ACharacter
+   contains 105
+
+7. method ABLPlayerCharacterV2::RefreshControlMode    [name+path+sig 2/2 terms]
+   Game/Source/BlackLantern/Private/Player/BLPlayerCharacterV2.cpp:575
+   void ABLPlayerCharacterV2::RefreshControlMode()
+
+8. class UBLThiefAnimComponent    [doc 2/2 terms]
+   Game/Source/BlackLantern/Public/Animation/BLThiefAnimComponent.h:77
+   /// * Plays the thief's action + crouch clips as blended montages on the base AnimBlueprint's DefaultSlot
+   class BLACKLANTERN_API UBLThiefAnimComponent : public UActorComponent
+   contains 23
+
+9. class UBLInteractionSensorComponent    [doc 2/2 terms]
+   Game/Source/BlackLantern/Public/Interaction/BLInteractionSensorComponent.h:27
+   /// * Targeting brain (doc §8-10). Scans nearby IBLInteractable actors each tick, scores them by cursor
+   class BLACKLANTERN_API UBLInteractionSensorComponent : public UActorComponent
+   contains 8
+
+10. function ABLPlayerCharacterV2::GetControlMode    [name+path 2/2 terms]
+   Game/Source/BlackLantern/Public/Player/BLPlayerCharacterV2.h:74
+   /// * The one answer to "what mode am I in". DERIVED every tick from the owning components'
+   EBLControlMode GetControlMode() const
+
+284 more matches below cutoff · `sinter ask --limit 20` to widen
+Next: sinter show UBLBuildControllerGymCommandlet · sinter affected UBLBuildControllerGymCommandlet

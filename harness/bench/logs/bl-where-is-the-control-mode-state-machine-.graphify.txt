@@ -1,0 +1,19 @@
+Traversal: BFS depth=2 | Start: ['State'] | 9 nodes found
+
+NODE Bellward 10C5ABC import runbook [src=Stage11A_BellwardUnrealIntegration/Bellward10C5ABCImportRunbook.md loc=L1 community=288]
+NODE State [src=Stage11A_BellwardUnrealIntegration/Bellward10C5ABCImportRunbook.md loc=L5 community=288]
+NODE Bellward10C5ABCImportRunbook.md [src=Stage11A_BellwardUnrealIntegration/Bellward10C5ABCImportRunbook.md loc=L1 community=288]
+NODE 5. Validate promotion evidence [src=Stage11A_BellwardUnrealIntegration/Bellward10C5ABCImportRunbook.md loc=L142 community=288]
+NODE 1. Dry-run staging preflight [src=Stage11A_BellwardUnrealIntegration/Bellward10C5ABCImportRunbook.md loc=L39 community=288]
+NODE 6. Regression gate [src=Stage11A_BellwardUnrealIntegration/Bellward10C5ABCImportRunbook.md loc=L175 community=288]
+NODE 2. Stage FBXs [src=Stage11A_BellwardUnrealIntegration/Bellward10C5ABCImportRunbook.md loc=L62 community=288]
+NODE 3. First-time import [src=Stage11A_BellwardUnrealIntegration/Bellward10C5ABCImportRunbook.md loc=L70 community=288]
+NODE 4. Repair current assets [src=Stage11A_BellwardUnrealIntegration/Bellward10C5ABCImportRunbook.md loc=L104 community=288]
+EDGE State --contains [EXTRACTED]--> Bellward 10C5ABC import runbook
+EDGE Bellward 10C5ABC import runbook --contains [EXTRACTED]--> Bellward10C5ABCImportRunbook.md
+EDGE Bellward 10C5ABC import runbook --contains [EXTRACTED]--> 1. Dry-run staging preflight
+EDGE Bellward 10C5ABC import runbook --contains [EXTRACTED]--> 2. Stage FBXs
+EDGE Bellward 10C5ABC import runbook --contains [EXTRACTED]--> 3. First-time import
+EDGE Bellward 10C5ABC import runbook --contains [EXTRACTED]--> 4. Repair current assets
+EDGE Bellward 10C5ABC import runbook --contains [EXTRACTED]--> 5. Validate promotion evidence
+EDGE Bellward 10C5ABC import runbook --contains [EXTRACTED]--> 6. Regression gate

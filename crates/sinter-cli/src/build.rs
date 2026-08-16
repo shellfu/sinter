@@ -8,9 +8,11 @@ use crate::pipeline;
 pub fn run(repo: &Path) -> Result<()> {
     let report = pipeline::build(repo, None)?;
     pipeline::print_report(&report);
+    let repo = repo.canonicalize()?;
     println!(
-        "  -> {}",
-        pipeline::db_path(&repo.canonicalize()?).display()
+        "  -> {} ({} on disk)",
+        pipeline::db_path(&repo).display(),
+        pipeline::db_size(&repo)
     );
     Ok(())
 }

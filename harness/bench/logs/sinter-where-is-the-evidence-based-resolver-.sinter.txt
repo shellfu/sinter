@@ -1,0 +1,53 @@
+Best matches (3 terms: evidence, based, resolver):
+
+1. function resolve_one    [name+path+sig 2/3 terms]
+   crates/sinter-resolve/src/resolver.rs:588
+   fn resolve_one<'a>( index: &Index<'a>, spec: &sin…<Import>>, ) -> (Option<&'a Node>, Evidence, bool)
+   used by 1 files
+
+2. function resolve_with_index    [doc+name 2/3 terms]
+   crates/sinter-resolve/src/scip.rs:40
+   /// Bind our extracted references using a compiler-produced SCIP index —
+   pub fn resolve_with_index( index: &Index, nodes: …l FnMut(&str) -> Option<String>, ) -> Vec<Binding>
+   used by 1 files
+
+3. enum Evidence    [name+sig 1/3 terms]
+   crates/sinter-core/src/edge.rs:31
+   pub enum Evidence
+   used by 1 files
+
+4. struct ResolutionStats    [family+name+path 1/3 terms]
+   crates/sinter-resolve/src/resolver.rs:21
+   pub struct ResolutionStats
+   used by 1 files
+
+5. function ResolutionStats::internal_unresolved_rate    [doc+name+path 1/3 terms]
+   crates/sinter-resolve/src/resolver.rs:54
+   /// Internal-unresolved over corpus-anchored references — the number
+   pub fn internal_unresolved_rate(&self) -> f64
+
+6. module resolver    [name+sig 1/3 terms]
+   crates/sinter-resolve/src/lib.rs:1
+   mod resolver;
+
+7. function Evidence::confidence    [doc+name 1/3 terms]
+   crates/sinter-core/src/edge.rs:54
+   /// Compiler-grade evidence is certain; heuristic-free but indirect
+   pub fn confidence(self) -> Confidence
+
+8. function evidence_tally    [name+sig 1/3 terms]
+   crates/sinter-cli/src/show.rs:32
+   fn evidence_tally(edges: &[&Edge]) -> String
+
+9. function ResolutionStats::resolved    [name+path 1/3 terms]
+   crates/sinter-resolve/src/resolver.rs:35
+   pub fn resolved(&self) -> usize
+   used by 1 files
+
+10. function ResolutionStats::unresolved    [name+path 1/3 terms]
+   crates/sinter-resolve/src/resolver.rs:39
+   pub fn unresolved(&self) -> usize
+   used by 1 files
+
+59 more matches below cutoff · `sinter ask --limit 20` to widen
+Next: sinter show resolve_one · sinter affected resolve_one

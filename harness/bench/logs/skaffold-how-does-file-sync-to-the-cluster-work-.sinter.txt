@@ -1,0 +1,54 @@
+Best matches (3 terms: file, sync, cluster):
+
+1. struct FileSyncState    [doc+name+sig 2/3 terms]
+   proto/v1/skaffold.pb.go:1156
+   /// `FileSyncState` contains the status of the current file sync
+   FileSyncState struct
+
+2. struct FileSyncEvent    [doc+name+sig 2/3 terms]
+   proto/v1/skaffold.pb.go:2181
+   /// FileSyncEvent describes the sync status.
+   FileSyncEvent struct
+
+3. struct FileSyncState    [doc+name+sig 2/3 terms]
+   proto/v2/skaffold.pb.go:1410
+   /// `FileSyncState` contains the status of the current file sync
+   FileSyncState struct
+
+4. struct FileSyncEvent    [doc+name+sig 2/3 terms]
+   proto/v2/skaffold.pb.go:2950
+   /// FileSyncEvent describes the sync status.
+   FileSyncEvent struct
+
+5. struct Sync    [doc+name+sig 2/3 terms]
+   pkg/skaffold/schema/latest/config.go:1136
+   /// Sync *beta* specifies what files to sync into the container.
+   Sync struct
+
+6. struct Sync    [doc+name+sig 2/3 terms]
+   pkg/skaffold/schema/v1/config.go:573
+   /// Sync *beta* specifies what files to sync into the container.
+   Sync struct
+
+7. struct Sync    [doc+name+sig 2/3 terms]
+   pkg/skaffold/schema/v1beta10/config.go:481
+   /// Sync *alpha* specifies what files to sync into the container.
+   Sync struct
+
+8. struct Sync    [doc+name+sig 2/3 terms]
+   pkg/skaffold/schema/v1beta11/config.go:492
+   /// Sync *alpha* specifies what files to sync into the container.
+   Sync struct
+
+9. struct Sync    [doc+name+sig 2/3 terms]
+   pkg/skaffold/schema/v1beta12/config.go:517
+   /// Sync *alpha* specifies what files to sync into the container.
+   Sync struct
+
+10. struct Sync    [doc+name+sig 2/3 terms]
+   pkg/skaffold/schema/v1beta13/config.go:536
+   /// Sync *alpha* specifies what files to sync into the container.
+   Sync struct
+
+13719 more matches below cutoff · `sinter ask --limit 20` to widen
+Next: sinter show FileSyncState · sinter affected FileSyncState

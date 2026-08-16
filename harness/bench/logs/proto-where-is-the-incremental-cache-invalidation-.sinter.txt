@@ -1,0 +1,64 @@
+Best matches (3 terms: incremental, cache, invalidation):
+
+1. function save_semantic_cache    [doc+name+path+sig 2/3 terms]
+   graphify/cache.py:1229
+   /// Save semantic extraction results to cache, keyed by source_file.
+   def save_semantic_cache( nodes: list[dict], edges…ne mode (e.g. ``"deep"``) writes ``cache/semantic-
+   contains 5 · used by 8 files
+
+2. function extract    [doc+sig 2/3 terms]
+   graphify/extract.py:5265
+   /// Extract AST nodes and edges from a list of code files.
+   def extract( paths: list[Path], cache_root: Path … common_len = 0 for i in range(min_parts): if len(
+   contains 9 · used by 67 files
+
+3. function _stamped_manifest_files    [doc+sig 2/3 terms]
+   graphify/cli.py:88
+   /// Manifest-safe files dict: only stamp semantic files that actually
+   def _stamped_manifest_files( files_by_type: dict[…sem_extracted.add(_resolve(sf)) partial_resolved =
+   contains 1 · used by 3 files
+
+4. function _group_has_partial_marker    [doc+path 2/3 terms]
+   graphify/cache.py:1212
+   /// True if any node/edge/hyperedge in a per-file group carries the internal
+   def _group_has_partial_marker(group: dict) -> bool:
+   used by 2 files
+
+5. function load_cached    [doc+name+path+sig 1/3 terms]
+   graphify/cache.py:870
+   /// Return cached extraction for this file if hash matches, else None.
+   def load_cached(path: Path, root: Path = Path("."…ntents. Cache value: stored as graphify-out/cache/
+   used by 8 files
+
+6. function check_semantic_cache    [doc+name+path+sig 1/3 terms]
+   graphify/cache.py:1127
+   /// Check semantic extraction cache for a list of absolute file paths.
+   def check_semantic_cache( files: list[str], root:…one mode (e.g. ``"deep"``) reads ``cache/semantic-
+   used by 4 files
+
+7. function save_cached    [doc+name+path+sig 1/3 terms]
+   graphify/cache.py:958
+   /// Save extraction result for this file.
+   def save_cached(path: Path, result: dict, root: P…esult for this file. Stores as graphify-out/cache/
+   used by 4 files
+
+8. function _os_path    [doc 2/3 terms]
+   graphify/detect.py:1624
+   /// Return an OS path string safe for open()/stat() on Windows long paths.
+   def _os_path(path: Path) -> str:
+   used by 2 files
+
+9. function cache_dir    [doc+name+path+sig 1/3 terms]
+   graphify/cache.py:839
+   /// Returns the cache directory for ``kind`` - creates it if needed.
+   def cache_dir(root: Path = Path("."), kind: str =…582). AST entries live in graphify-out/cache/ast/v
+   used by 2 files
+
+10. function prune_semantic_cache    [doc+name+path+sig 1/3 terms]
+   graphify/cache.py:1073
+   /// Remove orphaned semantic cache entries, returning the count pruned.
+   def prune_semantic_cache(root: Path, live_hashes: set[str]) -> int:
+   used by 2 files
+
+354 more matches below cutoff · `sinter ask --limit 20` to widen
+Next: sinter show save_semantic_cache · sinter affected save_semantic_cache

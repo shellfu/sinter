@@ -1,0 +1,61 @@
+Best matches (2 terms: graph, builder):
+
+1. function _build_probe_graph    [name+path+sig 2/2 terms]
+   graphify/multigraph_compat.py:73
+   def _build_probe_graph() -> nx.MultiDiGraph:
+   used by 1 files
+
+2. function build_from_json    [doc+name+path+sig 2/2 terms]
+   graphify/build.py:774
+   /// Build a NetworkX graph from an extraction dict.
+   def build_from_json(extraction: dict, *, directed…alse, root: str | Path | None = None) -> nx.Graph:
+   used by 35 files
+
+3. function build    [doc+name+path+sig 2/2 terms]
+   graphify/build.py:1297
+   /// Merge multiple extraction results into one graph.
+   def build( extractions: list[dict], *, directed: …dedup import deduplicate_entities combined: dict =
+   used by 6 files
+
+4. function build_merge    [doc+name+path+sig 2/2 terms]
+   graphify/build.py:1580
+   /// Load existing graph.json, merge new chunks into it, and save back.
+   def build_merge( new_chunks: list[dict], graph_pa…nodes) if replaced_n: print( f"[graphify] Replaced
+   contains 4 · used by 5 files
+
+5. function _build_server    [doc+name+path+sig 2/2 terms]
+   graphify/serve.py:1447
+   /// Build the configured low-level MCP Server (shared by every transport).
+   def _build_server(graph_path: str):
+   contains 22 · used by 1 files
+
+6. function _build_id_label_maps    [doc+name+path+sig 2/2 terms]
+   graphify/reflect.py:622
+   /// From graph.json build:
+   def _build_id_label_maps(graph_path: Path) -> tup…ph yields empty maps. """ id_set: dict[str, str] =
+   used by 1 files
+
+7. function _build_http_app    [name+path+sig 2/2 terms]
+   graphify/serve.py:2109
+   /// Build the Starlette ASGI app for the Streamable HTTP transport.
+   def _build_http_app( graph_path: str, *, host: st…le_dns_rebinding_protection=False) else: allowed =
+   contains 1 · used by 2 files
+
+8. function build_community_labels    [doc+name+path 2/2 terms]
+   graphify/prs.py:338
+   /// Return {community_id: [top_labels]} extracted from graph node data.
+   def build_community_labels(data: dict, top_n: int = 4) -> dict[int, list[str]]:
+   used by 2 files
+
+9. file graphify/build.py    [name+path 2/2 terms]
+   graphify/build.py:1
+   contains 37 · used by 1 files
+
+10. function build_learning_overlay    [name+path+sig 2/2 terms]
+   graphify/reflect.py:758
+   /// Project the reflect aggregate into the sidecar's ``{version, generated_at,
+   def build_learning_overlay(agg: dict[str, Any], g…roject the reflect aggregate into the sidecar's ``
+   contains 1 · used by 2 files
+
+667 more matches below cutoff · `sinter ask --limit 20` to widen
+Next: sinter show _build_probe_graph · sinter affected _build_probe_graph
