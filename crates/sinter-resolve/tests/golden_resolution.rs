@@ -404,3 +404,8 @@ fn all_fixtures_registered() {
         );
     }
 }
+
+#[test]
+fn resolution_proto_basic() {
+    check("proto-basic");
+}

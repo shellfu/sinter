@@ -14,6 +14,7 @@ mod render;
 mod serve;
 mod show;
 mod watch;
+mod workspace;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -40,6 +41,11 @@ struct FilterArgs {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Build all workspace members and refresh cross-repo boundary links
+    Workspace {
+        /// Path to the workspace manifest (TOML)
+        manifest: PathBuf,
+    },
     /// Onboard a repo: build + git hooks + agent integration + MCP, then doctor
     Init {
         #[arg(default_value = ".")]
@@ -62,6 +68,9 @@ enum Command {
     Doctor {
         #[arg(default_value = ".")]
         repo: PathBuf,
+        /// Diagnose a workspace instead (path to manifest)
+        #[arg(long)]
+        workspace: Option<PathBuf>,
     },
     /// Install the assistant integration card (embedded, drift-proof)
     Install {
@@ -89,6 +98,9 @@ enum Command {
         question: String,
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        /// Fan out across a workspace (path to manifest)
+        #[arg(long)]
+        workspace: Option<PathBuf>,
         #[arg(long, default_value_t = 5)]
         limit: usize,
         #[arg(long)]
@@ -113,6 +125,9 @@ enum Command {
         symbol: String,
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        /// Traverse across a workspace (path to manifest)
+        #[arg(long)]
+        workspace: Option<PathBuf>,
         #[arg(long, default_value_t = 10)]
         max_depth: usize,
         #[command(flatten)]
@@ -124,6 +139,9 @@ enum Command {
         to: String,
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        /// Traverse across a workspace (path to manifest)
+        #[arg(long)]
+        workspace: Option<PathBuf>,
         #[command(flatten)]
         filter: FilterArgs,
     },
@@ -132,6 +150,9 @@ enum Command {
         rev_range: String,
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        /// Follow boundary links into other workspace members
+        #[arg(long)]
+        workspace: Option<PathBuf>,
     },
     /// MCP server over stdio
     Serve {
@@ -159,6 +180,7 @@ fn main() -> ExitCode {
     }
     let cli = Cli::parse();
     let result = match cli.command {
+        Command::Workspace { manifest } => workspace::run(&manifest),
         Command::Init { repo, cursor } => {
             return match init::run(&repo, cursor) {
                 Ok(true) => ExitCode::SUCCESS,
@@ -171,8 +193,12 @@ fn main() -> ExitCode {
         }
         Command::Build { repo } => build::run(&repo),
         Command::Watch { repo } => watch::run(&repo),
-        Command::Doctor { repo } => {
-            return match doctor::run(&repo) {
+        Command::Doctor { repo, workspace } => {
+            let result = match workspace {
+                Some(manifest) => doctor::run_workspace(&manifest),
+                None => doctor::run(&repo),
+            };
+            return match result {
                 Ok(true) => ExitCode::SUCCESS,
                 Ok(false) => ExitCode::FAILURE,
                 Err(e) => {
@@ -193,9 +219,13 @@ fn main() -> ExitCode {
         Command::Ask {
             question,
             repo,
+            workspace,
             limit,
             json,
-        } => ask::run(&repo, &question, limit, json),
+        } => match workspace {
+            Some(manifest) => ask::run_workspace(&manifest, &question, limit),
+            None => ask::run(&repo, &question, limit, json),
+        },
         Command::Show { symbol, repo } => show::run(&repo, &symbol),
         Command::Query {
             symbol,
@@ -205,16 +235,36 @@ fn main() -> ExitCode {
         Command::Affected {
             symbol,
             repo,
+            workspace,
             max_depth,
             filter,
-        } => affected::run(&repo, &symbol, &filter.evidence, filter.certain, max_depth),
+        } => match workspace {
+            Some(manifest) => affected::run_workspace(
+                &manifest,
+                &symbol,
+                &filter.evidence,
+                filter.certain,
+                max_depth,
+            ),
+            None => affected::run(&repo, &symbol, &filter.evidence, filter.certain, max_depth),
+        },
         Command::Path {
             from,
             to,
             repo,
+            workspace,
             filter,
-        } => pathcmd::run(&repo, &from, &to, &filter.evidence, filter.certain),
-        Command::Impact { rev_range, repo } => impact::run(&repo, &rev_range),
+        } => match workspace {
+            Some(manifest) => {
+                pathcmd::run_workspace(&manifest, &from, &to, &filter.evidence, filter.certain)
+            }
+            None => pathcmd::run(&repo, &from, &to, &filter.evidence, filter.certain),
+        },
+        Command::Impact {
+            rev_range,
+            repo,
+            workspace,
+        } => impact::run(&repo, &rev_range, workspace.as_deref()),
         Command::Serve { repo } => serve::run(&repo),
         Command::Version => {
             let languages: Vec<&str> = sinter_extract::LANGUAGES.iter().map(|l| l.name).collect();

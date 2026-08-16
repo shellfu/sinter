@@ -1,0 +1,33 @@
+{
+  "nodes": [
+    ["file", "contracts/common.proto", "contracts/common.proto"],
+    ["struct", "Money", "contracts/common.proto", "Money is an exact-decimal currency amount."],
+    ["enum", "CurrencyRegion", "contracts/common.proto", "CurrencyRegion groups currencies by settlement region."],
+    ["file", "contracts/payments.proto", "contracts/payments.proto"],
+    ["interface", "Payments", "contracts/payments.proto", "Payments charges customers and reports the outcome."],
+    ["method", "Payments::Charge", "contracts/payments.proto"],
+    ["struct", "ChargeRequest", "contracts/payments.proto"],
+    ["struct", "ChargeReply", "contracts/payments.proto"]
+  ],
+  "contains": [
+    ["contracts/common.proto", "Money"],
+    ["contracts/common.proto", "CurrencyRegion"],
+    ["contracts/payments.proto", "Payments"],
+    ["Payments", "Payments::Charge"],
+    ["contracts/payments.proto", "ChargeRequest"],
+    ["contracts/payments.proto", "ChargeReply"]
+  ],
+  "references": [
+    ["imports", "contracts/common.proto"],
+    ["uses", "ChargeRequest"],
+    ["uses", "ChargeReply"],
+    ["uses", "contracts.common.Money"]
+  ],
+  "resolved": [
+    ["import", "imports", "contracts/payments.proto", "contracts/common.proto"],
+    ["scope", "uses", "Payments::Charge", "ChargeRequest"],
+    ["scope", "uses", "Payments::Charge", "ChargeReply"],
+    ["import", "uses", "ChargeRequest", "Money"]
+  ],
+  "unresolved_count": 0
+}

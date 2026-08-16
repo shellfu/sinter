@@ -37,6 +37,10 @@ pub enum Evidence {
     Import,
     /// A compiler-produced SCIP index binds reference to definition.
     Scip,
+    /// An operator-declared binding from a workspace manifest (runtime
+    /// coupling like queue topics/HTTP routes that no static analysis can
+    /// see). Auditable in the manifest; never inferred.
+    Declared,
 }
 
 impl Evidence {
@@ -46,6 +50,7 @@ impl Evidence {
             Self::Scope => "scope",
             Self::Import => "import",
             Self::Scip => "scip",
+            Self::Declared => "declared",
         }
     }
 
@@ -53,7 +58,7 @@ impl Evidence {
     /// evidence (scope/import matching) is inferred.
     pub fn confidence(self) -> Confidence {
         match self {
-            Self::Structural | Self::Scip => Confidence::Certain,
+            Self::Structural | Self::Scip | Self::Declared => Confidence::Certain,
             Self::Scope | Self::Import => Confidence::Inferred,
         }
     }

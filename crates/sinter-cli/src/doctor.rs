@@ -24,6 +24,46 @@ impl Report {
     }
 }
 
+/// Workspace health: member freshness and boundary-link staleness.
+pub fn run_workspace(manifest: &Path) -> Result<bool> {
+    let ws = crate::workspace::load(manifest)?;
+    let mut r = Report { problems: 0 };
+    println!(
+        "workspace `{}` ({} members)",
+        ws.manifest.workspace.name,
+        ws.members.len()
+    );
+    for (name, repo) in &ws.members {
+        if pipeline::db_path(repo).exists() {
+            r.ok(&format!(
+                "member {name}: graph present ({})",
+                repo.display()
+            ));
+        } else {
+            r.warn(
+                &format!("member {name}: no graph at {}", repo.display()),
+                "run `sinter workspace <manifest>`",
+            );
+        }
+    }
+    match crate::workspace::stale_members(&ws) {
+        Ok(stale) if stale.is_empty() => {
+            let links = crate::workspace::LinkStore::open(&ws)?;
+            r.ok(&format!("boundary links fresh ({} links)", links.count()?));
+        }
+        Ok(stale) => r.warn(
+            &format!(
+                "boundary links stale (changed members: {})",
+                stale.join(", ")
+            ),
+            "run `sinter workspace <manifest>`",
+        ),
+        Err(_) => r.warn("no link store yet", "run `sinter workspace <manifest>`"),
+    }
+    println!("{} problem(s)", r.problems);
+    Ok(r.problems == 0)
+}
+
 pub fn run(repo: &Path) -> Result<bool> {
     let mut r = Report { problems: 0 };
 

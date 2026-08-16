@@ -754,6 +754,102 @@ fn resolve_one<'a>(
     (target, Evidence::Import, internal)
 }
 
+/// Resolve references against FOREIGN definitions using import evidence
+/// only — the cross-repo boundary pass. Same-file/module/receiver/local
+/// tiers are intra-repo by definition and deliberately excluded, which
+/// also prevents false bindings between identically-named files in
+/// different members. `refs` and `owner_imports` come from one member;
+/// `foreign_nodes` from the others.
+pub fn resolve_boundary(
+    foreign_nodes: &[Node],
+    references: &[Reference],
+    owner_imports: &[Reference],
+) -> Vec<Binding> {
+    let index = build_index(foreign_nodes, owner_imports, &[], &[]);
+    let mut bindings = Vec::new();
+    for (i, r) in references.iter().enumerate() {
+        let Some(spec) = spec_for_path(&r.file) else {
+            continue;
+        };
+        let src = r
+            .enclosing
+            .clone()
+            .unwrap_or_else(|| NodeId::new(r.file.clone()));
+        let imports = index.imports.get(r.file.as_str());
+        let target = if r.relation == Relation::Imports {
+            let glob = matches!(r.alias.as_deref(), Some("*") | Some("."));
+            let segments = (spec.absolutize)(strip_glob(&r.name), &r.file);
+            if glob {
+                unique_best(
+                    index
+                        .by_module_tail
+                        .get(segments.last().map(String::as_str).unwrap_or(""))
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|(key, node)| Some((suffix_len(key, &segments)?, *node))),
+                )
+            } else {
+                index.resolve_path(&segments, 4)
+            }
+        } else if let Some(path) = &r.path {
+            let segments = (spec.absolutize)(path, &r.file);
+            let direct = index.resolve_path(&segments, 4);
+            direct.or_else(|| {
+                let prefix = segments
+                    .len()
+                    .checked_sub(2)
+                    .and_then(|p| segments.get(p))?;
+                let candidates: Vec<&Node> = imports
+                    .into_iter()
+                    .flatten()
+                    .filter(|imp| !imp.glob && imp.binding == *prefix)
+                    .filter_map(|imp| {
+                        let mut full = imp.segments.clone();
+                        full.push(r.name.clone());
+                        index.resolve_path(&full, 4)
+                    })
+                    .collect();
+                match candidates.as_slice() {
+                    [node] => Some(node),
+                    _ => None,
+                }
+            })
+        } else {
+            // Bare name: only through this member's own imports.
+            let named: Vec<&Node> = imports
+                .into_iter()
+                .flatten()
+                .filter(|imp| !imp.glob && imp.binding == r.name)
+                .filter_map(|imp| index.resolve_path(&imp.segments, 4))
+                .collect();
+            match named.as_slice() {
+                [node] => Some(*node),
+                _ => None,
+            }
+        };
+        if let Some(node) = target
+            && node.id != src
+        {
+            let relation = if r.relation == Relation::Calls && is_type_kind(node.kind) {
+                Relation::Uses
+            } else {
+                r.relation
+            };
+            bindings.push(Binding {
+                edge: Edge {
+                    src,
+                    dst: node.id.clone(),
+                    relation,
+                    evidence: Evidence::Import,
+                    confidence: Evidence::Import.confidence(),
+                },
+                reference: i,
+            });
+        }
+    }
+    bindings
+}
+
 /// Segment count of `key` if it is a non-empty suffix of `path`.
 fn suffix_len(key: &[String], path: &[String]) -> Option<usize> {
     (!key.is_empty() && path.len() >= key.len() && path[path.len() - key.len()..] == key[..])

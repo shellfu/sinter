@@ -252,3 +252,23 @@ sparse). Results: Black Lantern 87M -> 32.6M (parity with the prototype's
 32M despite storing signatures/docs/evidence it lacks); skaffold real
 663M vs the prototype's 462M; every speed budget held or improved.
 Single-copy edges and posting-list tokens remain in reserve, unneeded.
+
+## D24 — Workspaces: federation, not merger
+
+Cross-repo support (distributed systems) federates member graphs instead
+of merging them. A TOML manifest names members (repo paths) and optional
+[[links]] for runtime coupling no parser can see (queues, RPC by config).
+Each member keeps its own .sinter store untouched; only boundary edges
+live in a workspace-level LinkStore (.sinter-workspace/links.redb), keyed
+by (member, node id). Boundary resolution reuses each member's persisted
+unresolved-external queue (D17) and rebinds it against foreign members
+with import evidence only — no scope/receiver tiers across repos, so a
+same-named symbol in another member never binds without an import trail.
+Declared links carry Evidence::Declared (operator assertion, filterable
+like any evidence); a declared symbol that is missing or ambiguous fails
+the refresh loudly. affected/path/ask/impact/doctor take --workspace and
+print member:qualified; traversal is BFS over member edges + boundary
+links with the same EdgeFilter. Member fingerprints (db len+mtime) make
+staleness detectable. Rejected: one merged store (rebuild coupling,
+identity collisions) and cross-repo name guessing (violates
+evidence-or-nothing). Design: docs/design-workspace.md.

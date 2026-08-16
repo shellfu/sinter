@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package contracts.payments;
+
+import "contracts/common.proto";
+
+// Payments charges customers and reports the outcome.
+service Payments {
+  rpc Charge(ChargeRequest) returns (ChargeReply);
+}
+
+message ChargeRequest {
+  contracts.common.Money amount = 1;
+  string customer_id = 2;
+}
+
+message ChargeReply {
+  string charge_id = 1;
+}

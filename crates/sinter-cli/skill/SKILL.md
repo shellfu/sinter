@@ -47,6 +47,7 @@ integration, ending with a doctor report:
 | What depends on X / blast radius | `sinter affected <symbol> --repo <repo>` |
 | How does A reach B | `sinter path <A> <B> --repo <repo>` |
 | What does this diff/PR affect | `sinter impact <rev-range> --repo <repo>` |
+| Cross-repo (distributed system) versions of the above | add `--workspace <manifest.toml>`; symbols may be `member:Symbol` |
 
 Add `--json` to `ask` for structured output. `affected`/`path` accept
 `--evidence scip,import,scope` and `--certain` to restrict to stronger
@@ -60,6 +61,15 @@ evidence tiers.
   binds the reference — say so rather than guessing.
 - Symbol ambiguity returns a candidate list; pick the qualified name or
   node id and rerun rather than assuming.
+
+## Workspaces (cross-repo)
+
+If a workspace manifest exists (TOML with [members] mapping names to repo
+paths), `sinter workspace <manifest>` builds every member and refreshes
+boundary links; `affected`/`path`/`ask`/`impact`/`doctor` accept
+`--workspace <manifest>` to traverse across repos. Cross-repo edges carry
+import evidence (or `declared` for manifest-declared runtime coupling) and
+are filterable like any other.
 
 ## Boundaries
 

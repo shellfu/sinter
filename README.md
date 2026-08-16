@@ -18,6 +18,9 @@ agent reading files cannot:
   across every supported language at once.
 - **Human entry point** — a vague question returns a ranked, content-bearing
   starting point in milliseconds (`sinter ask`, `sinter show`).
+- **Cross-repo workspaces** — federated graphs over many repos for
+  distributed systems: blast radius, paths, and PR impact across service
+  boundaries (`--workspace`, `docs/design-workspace.md`).
 
 The design rule underneath everything: **evidence or nothing.** An edge
 exists only when import, scope, receiver, typed-local, or compiler (SCIP)
@@ -80,6 +83,7 @@ is auditable, in the same spirit as the edges.
 | `sinter path <from> <to>` | Shortest dependency path with per-step evidence |
 | `sinter impact <rev-range>` | Changed symbols → blast radius → affected tests |
 | `sinter serve` | MCP server over stdio for agent use |
+| `sinter workspace <manifest>` | Build all members of a cross-repo workspace + refresh boundary links |
 | `sinter install --for <targets>` | Write agent cards (claude, cursor, agents/AGENTS.md); `--mcp` registers the server |
 | `sinter doctor [repo]` | Diagnose installation + graph; every finding names its fix |
 | `sinter version` | Version, graph schema, language packs |

@@ -298,6 +298,70 @@ fn adjacency_counts(store: &Store, node: &Node) -> Result<(usize, usize, Vec<Str
     Ok((contains, used_by_files.len(), extends))
 }
 
+/// `sinter ask --workspace`: fan candidate gathering out across members,
+/// merge-rank with the same deterministic formula, tie-break extended by
+/// member name.
+pub fn run_workspace(manifest: &Path, question: &str, limit: usize) -> Result<()> {
+    let ws = crate::workspace::load(manifest)?;
+    let terms = terms_of(question);
+    if terms.is_empty() {
+        bail!("no searchable terms in {question:?} — try naming the thing you're looking for");
+    }
+    let mut all: Vec<(String, std::path::PathBuf, Hit)> = Vec::new();
+    for (name, repo) in &ws.members {
+        let store = crate::lookup::open_store(repo)?;
+        for hit in score_candidates(&store, &terms)? {
+            all.push((name.clone(), repo.clone(), hit));
+        }
+    }
+    all.sort_by(|a, b| {
+        b.2.score
+            .cmp(&a.2.score)
+            .then_with(|| (a.2.node.kind as u8).cmp(&(b.2.node.kind as u8)))
+            .then_with(|| a.0.cmp(&b.0))
+            .then_with(|| a.2.node.file.cmp(&b.2.node.file))
+            .then_with(|| a.2.node.span.start.cmp(&b.2.node.span.start))
+    });
+    if all.is_empty() {
+        println!("no match for {:?} in any member", terms.join(" "));
+        return Ok(());
+    }
+    println!(
+        "Best matches across {} members ({} terms: {}):
+",
+        ws.members.len(),
+        terms.len(),
+        terms.join(", ")
+    );
+    for (rank, (member, repo, hit)) in all.iter().take(limit).enumerate() {
+        let line = line_of(repo, &hit.node.file, hit.node.span.start);
+        println!(
+            "{}. {} {}:{}    [{} {}/{} terms]",
+            rank + 1,
+            hit.node.kind.as_str(),
+            member,
+            qualified_of(hit.node.id.as_str()),
+            hit.channels.join("+"),
+            hit.matched.len(),
+            hit.total_terms,
+        );
+        println!("   {}:{}", member, location(repo, &hit.node.file, line));
+        if let Some(doc) = &hit.node.doc
+            && let Some(first) = doc.lines().next()
+        {
+            println!("   /// {first}");
+        }
+        if !hit.node.signature.is_empty() {
+            println!("   {}", ellipsize(&hit.node.signature, 100));
+        }
+        println!();
+    }
+    if all.len() > limit {
+        println!("{} more matches below cutoff", all.len() - limit);
+    }
+    Ok(())
+}
+
 pub fn run(repo: &Path, question: &str, limit: usize, json: bool) -> Result<()> {
     let repo = repo.canonicalize()?;
     let store = open_store(&repo)?;

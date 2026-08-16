@@ -426,3 +426,8 @@ fn all_fixtures_registered() {
         );
     }
 }
+
+#[test]
+fn golden_proto_basic() {
+    check("proto-basic");
+}

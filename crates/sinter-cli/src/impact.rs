@@ -162,8 +162,53 @@ pub fn compute(repo: &Path, rev_range: &str) -> Result<ImpactReport> {
     })
 }
 
-pub fn run(repo: &Path, rev_range: &str) -> Result<()> {
-    let report = compute(repo, rev_range)?;
+pub fn run(repo: &Path, rev_range: &str, manifest: Option<&Path>) -> Result<()> {
+    let mut report = compute(repo, rev_range)?;
+    // Workspace mode: follow boundary links out of the changed member and
+    // continue the blast radius inside the other members.
+    if let Some(manifest) = manifest {
+        let ws = crate::workspace::load(manifest)?;
+        let repo_canon = repo.canonicalize()?;
+        let member = ws
+            .members
+            .iter()
+            .find(|(_, path)| **path == repo_canon)
+            .map(|(name, _)| name.clone())
+            .ok_or_else(|| anyhow::anyhow!("--repo is not a member of this workspace"))?;
+        // Resolve changed symbols to node ids first, then drop the handle:
+        // workspace traversal opens every member store itself, and redb
+        // forbids a second open of the same file in-process.
+        let changed_ids: Vec<sinter_core::NodeId> = {
+            let store = open_store(&repo_canon)?;
+            report
+                .changed_symbols
+                .iter()
+                .filter_map(|c| {
+                    crate::lookup::unique_symbol(&store, &c.qualified)
+                        .ok()
+                        .map(|n| n.id)
+                })
+                .collect()
+        };
+        let filter = EdgeFilter::default();
+        let mut cross: std::collections::BTreeMap<String, SymbolRef> =
+            std::collections::BTreeMap::new();
+        for node_id in &changed_ids {
+            for reached in crate::workspace::dependents(&ws, &member, node_id, &filter, 25)? {
+                if reached.member == member {
+                    continue; // local radius already counted
+                }
+                let key = format!("{}:{}", reached.member, reached.node.id.as_str());
+                let mut sym = symbol_ref(&reached.node);
+                sym.file = format!("{}:{}", reached.member, sym.file);
+                if is_test(&reached.node) {
+                    report.affected_tests.push(sym.clone());
+                }
+                cross.insert(key, sym);
+            }
+        }
+        report.blast_radius.extend(cross.into_values());
+    }
     println!(
         "impact {}: {} changed symbols, {} in blast radius, {} tests affected",
         report.rev_range,

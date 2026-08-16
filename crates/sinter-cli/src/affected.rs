@@ -37,3 +37,37 @@ pub fn run(
     }
     Ok(())
 }
+
+/// `sinter affected --workspace`: cross-repo blast radius over member
+/// stores plus boundary links.
+pub fn run_workspace(
+    manifest: &std::path::Path,
+    symbol: &str,
+    evidence: &[String],
+    certain: bool,
+    max_depth: usize,
+) -> Result<()> {
+    let ws = crate::workspace::load(manifest)?;
+    let (member, node) = crate::workspace::find_symbol(&ws, symbol)?;
+    let filter = crate::lookup::edge_filter(evidence, certain)?;
+    let reached = crate::workspace::dependents(&ws, &member, &node.id, &filter, max_depth)?;
+    println!(
+        "{} dependents of {member}:{} ({})",
+        reached.len(),
+        qualified_of(node.id.as_str()),
+        node.file
+    );
+    for r in &reached {
+        println!(
+            "  {}{}:{} {}  {}  [{}/{}]",
+            "  ".repeat(r.depth - 1),
+            r.member,
+            qualified_of(r.node.id.as_str()),
+            r.node.kind.as_str(),
+            r.node.file,
+            r.relation.as_str(),
+            r.evidence.as_str(),
+        );
+    }
+    Ok(())
+}

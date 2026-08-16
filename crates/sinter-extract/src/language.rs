@@ -273,6 +273,22 @@ fn cpp_absolutize(path: &str, file: &str) -> Vec<String> {
         .collect()
 }
 
+fn proto_grammar() -> Language {
+    tree_sitter_proto::LANGUAGE.into()
+}
+
+/// `contracts/payments.proto` -> ["contracts", "payments"]. Generated-stub
+/// imports name proto symbols through package paths; module keys are the
+/// file path, packages resolve via the same suffix matching as Go.
+fn proto_module_path(file: &str) -> Vec<String> {
+    let trimmed = file.strip_suffix(".proto").unwrap_or(file);
+    trimmed
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 fn typescript_grammar() -> Language {
     tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
 }
@@ -358,6 +374,18 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         module_path: bash_module_path,
         path_separators: &["/"],
         absolutize: bash_absolutize,
+        receivers: &[],
+        doc_skip_kinds: &[],
+    },
+    LanguageSpec {
+        name: "proto",
+        extensions: &["proto"],
+        grammar: proto_grammar,
+        query_source: include_str!("../queries/proto.scm"),
+        comment_kinds: &["comment"],
+        module_path: proto_module_path,
+        path_separators: &["/", "."],
+        absolutize: go_absolutize,
         receivers: &[],
         doc_skip_kinds: &[],
     },

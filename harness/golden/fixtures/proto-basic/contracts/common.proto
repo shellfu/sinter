@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package contracts.common;
+
+// Money is an exact-decimal currency amount.
+message Money {
+  string currency_code = 1;
+  int64 units = 2;
+  int32 nanos = 3;
+}
+
+// CurrencyRegion groups currencies by settlement region.
+enum CurrencyRegion {
+  CURRENCY_REGION_UNSPECIFIED = 0;
+  CURRENCY_REGION_AMERICAS = 1;
+  CURRENCY_REGION_EMEA = 2;
+}

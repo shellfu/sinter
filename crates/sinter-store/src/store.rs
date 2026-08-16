@@ -160,6 +160,24 @@ impl Store {
         Ok(table.len()?)
     }
 
+    /// Every stored unresolved reference — cross-repo boundary resolution
+    /// input (a workspace resolves these against other members' symbols).
+    pub fn all_unresolved(&self) -> Result<Vec<Reference>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let table = match txn.open_multimap_table(UNRESOLVED) {
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            other => other?,
+        };
+        let mut refs = Vec::new();
+        for entry in table.iter()? {
+            let (_, values) = entry?;
+            for guard in values {
+                refs.push(postcard::from_bytes(guard?.value())?);
+            }
+        }
+        Ok(refs)
+    }
+
     /// Unresolved references recorded for one file.
     pub fn references_in(&self, file: &str) -> Result<Vec<Reference>, StoreError> {
         let txn = self.db.begin_read()?;
