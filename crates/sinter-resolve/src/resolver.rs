@@ -733,6 +733,18 @@ fn resolve_one<'a>(
         if let Some(node) = index.resolve_path(&segments, 4) {
             return (Some(node), Evidence::Import, true);
         }
+        // Associated item through a path: the second-to-last segment is a
+        // *type*, not a module (`some_crate::Config::new`,
+        // `ns::Class::method`). Resolve the prefix as a path — re-export
+        // chains included — then look the leaf up as a member. Path
+        // shape, not language shape: active for every language.
+        if let Some((leaf, type_path)) = segments.split_last()
+            && type_path.len() >= 2
+            && let Some(ty) = index.resolve_path(type_path, 4)
+            && let Some(node) = index.member_of(ty, leaf, 4)
+        {
+            return (Some(node), Evidence::Import, true);
+        }
         let matching: Vec<&Import> = imports
             .into_iter()
             .flatten()

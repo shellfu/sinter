@@ -1,0 +1,24 @@
+{
+  "nodes": [
+    ["file", "crates/util/src/lib.rs", "crates/util/src/lib.rs"],
+    ["module", "masks", "crates/util/src/lib.rs"],
+    ["file", "crates/util/src/masks.rs", "crates/util/src/masks.rs"],
+    ["function", "apply_mask", "crates/util/src/masks.rs", "Applies an update mask."],
+    ["file", "crates/app/src/main.rs", "crates/app/src/main.rs"],
+    ["function", "main", "crates/app/src/main.rs"]
+  ],
+  "contains": [
+    ["crates/util/src/lib.rs", "masks"],
+    ["crates/util/src/masks.rs", "apply_mask"],
+    ["crates/app/src/main.rs", "main"]
+  ],
+  "references": [
+    ["imports", "masks::apply_mask"],
+    ["calls", "apply_mask"]
+  ],
+  "resolved": [
+    ["import", "imports", "crates/util/src/lib.rs", "apply_mask"],
+    ["import", "calls", "main", "apply_mask"]
+  ],
+  "unresolved_count": 0
+}
