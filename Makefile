@@ -8,6 +8,11 @@
 #
 #   REPO=/path/to/repo   target repository for bench/doctor (default: .)
 #   PROFILE=release      cargo profile for `make build` (default: dev)
+#
+# Versioning: the single source of truth is [workspace.package] version in
+# Cargo.toml; every crate inherits it and the binary reports it via
+# CARGO_PKG_VERSION (`sinter version`, `sinter --version`, doctor). Bump it
+# there only — nothing else carries a version number.
 
 .DEFAULT_GOAL := help
 REPO ?= .
@@ -81,6 +86,12 @@ bench: release ## Manual perf check on REPO: full build, then no-op rebuild timi
 	./target/release/sinter build $(REPO)
 
 # -------------------------------------------------------------------- misc
+
+.PHONY: version
+version: ## Print the workspace version (source of truth: Cargo.toml [workspace.package])
+	@cargo metadata --no-deps --format-version 1 \
+		| grep -o '"name":"sinter-cli","version":"[^"]*"' \
+		| head -1 | sed 's/.*"version":"\([^"]*\)"/\1/'
 
 .PHONY: clean
 clean: ## Remove build artifacts (cargo clean); graphs in repos are untouched

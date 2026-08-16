@@ -570,3 +570,23 @@ fn hooks_install_preserves_existing_hooks() {
         "duplicated:\n{content}"
     );
 }
+
+/// `sinter version` reports version, schema, and language packs; the
+/// number matches the clap --version flag (one source of truth).
+#[test]
+fn version_subcommand_matches_flag() {
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let sub = run(&["version"]);
+    let flag = run(&["--version"]);
+    assert!(sub.contains(env!("CARGO_PKG_VERSION")), "{sub}");
+    assert!(flag.contains(env!("CARGO_PKG_VERSION")), "{flag}");
+    assert!(sub.contains("graph schema v"), "{sub}");
+    assert!(sub.contains("rust"), "{sub}");
+}

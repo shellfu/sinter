@@ -129,6 +129,8 @@ enum Command {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
     },
+    /// Print version, graph schema, and language packs (for bug reports)
+    Version,
 }
 
 #[derive(Subcommand)]
@@ -195,6 +197,16 @@ fn main() -> ExitCode {
         } => pathcmd::run(&repo, &from, &to, &filter.evidence, filter.certain),
         Command::Impact { rev_range, repo } => impact::run(&repo, &rev_range),
         Command::Serve { repo } => serve::run(&repo),
+        Command::Version => {
+            let languages: Vec<&str> = sinter_extract::LANGUAGES.iter().map(|l| l.name).collect();
+            println!(
+                "sinter {} (graph schema v{}, languages: {})",
+                env!("CARGO_PKG_VERSION"),
+                sinter_store::Store::CURRENT_SCHEMA,
+                languages.join(", ")
+            );
+            Ok(())
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
