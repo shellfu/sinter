@@ -59,6 +59,12 @@ enum Command {
         /// Target directory (default: ~/.claude/skills/sinter)
         #[arg(long)]
         dir: Option<PathBuf>,
+        /// Also register the MCP server in the repo's project-scope .mcp.json
+        #[arg(long)]
+        mcp: bool,
+        /// Repo for --mcp registration
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
     },
     /// Install git hooks that refresh the graph after commits/checkouts
     Hooks {
@@ -150,7 +156,9 @@ fn main() -> ExitCode {
                 }
             };
         }
-        Command::Install { dir } => install::run(dir),
+        Command::Install { dir, mcp, repo } => {
+            install::run(dir).and_then(|()| if mcp { install::mcp(&repo) } else { Ok(()) })
+        }
         Command::Hooks {
             action: HooksAction::Install { repo },
         } => hooks::install(&repo),

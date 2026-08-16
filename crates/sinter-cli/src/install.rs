@@ -2,9 +2,10 @@
 //! embedded in the binary so integration text can never drift from the
 //! tool's actual verbs — rerun after upgrading to refresh it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use serde_json::{Value, json};
 
 pub const SKILL: &str = include_str!("../skill/SKILL.md");
 
@@ -18,6 +19,40 @@ pub fn default_dir() -> Option<PathBuf> {
                 .join("skills")
                 .join("sinter")
         })
+}
+
+/// Merge the sinter server into a repo's project-scope `.mcp.json` —
+/// the file Claude Code reads natively. Other servers are preserved;
+/// only the "sinter" entry is written. Global client configs belong to
+/// their applications and are never edited here.
+pub fn mcp(repo: &Path) -> Result<()> {
+    let repo = repo.canonicalize()?;
+    let path = repo.join(".mcp.json");
+    let mut root: Value = match std::fs::read_to_string(&path) {
+        Ok(existing) => serde_json::from_str(&existing)
+            .with_context(|| format!("{} exists but is not valid JSON", path.display()))?,
+        Err(_) => json!({}),
+    };
+    root.as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("{} top level is not an object", path.display()))?
+        .entry("mcpServers")
+        .or_insert(json!({}));
+    root["mcpServers"]["sinter"] = json!({
+        "command": "sinter",
+        "args": ["serve", "--repo", "."],
+    });
+    std::fs::write(
+        &path,
+        format!(
+            "{}
+",
+            serde_json::to_string_pretty(&root)?
+        ),
+    )?;
+    println!("registered sinter MCP server in {}", path.display());
+    println!("(project scope; for Claude Desktop or other clients, add the equivalent");
+    println!(" command `sinter serve --repo <repo>` to that client's own MCP config)");
+    Ok(())
 }
 
 pub fn run(dir: Option<PathBuf>) -> Result<()> {

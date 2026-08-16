@@ -110,6 +110,15 @@ pub fn run(repo: &Path) -> Result<bool> {
             );
         }
     }
+    let mcp_registered = std::fs::read_to_string(repo.join(".mcp.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .is_some_and(|v| v["mcpServers"]["sinter"].is_object());
+    if mcp_registered {
+        r.ok("MCP server registered in .mcp.json");
+    } else {
+        r.ok("MCP not registered (optional; `sinter install --mcp` for non-shell clients)");
+    }
     if repo.join("index.scip").exists() {
         r.ok("SCIP index present (compiler-grade evidence tier active)");
     } else {

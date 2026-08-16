@@ -456,3 +456,37 @@ fn doctor_diagnoses_and_clears() {
     assert!(!ok, "{out}");
     assert!(out.contains("graph stale: 1 changed"), "{out}");
 }
+
+/// `sinter install --mcp` merges into .mcp.json without clobbering other
+/// servers; doctor reports the registration.
+#[test]
+fn install_mcp_merges_project_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::write(repo.join("a.rs"), "pub fn f() {}\n").unwrap();
+    std::fs::write(
+        repo.join(".mcp.json"),
+        r#"{"mcpServers": {"other": {"command": "other-tool"}}}"#,
+    )
+    .unwrap();
+    let skills = dir.path().join("skills");
+    let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
+        .args(["install", "--dir"])
+        .arg(&skills)
+        .args(["--mcp", "--repo"])
+        .arg(repo)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(repo.join(".mcp.json")).unwrap()).unwrap();
+    assert!(
+        cfg["mcpServers"]["other"].is_object(),
+        "clobbered existing server"
+    );
+    assert_eq!(cfg["mcpServers"]["sinter"]["command"], "sinter");
+
+    sinter(repo, &["build"]);
+    let (_, out) = sinter(repo, &["doctor"]);
+    assert!(out.contains("MCP server registered"), "{out}");
+}
