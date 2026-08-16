@@ -31,15 +31,22 @@ fn one_file_edit_is_incremental_and_fast() {
         .unwrap();
     }
 
+    let full_started = Instant::now();
     let first = sinter(repo, &["build"]);
+    let full_elapsed = full_started.elapsed();
     assert!(first.contains("300 scanned, 300 changed"), "{first}");
 
     // No-op rebuild: nothing re-extracted.
     let noop = sinter(repo, &["build"]);
     assert!(noop.contains("300 scanned, 0 changed"), "{noop}");
 
-    // One-file edit: exactly one re-extracted, well under the 1s budget
-    // (budget is for 1M-LOC repos; this corpus must be far faster).
+    // One-file edit: exactly one re-extracted, and materially faster than
+    // the full build on the same host. The gate is relative because this
+    // is a debug binary on arbitrary hardware (a fixed 1s flaked on shared
+    // CI runners at 1.5s with nothing regressed); the absolute <1s edit
+    // budget for 1M-LOC repos is the nightly release-mode gate's job.
+    // What this must catch is the incremental path silently doing
+    // full-corpus work again — then edit time converges on full time.
     std::fs::write(
         repo.join("src/m7.rs"),
         "pub fn f7() -> u32 { 77 }\npub fn g7() -> u32 { f7() }\n",
@@ -50,8 +57,8 @@ fn one_file_edit_is_incremental_and_fast() {
     let elapsed = started.elapsed();
     assert!(edit.contains("300 scanned, 1 changed"), "{edit}");
     assert!(
-        elapsed < Duration::from_secs(1),
-        "incremental update took {elapsed:?}"
+        elapsed < full_elapsed.mul_f64(0.5).max(Duration::from_millis(250)),
+        "incremental update took {elapsed:?} vs full build {full_elapsed:?}"
     );
 
     // Deletion is incremental too.
