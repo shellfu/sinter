@@ -70,3 +70,4 @@ AGENTS.md
 # build artifacts
 /target
 .sinter/
+harness/bench/logs/
