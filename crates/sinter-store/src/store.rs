@@ -50,6 +50,23 @@ pub(crate) const IMPORTS: MultimapTableDefinition<&str, &[u8]> =
 const META: TableDefinition<&str, u32> = TableDefinition::new("meta");
 const SCHEMA_VERSION: u32 = 3;
 
+impl Store {
+    /// The schema version this binary writes.
+    pub const CURRENT_SCHEMA: u32 = SCHEMA_VERSION;
+
+    /// Read a database's schema stamp without opening for write and
+    /// without triggering the wipe-on-mismatch in [`Store::create`].
+    pub fn schema_of(path: impl AsRef<Path>) -> Result<Option<u32>, StoreError> {
+        let db = Database::open(path)?;
+        let txn = db.begin_read()?;
+        match txn.open_table(META) {
+            Ok(table) => Ok(table.get("schema")?.map(|g| g.value())),
+            Err(redb::TableError::TableDoesNotExist(_)) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
 /// Persistent graph store. Point queries never load the whole graph.
 pub struct Store {
     pub(crate) db: Database,

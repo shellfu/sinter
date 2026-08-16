@@ -433,3 +433,26 @@ fn install_writes_skill_card() {
         "no orchestration in prose"
     );
 }
+
+/// `sinter doctor`: no graph -> exit 1 naming the fix; after build -> exit 0
+/// (skill-card check is environment-dependent, so only repo checks assert).
+#[test]
+fn doctor_diagnoses_and_clears() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::write(repo.join("a.rs"), "pub fn f() {}\n").unwrap();
+
+    let (ok, out) = sinter(repo, &["doctor"]);
+    assert!(!ok, "{out}");
+    assert!(out.contains("run `sinter build`"), "{out}");
+
+    sinter(repo, &["build"]);
+    let (_, out) = sinter(repo, &["doctor"]);
+    assert!(out.contains("graph fresh"), "{out}");
+    assert!(out.contains("graph schema"), "{out}");
+
+    std::fs::write(repo.join("a.rs"), "pub fn f() -> u32 { 1 }\n").unwrap();
+    let (ok, out) = sinter(repo, &["doctor"]);
+    assert!(!ok, "{out}");
+    assert!(out.contains("graph stale: 1 changed"), "{out}");
+}

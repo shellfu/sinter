@@ -6,20 +6,24 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 
-const SKILL: &str = include_str!("../skill/SKILL.md");
+pub const SKILL: &str = include_str!("../skill/SKILL.md");
+
+/// Default install location for the skill card.
+pub fn default_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|home| {
+            PathBuf::from(home)
+                .join(".claude")
+                .join("skills")
+                .join("sinter")
+        })
+}
 
 pub fn run(dir: Option<PathBuf>) -> Result<()> {
-    let target = match dir {
+    let target = match dir.or_else(default_dir) {
         Some(dir) => dir,
-        None => {
-            let home = std::env::var_os("HOME")
-                .or_else(|| std::env::var_os("USERPROFILE"))
-                .map(PathBuf::from);
-            match home {
-                Some(home) => home.join(".claude").join("skills").join("sinter"),
-                None => bail!("cannot locate home directory; pass --dir"),
-            }
-        }
+        None => bail!("cannot locate home directory; pass --dir"),
     };
     std::fs::create_dir_all(&target).with_context(|| format!("create {}", target.display()))?;
     let path = target.join("SKILL.md");

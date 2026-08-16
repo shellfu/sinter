@@ -30,6 +30,34 @@ pub fn db_path(repo: &Path) -> PathBuf {
     repo.join(".sinter").join("graph.redb")
 }
 
+/// Walk the repo and hash every language-matched file. `stored` supplies
+/// fallback hashes for transiently unreadable files.
+pub fn scan_hashes(repo: &Path, stored: &HashMap<String, String>) -> Result<Vec<(String, String)>> {
+    let mut current: Vec<String> = Vec::new();
+    for entry in ignore::WalkBuilder::new(repo).build() {
+        let entry = entry?;
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        let rel = sinter_core::rel_display(entry.path().strip_prefix(repo).unwrap_or(entry.path()));
+        if rel.starts_with(".sinter/") || spec_for_path(&rel).is_none() {
+            continue;
+        }
+        current.push(rel);
+    }
+    Ok(current
+        .par_iter()
+        .filter_map(|rel| match std::fs::read(repo.join(rel)) {
+            Ok(bytes) if bytes.is_empty() => None,
+            Ok(bytes) => Some((rel.clone(), blake3::hash(&bytes).to_hex().to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            // Transient read error (permissions, editor race): keep the
+            // stored state instead of tearing the file down as removed.
+            Err(_) => stored.get(rel).map(|h| (rel.clone(), h.clone())),
+        })
+        .collect())
+}
+
 /// One incremental build pass. `only` narrows the scan to an explicit
 /// changed set (watcher/hook fast path); None scans the whole corpus.
 pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
@@ -53,31 +81,8 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
             })
             .collect()
     });
-    let mut current: Vec<String> = Vec::new();
-    for entry in ignore::WalkBuilder::new(&repo).build() {
-        let entry = entry?;
-        if !entry.file_type().is_some_and(|t| t.is_file()) {
-            continue;
-        }
-        let rel =
-            sinter_core::rel_display(entry.path().strip_prefix(&repo).unwrap_or(entry.path()));
-        if rel.starts_with(".sinter/") || spec_for_path(&rel).is_none() {
-            continue;
-        }
-        current.push(rel);
-    }
     let stored: HashMap<String, String> = store.file_hashes()?.into_iter().collect();
-    let hashes: Vec<(String, String)> = current
-        .par_iter()
-        .filter_map(|rel| match std::fs::read(repo.join(rel)) {
-            Ok(bytes) if bytes.is_empty() => None,
-            Ok(bytes) => Some((rel.clone(), blake3::hash(&bytes).to_hex().to_string())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            // Transient read error (permissions, editor race): keep the
-            // stored state instead of tearing the file down as removed.
-            Err(_) => stored.get(rel).map(|h| (rel.clone(), h.clone())),
-        })
-        .collect();
+    let hashes: Vec<(String, String)> = scan_hashes(&repo, &stored)?;
     let current_set: HashSet<&str> = hashes.iter().map(|(f, _)| f.as_str()).collect();
     // Scope entries match exactly or as directory prefixes: a directory
     // rename arrives as one event on the dir, covering its whole subtree.

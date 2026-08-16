@@ -1,6 +1,7 @@
 mod affected;
 mod ask;
 mod build;
+mod doctor;
 mod hooks;
 mod impact;
 mod install;
@@ -45,6 +46,11 @@ enum Command {
     },
     /// Watch a repository and keep the graph fresh
     Watch {
+        #[arg(default_value = ".")]
+        repo: PathBuf,
+    },
+    /// Diagnose the installation and a repo's graph; every finding names its fix
+    Doctor {
         #[arg(default_value = ".")]
         repo: PathBuf,
     },
@@ -134,6 +140,16 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::Build { repo } => build::run(&repo),
         Command::Watch { repo } => watch::run(&repo),
+        Command::Doctor { repo } => {
+            return match doctor::run(&repo) {
+                Ok(true) => ExitCode::SUCCESS,
+                Ok(false) => ExitCode::FAILURE,
+                Err(e) => {
+                    eprintln!("sinter: {e:#}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
         Command::Install { dir } => install::run(dir),
         Command::Hooks {
             action: HooksAction::Install { repo },
