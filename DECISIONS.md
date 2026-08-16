@@ -272,3 +272,24 @@ links with the same EdgeFilter. Member fingerprints (db len+mtime) make
 staleness detectable. Rejected: one merged store (rebuild coupling,
 identity collisions) and cross-repo name guessing (violates
 evidence-or-nothing). Design: docs/design-workspace.md.
+
+## D25 — Proto same-package refs + include-root imports (mined: acme)
+
+The first real proto corpus (acme, 23 files) fired the parked D22
+trigger. Three root causes, fixed in order: (1) proto's absolutize kept
+the `.proto` extension as a module segment, so import keys never matched
+file module paths — proto_absolutize strips it (spec data). (2) oneof
+branches and map value types are reference sites; two query patterns each
+(map key types are their own node, so keys cannot over-capture). (3)
+proto imports carry glob semantics like cpp #include / bash source — an
+imported file's top-level names are referencable bare within the same
+package; protoc rejects bare cross-package refs, so glob binding cannot
+mislabel compiling code. The deeper engine change: import paths resolve
+against include roots the graph cannot see (protoc -I, C header dirs),
+so import-file matching accepts either containment direction —
+Go-style long-import/short-key or include-root short-import/long-key —
+via import_file(), used only where an actual import backs the lookup
+and unique-or-nothing on ambiguity; bare qualified references still
+never bind this loosely. Measured on acme: +190 import edges,
+proto contract files fully resolved. Pinned by fixture
+proto-include-root (nested root, bare sibling refs via oneof + map).

@@ -104,6 +104,14 @@ fn go_absolutize(path: &str, _file: &str) -> Vec<String> {
     split_all(path, &["/", "."])
 }
 
+/// `acme/core/v1/action_event.proto` -> ["acme","core","v1","action_event"]:
+/// the file extension must not become a module segment, or the import key
+/// never suffix-matches the file's own module path and same-package bare
+/// references stay unresolved.
+fn proto_absolutize(path: &str, _file: &str) -> Vec<String> {
+    split_all(path.strip_suffix(".proto").unwrap_or(path), &["/", "."])
+}
+
 /// Leading dots are package-relative: one dot is the file's own package,
 /// each further dot one package up.
 fn python_absolutize(path: &str, file: &str) -> Vec<String> {
@@ -385,7 +393,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         comment_kinds: &["comment"],
         module_path: proto_module_path,
         path_separators: &["/", "."],
-        absolutize: go_absolutize,
+        absolutize: proto_absolutize,
         receivers: &[],
         doc_skip_kinds: &[],
     },

@@ -409,3 +409,12 @@ fn all_fixtures_registered() {
 fn resolution_proto_basic() {
     check("proto-basic");
 }
+
+/// Mined from a real proto corpus: imports are include-root-relative
+/// ("acme/v1/money.proto" under schema/proto/), and sibling files of one
+/// package reference each other's messages bare, via oneof branches and
+/// map value types.
+#[test]
+fn resolution_proto_include_root() {
+    check("proto-include-root");
+}

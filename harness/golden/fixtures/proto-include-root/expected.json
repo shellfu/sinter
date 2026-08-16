@@ -1,0 +1,22 @@
+{
+  "nodes": [
+    ["file", "schema/proto/acme/v1/money.proto", "schema/proto/acme/v1/money.proto"],
+    ["struct", "Money", "schema/proto/acme/v1/money.proto", "Money is an exact-decimal currency amount."],
+    ["file", "schema/proto/acme/v1/ledger.proto", "schema/proto/acme/v1/ledger.proto"],
+    ["struct", "LedgerEntry", "schema/proto/acme/v1/ledger.proto", "LedgerEntry records one settled movement of funds."]
+  ],
+  "contains": [
+    ["schema/proto/acme/v1/money.proto", "Money"],
+    ["schema/proto/acme/v1/ledger.proto", "LedgerEntry"]
+  ],
+  "references": [
+    ["imports", "acme/v1/money.proto"],
+    ["uses", "Money"],
+    ["uses", "Money"]
+  ],
+  "resolved": [
+    ["import", "imports", "schema/proto/acme/v1/ledger.proto", "schema/proto/acme/v1/money.proto"],
+    ["import", "uses", "LedgerEntry", "Money"]
+  ],
+  "unresolved_count": 0
+}
