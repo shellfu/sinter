@@ -28,13 +28,22 @@ evidence binds a reference to a definition. Ambiguity resolves to nothing —
 "unresolved" is a first-class, counted outcome, never a guess. Every edge
 carries its evidence kind, and every query can filter on it.
 
-## Quickstart
+## Install
 
-Build the binary from the workspace root (requires a Rust toolchain):
+One line, no dependencies (Linux and macOS; verifies the release
+checksum, installs to `~/.local/bin`):
+
+```
+curl -fsSL https://raw.githubusercontent.com/shellfu/sinter/main/install.sh | sh
+```
+
+Or build from source (requires a Rust toolchain):
 
 ```
 cargo build --release
 ```
+
+## Quickstart
 
 Onboard a repository — builds the graph, installs git hooks, registers
 agent integration (AGENTS.md block, MCP, Claude skill), and finishes with

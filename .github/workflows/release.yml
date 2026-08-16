@@ -1,0 +1,62 @@
+# Release binaries on tag push. `make bump VERSION=x.y.z` creates the tag;
+# pushing it (git push origin vX.Y.Z) triggers this. Assets are named
+# without the version (sinter-<target>.tar.gz) so install.sh can use the
+# stable /releases/latest/download/ URL with no API call.
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add ${{ matrix.target }}
+      - if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --target ${{ matrix.target }} -p sinter-cli
+      - name: package
+        run: |
+          bin=target/${{ matrix.target }}/release/sinter
+          strip "$bin" || true
+          tar -czf sinter-${{ matrix.target }}.tar.gz -C "$(dirname "$bin")" sinter
+          if command -v sha256sum >/dev/null; then
+            sha256sum sinter-${{ matrix.target }}.tar.gz > sinter-${{ matrix.target }}.tar.gz.sha256
+          else
+            shasum -a 256 sinter-${{ matrix.target }}.tar.gz > sinter-${{ matrix.target }}.tar.gz.sha256
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: sinter-*.tar.gz*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" sinter-*.tar.gz* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
