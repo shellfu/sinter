@@ -70,7 +70,11 @@ fn overlap_ranks_pairwise_merge_risk() {
         "retry.go",
         "package main\n\nfunc Backoff(n int) int {\n\treturn n\n}\n\nfunc Login(u string) int {\n\treturn Backoff(9)\n}\n",
     );
-    branch("pr-d", "other.go", "package main\n\nfunc Other() int {\n\treturn 1\n}\n");
+    branch(
+        "pr-d",
+        "other.go",
+        "package main\n\nfunc Other() int {\n\treturn 1\n}\n",
+    );
     git(repo, &["checkout", "-q", "main"]);
 
     // Graph at the merge base — the documented fidelity point.

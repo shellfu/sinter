@@ -430,6 +430,25 @@ impl<'a> Index<'a> {
         }
     }
 
+    /// File node for an import path, matching either containment
+    /// direction: Go-style (long import, short module key) or
+    /// include-root style (protoc, C headers) where the import resolves
+    /// against roots the graph can't see and the file's repo path ends
+    /// with it. Import-evidence sites only — a bare qualified reference
+    /// must never bind this loosely. Unique or nothing.
+    fn import_file(&self, segments: &[String]) -> Option<&'a Node> {
+        unique_best(
+            self.by_module_tail
+                .get(segments.last()?.as_str())
+                .into_iter()
+                .flatten()
+                .filter_map(|(key, node)| {
+                    let len = suffix_len(key, segments).or_else(|| suffix_len(segments, key))?;
+                    Some((len, *node))
+                }),
+        )
+    }
+
     /// Resolve absolute segments to a definition or module file node,
     /// following re-export chains up to a small depth.
     fn resolve_path(&self, segments: &[String], depth: usize) -> Option<&'a Node> {
@@ -606,14 +625,7 @@ fn resolve_one<'a>(
         }
         let segments = (spec.absolutize)(raw, &r.file);
         let target = if glob {
-            unique_best(
-                index
-                    .by_module_tail
-                    .get(segments.last().map(String::as_str).unwrap_or(""))
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|(key, node)| Some((suffix_len(key, &segments)?, *node))),
-            )
+            index.import_file(&segments)
         } else {
             index.resolve_path(&segments, 4)
         };
@@ -735,7 +747,18 @@ fn resolve_one<'a>(
                 .filter_map(|imp| {
                     let mut full = imp.segments.clone();
                     full.push(r.name.clone());
-                    index.resolve_path(&full, 4)
+                    index.resolve_path(&full, 4).or_else(|| {
+                        // Include-root import: bind via the imported
+                        // file's own top-level definitions.
+                        let file = index.import_file(&imp.segments)?;
+                        index
+                            .by_file_name
+                            .get(&(file.file.as_str(), r.name.as_str()))
+                            .into_iter()
+                            .flatten()
+                            .find(|d| d.prefix.is_empty())
+                            .map(|d| d.node)
+                    })
                 })
                 .collect();
             let name_imports_anchored = imports
@@ -780,14 +803,7 @@ pub fn resolve_boundary(
             let glob = matches!(r.alias.as_deref(), Some("*") | Some("."));
             let segments = (spec.absolutize)(strip_glob(&r.name), &r.file);
             if glob {
-                unique_best(
-                    index
-                        .by_module_tail
-                        .get(segments.last().map(String::as_str).unwrap_or(""))
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|(key, node)| Some((suffix_len(key, &segments)?, *node))),
-                )
+                index.import_file(&segments)
             } else {
                 index.resolve_path(&segments, 4)
             }

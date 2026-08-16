@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package acme.v1;
+
+import "acme/v1/money.proto";
+
+// LedgerEntry records one settled movement of funds.
+message LedgerEntry {
+  oneof amount {
+    Money settled = 1;
+  }
+  map<string, Money> balances = 2;
+}
