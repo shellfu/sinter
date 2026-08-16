@@ -7,6 +7,7 @@ mod impact;
 mod init;
 mod install;
 mod lookup;
+mod overlap;
 mod pathcmd;
 mod pipeline;
 mod query;
@@ -160,6 +161,17 @@ enum Command {
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
+    /// Map several in-flight changes (open PRs) onto the graph and rank
+    /// pairwise merge risk (direct/radius/file tiers)
+    Overlap {
+        /// Two or more rev-ranges, optionally labeled: `pr-12=main...branch`
+        ranges: Vec<String>,
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// Structured output
+        #[arg(long)]
+        json: bool,
+    },
     /// MCP server over stdio
     Serve {
         #[arg(long, default_value = ".")]
@@ -302,6 +314,7 @@ fn main() -> ExitCode {
             repo,
             workspace,
         } => impact::run(&repo, &rev_range, workspace.as_deref()),
+        Command::Overlap { ranges, repo, json } => overlap::run(&repo, &ranges, json),
         Command::Serve { repo } => serve::run(&repo),
         Command::Version => {
             let languages: Vec<&str> = sinter_extract::LANGUAGES.iter().map(|l| l.name).collect();

@@ -47,6 +47,7 @@ integration, ending with a doctor report:
 | What depends on X / blast radius | `sinter affected <symbol> --repo <repo>` |
 | How does A reach B | `sinter path <A> <B> --repo <repo>` |
 | What does this diff/PR affect | `sinter impact <rev-range> --repo <repo>` |
+| Where do open PRs collide / merge risk | `sinter overlap <base...prA> <base...prB> ... --repo <repo>` |
 | Cross-repo (distributed system) versions of the above | add `--workspace <manifest.toml>`; symbols may be `member:Symbol` |
 
 Add `--json` to `ask` for structured output. `affected`/`path` accept

@@ -92,6 +92,7 @@ is auditable, in the same spirit as the edges.
 | `sinter path <from> <to>` | Shortest dependency path with per-step evidence |
 | `sinter impact <rev-range>` | Changed symbols → blast radius → affected tests |
 | `sinter serve` | MCP server over stdio for agent use |
+| `sinter overlap <range>...` | Map open PRs onto the graph; rank pairwise merge risk (direct/radius/file) |
 | `sinter workspace <manifest>` | Build all members of a cross-repo workspace + refresh boundary links |
 | `sinter init --workspace` | Write a starter workspace manifest (never overwrites) |
 | `sinter install --for <targets>` | Write agent cards (claude, cursor, agents/AGENTS.md); `--mcp` registers the server |
