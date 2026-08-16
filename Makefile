@@ -11,8 +11,9 @@
 #
 # Versioning: the single source of truth is [workspace.package] version in
 # Cargo.toml; every crate inherits it and the binary reports it via
-# CARGO_PKG_VERSION (`sinter version`, `sinter --version`, doctor). Bump it
-# there only — nothing else carries a version number.
+# CARGO_PKG_VERSION (`sinter version`, `sinter --version`, doctor). Git tags
+# follow it, never lead it: `make bump VERSION=x.y.z` writes Cargo.toml,
+# commits, and tags vx.y.z in one step (nothing is pushed).
 
 .DEFAULT_GOAL := help
 REPO ?= .
@@ -92,6 +93,24 @@ version: ## Print the workspace version (source of truth: Cargo.toml [workspace.
 	@cargo metadata --no-deps --format-version 1 \
 		| grep -o '"name":"sinter-cli","version":"[^"]*"' \
 		| head -1 | sed 's/.*"version":"\([^"]*\)"/\1/'
+
+.PHONY: bump
+bump: ## Set version + commit + tag: make bump VERSION=x.y.z (local only, push yourself)
+ifndef VERSION
+	$(error usage: make bump VERSION=x.y.z)
+endif
+	@echo "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' \
+		|| { echo "error: VERSION must be x.y.z, got '$(VERSION)'"; exit 1; }
+	@git diff --quiet && git diff --cached --quiet \
+		|| { echo "error: working tree not clean — commit or stash first"; exit 1; }
+	@git rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null \
+		&& { echo "error: tag v$(VERSION) already exists"; exit 1; } || true
+	sed -i 's/^version = ".*"/version = "$(VERSION)"/' Cargo.toml
+	cargo update --workspace --quiet   # sync Cargo.lock to the new version
+	git add Cargo.toml Cargo.lock
+	git commit -m "chore: release $(VERSION)"
+	git tag "v$(VERSION)"
+	@echo "tagged v$(VERSION) — push with: git push origin main v$(VERSION)"
 
 .PHONY: clean
 clean: ## Remove build artifacts (cargo clean); graphs in repos are untouched
