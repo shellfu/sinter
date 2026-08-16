@@ -317,3 +317,22 @@ that were misfiled as external are now honestly internal — the next
 mining surface (re-export chains, deeper module nesting). Pinned by
 fixture rust-workspace-crates (cross-crate use, qualified call,
 crate:: self-alias).
+
+## D27 — Associated items through a path (mining round 2)
+
+D26's reclassification exposed the shape: `some_crate::Type::method`
+resolves as module-to-leaf, but the second-to-last segment is a *type*.
+New tier in the qualified branch, tried after plain path resolution:
+split the leaf, resolve the prefix as a path (re-export chains
+included), then look the leaf up as a member of the resulting type.
+Path shape, not language shape — the same tier serves
+`ns::Class::method` (C++) and `module.Class.method` (Python) when their
+fixtures arrive. Evidence stays Import (path plus import chain);
+ambiguity anywhere in the two steps yields nothing. Measured on the
+mining corpus: +1539 edges, internal-unresolved 5317 -> 3907, and the
+motivating query (`affected` on a re-exported type's constructor) now
+reports its cross-crate dependents. Pinned by rust-crate-assoc-items
+(direct assoc fn + type re-exported through a brace-list `pub use`) and
+rust-crate-reexport (re-exported free function). Parked with a named
+trigger: `#[path = "..."] mod` renames (15 refs in the corpus) need
+attribute-aware extraction; a fixture when a real question demands it.

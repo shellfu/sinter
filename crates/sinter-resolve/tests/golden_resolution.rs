@@ -450,3 +450,18 @@ fn resolution_proto_include_root() {
 fn resolution_rust_workspace_crates() {
     check("rust-workspace-crates");
 }
+
+/// Associated items through a crate-qualified path: `acme_util::Config::new()`
+/// is path-to-type then member, not module-to-leaf.
+#[test]
+fn resolution_rust_crate_assoc_items() {
+    check("rust-crate-assoc-items");
+}
+
+/// Cross-crate re-export: lib.rs `pub use masks::apply_mask` (uniform
+/// path, relative to the crate root) makes `acme_util::apply_mask`
+/// public; the consumer's call must chain through it.
+#[test]
+fn resolution_rust_crate_reexport() {
+    check("rust-crate-reexport");
+}

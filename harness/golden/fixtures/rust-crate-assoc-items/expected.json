@@ -1,0 +1,38 @@
+{
+  "nodes": [
+    ["file", "crates/util/src/lib.rs", "crates/util/src/lib.rs"],
+    ["module", "auth", "crates/util/src/lib.rs"],
+    ["struct", "Config", "crates/util/src/lib.rs", "Connection settings."],
+    ["function", "Config::new", "crates/util/src/lib.rs", "Builds default settings."],
+    ["file", "crates/util/src/auth.rs", "crates/util/src/auth.rs"],
+    ["struct", "Validator", "crates/util/src/auth.rs", "Token validator."],
+    ["function", "Validator::new", "crates/util/src/auth.rs", "Builds a validator."],
+    ["function", "validator_kind", "crates/util/src/auth.rs", "Names the validator kind."],
+    ["file", "crates/app/src/main.rs", "crates/app/src/main.rs"],
+    ["function", "main", "crates/app/src/main.rs"]
+  ],
+  "contains": [
+    ["crates/util/src/lib.rs", "auth"],
+    ["crates/util/src/lib.rs", "Config"],
+    ["crates/util/src/lib.rs", "Config::new"],
+    ["crates/util/src/auth.rs", "Validator"],
+    ["crates/util/src/auth.rs", "Validator::new"],
+    ["crates/util/src/auth.rs", "validator_kind"],
+    ["crates/app/src/main.rs", "main"]
+  ],
+  "references": [
+    ["imports", "auth::Validator"],
+    ["imports", "auth::validator_kind"],
+    ["calls", "new"],
+    ["calls", "new"],
+    ["calls", "validator_kind"]
+  ],
+  "resolved": [
+    ["import", "imports", "crates/util/src/lib.rs", "Validator"],
+    ["import", "imports", "crates/util/src/lib.rs", "validator_kind"],
+    ["import", "calls", "main", "Config::new"],
+    ["import", "calls", "main", "Validator::new"],
+    ["import", "calls", "main", "validator_kind"]
+  ],
+  "unresolved_count": 0
+}
