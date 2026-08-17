@@ -799,8 +799,7 @@ fn install_enforce_defaults_to_repo_scope() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(repo.path().join(".claude/hooks/sinter-first.sh").exists());
-    let settings =
-        std::fs::read_to_string(repo.path().join(".claude/settings.json")).unwrap();
+    let settings = std::fs::read_to_string(repo.path().join(".claude/settings.json")).unwrap();
     assert!(
         settings.contains("bash .claude/hooks/sinter-first.sh prompt"),
         "repo scope must use a relative command: {settings}"
