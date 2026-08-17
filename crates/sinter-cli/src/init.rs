@@ -96,7 +96,11 @@ pub fn run(repo: &Path, cursor: bool, scip: Option<bool>) -> Result<bool> {
     println!("\n== agent integration ==");
     // claude is global and idempotent — including it makes init complete
     // on a fresh machine instead of ending with a doctor FIX.
-    let mut targets = vec!["claude".to_string(), "agents".to_string()];
+    let mut targets = vec![
+        "claude".to_string(),
+        "agents".to_string(),
+        "enforce".to_string(),
+    ];
     if cursor {
         targets.push("cursor".to_string());
     }

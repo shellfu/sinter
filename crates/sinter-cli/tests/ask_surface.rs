@@ -510,6 +510,8 @@ fn install_for_cursor_and_agents() {
             .arg(&skills)
             .args(["--repo"])
             .arg(repo)
+            .env("HOME", dir.path())
+            .env("USERPROFILE", dir.path())
             .output()
             .unwrap()
     };
@@ -722,4 +724,58 @@ fn init_runs_indexers_only_with_consent() {
 
     init(&["init", "--scip"]);
     assert!(marker.exists(), "--scip must run the indexer");
+}
+
+/// `install --for enforce` writes the hook script and merges the three
+/// settings entries idempotently, preserving unrelated settings and hooks.
+#[test]
+fn install_enforce_is_idempotent_and_preserving() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+    std::fs::write(
+        home.path().join(".claude/settings.json"),
+        r#"{"model":"opus","hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"other-tool hook"}]}]}}"#,
+    )
+    .unwrap();
+
+    let run = || {
+        let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
+            .args(["install", "--for", "enforce"])
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .output()
+            .expect("run sinter");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run();
+    run();
+
+    assert!(home.path().join(".claude/hooks/sinter-first.sh").exists());
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.path().join(".claude/settings.json")).unwrap(),
+    )
+    .expect("settings stay valid JSON");
+    assert_eq!(settings["model"], "opus", "unrelated settings preserved");
+    let text = settings.to_string();
+    assert!(text.contains("other-tool hook"), "existing hooks preserved");
+    // Trailing quote anchors each mode ("grep" is a prefix of "greptool").
+    for marker in [
+        "sinter-first.sh prompt\"",
+        "sinter-first.sh grep\"",
+        "sinter-first.sh greptool\"",
+    ] {
+        assert_eq!(
+            text.matches(marker).count(),
+            1,
+            "{marker} must appear exactly once after two installs"
+        );
+    }
+    assert!(
+        !text.contains("permissionDecision"),
+        "enforcement must never carry a permission decision"
+    );
 }

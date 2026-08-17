@@ -8,8 +8,8 @@ description = "Evidence-based reference resolution: scope, import, and SCIP tier
 [dependencies]
 sinter-core.workspace = true
 sinter-extract.workspace = true
-scip = "0.5"
-protobuf = "3"
+scip = "0.9"
+protobuf = "3.7.2"
 thiserror.workspace = true
 rayon = "1"
 
