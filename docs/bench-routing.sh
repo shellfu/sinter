@@ -42,12 +42,15 @@ INELIGIBLE=(
 
 WORK=$(mktemp -d)
 echo "workdir: $WORK (kept for inspection — delete when done)"
-if [ -d "$SRC/.git" ] || [[ "$SRC" == *://* || "$SRC" == git@* ]]; then
+# Ask git, not the filesystem: a stub .git (e.g. only hooks/) fools a
+# directory check but fails an actual clone.
+if [[ "$SRC" == *://* || "$SRC" == git@* ]] || git -C "$SRC" rev-parse --git-dir >/dev/null 2>&1; then
   git clone -q "$SRC" "$WORK/repo"
 else
-  # Plain directory (no git history): copy it, seed one commit so
+  # Plain directory (no usable git history): copy it, seed one commit so
   # git-backed questions (impact) still have something to diff.
   cp -a "$SRC" "$WORK/repo"
+  rm -rf "$WORK/repo/.git"
 fi
 cd "$WORK/repo"
 # Neutral start: only what `sinter init` itself installs may steer the
