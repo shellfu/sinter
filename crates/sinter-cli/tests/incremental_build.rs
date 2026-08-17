@@ -120,3 +120,34 @@ fn manifest_rename_invalidates_resolution() {
         "stale dependents survived the rename: {after}"
     );
 }
+
+/// Commands resolve the graph root like git resolves .git: running from a
+/// subdirectory finds the repo's graph instead of reporting none (or worse,
+/// building a nested one).
+#[test]
+fn subdirectory_invocation_discovers_graph_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src/deep")).unwrap();
+    std::fs::write(repo.join("src/deep/m.rs"), "pub fn f() {}\n").unwrap();
+    sinter(repo, &["build"]);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
+        .args(["query", "f"])
+        .current_dir(repo.join("src/deep"))
+        .output()
+        .expect("run sinter");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("src/deep/m.rs"),
+        "query from subdirectory missed the root graph"
+    );
+    assert!(
+        !repo.join("src/deep/.sinter").exists(),
+        "subdirectory build created a nested graph"
+    );
+}

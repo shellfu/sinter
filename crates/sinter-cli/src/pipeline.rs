@@ -30,6 +30,26 @@ pub fn db_path(repo: &Path) -> PathBuf {
     repo.join(".sinter").join("graph.redb")
 }
 
+/// Resolve the graph root for a path the way git resolves `.git`: the
+/// path itself when it already has `.sinter`, else the nearest ancestor
+/// that does. A path with no graph anywhere resolves to itself (a first
+/// `sinter build` creates the graph right there).
+pub fn discover_root(path: &Path) -> PathBuf {
+    let Ok(canon) = path.canonicalize() else {
+        return path.to_path_buf();
+    };
+    let mut current = canon.as_path();
+    loop {
+        if current.join(".sinter").is_dir() {
+            return current.to_path_buf();
+        }
+        match current.parent() {
+            Some(parent) => current = parent,
+            None => return canon,
+        }
+    }
+}
+
 /// The SCIP index to ingest, if any: `sinter scip` writes .sinter/index.scip;
 /// a repo-root index.scip (hand-generated) still counts.
 pub fn scip_index_path(repo: &Path) -> Option<PathBuf> {
@@ -125,6 +145,7 @@ pub fn scan(repo: &Path, stored: &HashMap<String, String>) -> Result<Scan> {
 /// changed set (watcher/hook fast path); None scans the whole corpus.
 pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
     let started = Instant::now();
+    let repo = discover_root(repo);
     let repo = repo
         .canonicalize()
         .with_context(|| format!("repo path {}", repo.display()))?;

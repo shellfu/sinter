@@ -87,7 +87,9 @@ pub fn run(repo: &Path) -> Result<bool> {
         ),
     }
 
-    // Repo checks.
+    // Repo checks. Subdirectory invocation resolves to the graph root,
+    // matching every query command.
+    let repo = pipeline::discover_root(repo);
     let repo = repo.canonicalize()?;
     let db = pipeline::db_path(&repo);
     if !db.exists() {
