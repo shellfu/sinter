@@ -256,8 +256,15 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
             resolved_idx.insert(binding.reference);
             edges.push(binding.edge);
         }
-        let scip_path = repo.join("index.scip");
-        if scip_path.exists() {
+        // `sinter scip` writes .sinter/index.scip; a repo-root index.scip
+        // (hand-generated) still works.
+        let scip_path = [
+            repo.join(".sinter").join("index.scip"),
+            repo.join("index.scip"),
+        ]
+        .into_iter()
+        .find(|p| p.exists());
+        if let Some(scip_path) = scip_path {
             let index = sinter_resolve::load_index(&scip_path)?;
             for binding in sinter_resolve::resolve_with_index(&index, &nodes, &refs, |rel| {
                 std::fs::read_to_string(repo.join(rel)).ok()

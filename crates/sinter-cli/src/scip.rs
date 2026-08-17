@@ -59,12 +59,13 @@ pub fn run(repo: &Path) -> Result<()> {
         bail!("no language files found under {}", repo.display());
     }
 
-    // Every indexer writes index.scip at the repo root, so each run is
-    // renamed aside into .sinter/ and the per-language indexes merge back
-    // into the one root index the ingest contract expects.
+    // Every indexer insists on writing index.scip at the repo root; each
+    // run is renamed aside immediately and the merge lands in .sinter/
+    // (derived state, gitignored) so the repo root stays clean.
     let scratch = repo.join(".sinter");
     std::fs::create_dir_all(&scratch)?;
-    let final_index = repo.join("index.scip");
+    let root_index = repo.join("index.scip");
+    let final_index = scratch.join("index.scip");
     let mut produced: Vec<std::path::PathBuf> = Vec::new();
     for &(lang, files) in &counts {
         let Some((_, argv, hint)) = INDEXERS.iter().find(|(l, ..)| *l == lang) else {
@@ -88,12 +89,12 @@ pub fn run(repo: &Path) -> Result<()> {
             }
             Ok(_) => {}
         }
-        if !final_index.exists() {
+        if !root_index.exists() {
             eprintln!("{lang}: {} succeeded but wrote no index.scip", argv[0]);
             continue;
         }
         let aside = scratch.join(format!("index-{lang}.scip"));
-        std::fs::rename(&final_index, &aside)?;
+        std::fs::rename(&root_index, &aside)?;
         produced.push(aside);
     }
     if produced.is_empty() {
