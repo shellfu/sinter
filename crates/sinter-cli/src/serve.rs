@@ -66,11 +66,10 @@ fn handle(repo: &Path, method: &str, params: &Value) -> Result<Value> {
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
-            // Build per call, never a session-lived handle: redb's lock is
-            // exclusive, so holding the store across calls blocks
-            // `sinter build`/`watch` and pins a stale snapshot. The
-            // incremental build is a scan-floor no-op when nothing changed.
-            crate::pipeline::build(repo, None)?;
+            // No session-lived handle: redb's lock is exclusive, so holding
+            // the store across calls would block `sinter build`/`watch` and
+            // pin a stale snapshot. Freshness itself is enforced inside
+            // open_store, which every tool path goes through.
             let result = call_tool(repo, name, &args)?;
             Ok(json!({
                 "content": [{"type": "text", "text": serde_json::to_string_pretty(&result)?}]
