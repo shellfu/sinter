@@ -45,20 +45,45 @@ name = "{name}"
     Ok(true)
 }
 
-pub fn run(repo: &Path, cursor: bool) -> Result<bool> {
+pub fn run(repo: &Path, cursor: bool, scip: Option<bool>) -> Result<bool> {
     let repo = repo.canonicalize()?;
+    // Cursor is auto-configured when the repo already carries Cursor state;
+    // --cursor still forces it on a fresh checkout.
+    let cursor = cursor || repo.join(".cursor").exists();
 
     println!("== build ==");
     let report = pipeline::build(&repo, None)?;
     pipeline::print_report(&report);
 
-    // Compiler evidence by default: without it, receiver-method calls stay
-    // unresolved and the first blast-radius query underdelivers. Optional —
-    // a missing indexer is a note, never a failed init.
+    // Compiler evidence needs consent: indexers are language toolchains
+    // that can execute repository build scripts (build.rs, procmacros), so
+    // init must never launch them on an untrusted repo without being told.
+    // TTY: ask once. Non-interactive: skip unless --scip was passed.
     println!("\n== scip (compiler evidence) ==");
-    if let Err(e) = crate::scip::run(&repo) {
-        println!("skipped: {e:#}");
-        println!("(optional — rerun `sinter scip` once an indexer is installed)");
+    let consent = scip.unwrap_or_else(|| {
+        use std::io::IsTerminal;
+        if std::io::stdin().is_terminal() {
+            print!(
+                "run compiler indexers? They build the project and can execute \
+                 repository build scripts [y/N] "
+            );
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            let mut answer = String::new();
+            let _ = std::io::stdin().read_line(&mut answer);
+            matches!(answer.trim(), "y" | "Y" | "yes")
+        } else {
+            println!("skipped: non-interactive and no --scip (indexers execute build scripts)");
+            false
+        }
+    });
+    if consent {
+        if let Err(e) = crate::scip::run(&repo) {
+            println!("skipped: {e:#}");
+            println!("(optional — rerun `sinter scip` once an indexer is installed)");
+        }
+    } else {
+        println!("(optional — run `sinter scip` when you trust this repository)");
     }
 
     println!("\n== git hooks ==");

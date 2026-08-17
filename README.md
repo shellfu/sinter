@@ -53,9 +53,13 @@ a doctor report:
 ./target/release/sinter init /path/to/repo
 ```
 
-After that, `sinter build` refreshes the graph — an incremental hash-diff
-that is a fast no-op when nothing changed; the git hooks run it
-automatically. The build report ends with the honesty line — how much of the graph is
+On a terminal, init asks before running compiler indexers (`sinter scip`)
+because those toolchains execute repository build scripts; pass `--scip`
+or `--no-scip` to answer up front (non-interactive init skips them).
+
+After that, every query self-syncs — an incremental hash-diff that is a
+fast no-op when nothing changed — and the git hooks refresh eagerly on
+commit; `sinter build` stays available for CI and scripting. The build report ends with the honesty line — how much of the graph is
 evidence-bound, and how much would need a dependency index:
 
 ```
