@@ -12,6 +12,7 @@ use sinter_store::{EdgeFilter, Store};
 use crate::pipeline;
 
 pub fn open_store(repo: &Path) -> Result<Store> {
+    let repo = pipeline::discover_root(repo);
     let repo = repo
         .canonicalize()
         .with_context(|| format!("repo path {}", repo.display()))?;
