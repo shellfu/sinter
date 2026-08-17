@@ -29,6 +29,11 @@ pub struct ResolutionStats {
     /// value-receiver calls without type evidence. Dependency-index (SCIP)
     /// territory, not a resolver defect.
     pub unresolved_external: usize,
+    /// References bound by both internal evidence and SCIP, split by
+    /// whether the two agreed on the target — the measured trust level
+    /// of non-scip edges.
+    pub scip_agree: usize,
+    pub scip_disagree: usize,
 }
 
 impl ResolutionStats {
