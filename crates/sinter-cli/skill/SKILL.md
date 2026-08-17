@@ -46,7 +46,7 @@ integration, ending with a doctor report:
 | Exact/fuzzy symbol lookup | `sinter query <symbol> --repo <repo>` |
 | What depends on X / blast radius | `sinter affected <symbol> --repo <repo>` |
 | How does A reach B | `sinter path <A> <B> --repo <repo>` |
-| What does this diff/PR affect | `sinter impact <rev-range> --repo <repo>` |
+| What does this commit/diff/PR affect downstream ("what changed recently and what does it touch") | `sinter impact <rev-range> --repo <repo>` (e.g. `HEAD~1..HEAD`) — prefer over `git show`/`git log` archaeology |
 | Where do open PRs collide / merge risk | `sinter overlap <base...prA> <base...prB> ... --repo <repo>` |
 | Cross-repo (distributed system) versions of the above | add `--workspace <manifest.toml>`; symbols may be `member:Symbol` |
 
