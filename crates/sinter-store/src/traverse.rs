@@ -88,6 +88,20 @@ impl Store {
         let mut prev: HashMap<NodeId, Edge> = HashMap::new();
         let mut seen: HashSet<NodeId> = HashSet::from([from.clone()]);
         let mut queue: VecDeque<NodeId> = VecDeque::from([from.clone()]);
+        // A file's dependencies live in the symbols it contains; a file
+        // start seeds through its contains edges (shown as path steps).
+        // Containment stays non-traversable everywhere past the start.
+        if self
+            .node(from)?
+            .is_some_and(|n| n.kind == sinter_core::SymbolKind::File)
+        {
+            for edge in self.out_edges(from)? {
+                if edge.relation == Relation::Contains && seen.insert(edge.dst.clone()) {
+                    prev.insert(edge.dst.clone(), edge.clone());
+                    queue.push_back(edge.dst.clone());
+                }
+            }
+        }
         while let Some(current) = queue.pop_front() {
             if &current == to {
                 let mut path = Vec::new();
