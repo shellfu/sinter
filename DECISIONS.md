@@ -336,3 +336,20 @@ reports its cross-crate dependents. Pinned by rust-crate-assoc-items
 rust-crate-reexport (re-exported free function). Parked with a named
 trigger: `#[path = "..."] mod` renames (15 refs in the corpus) need
 attribute-aware extraction; a fixture when a real question demands it.
+
+## D28 — Workspace over MCP: startup-scoped, same tool names
+
+An MCP-only agent on a multi-repo system previously saw one member's
+graph and could mistake it for the whole blast radius. `sinter serve
+--workspace <manifest>` starts a workspace-scoped server; `--repo` stays
+repo-scoped; one server owns one scope. Per-call workspace arguments
+were rejected: they bloat every tool schema and force the agent to make
+a scoping decision per call that registration already made once.
+
+Tool names do not change — an agent's routing knowledge transfers.
+Workspace mode serves the tools that genuinely cross repos (query,
+affected, path); symbols accept `member:Symbol` or any bare name that
+resolves uniquely across members. tools/list describes the surface the
+scope actually has, never a superset. Freshness matches repo mode: every
+tools/call syncs each member first (scan-floor no-op per member; ceiling
+is member count, acceptable for manifest-sized workspaces).
