@@ -86,7 +86,7 @@ pub struct Store {
 /// queue of sibling queries — parallel agents fan out dozens) sees
 /// AlreadyOpen. Backoff up to 5s rides out the queue; a handle held by a
 /// long-lived process still errors after the budget.
-fn open_retrying(
+pub(crate) fn open_retrying(
     path: &Path,
     open: fn(&Path) -> Result<Database, redb::DatabaseError>,
 ) -> Result<Database, redb::DatabaseError> {
@@ -102,6 +102,13 @@ fn open_retrying(
             other => return other,
         }
     }
+}
+
+/// Create (or open) any redb database under sinter's contention policy —
+/// the one named owner of open-retry behavior for auxiliary databases
+/// (workspace link store) that are not the repository [`Store`].
+pub fn create_database(path: &Path) -> Result<Database, StoreError> {
+    Ok(open_retrying(path, |p| Database::create(p))?)
 }
 
 impl Store {

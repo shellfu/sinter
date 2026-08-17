@@ -121,7 +121,9 @@ impl LinkStore {
     pub fn open(ws: &Workspace) -> Result<Self> {
         let path = Self::path(ws);
         std::fs::create_dir_all(path.parent().unwrap())?;
-        let db = Database::create(&path)?;
+        // Same contention policy as the repository store: parallel
+        // workspace queries all open this file.
+        let db = sinter_store::create_database(&path)?;
         let txn = db.begin_write()?;
         {
             txn.open_multimap_table(LINKS_OUT)?;
