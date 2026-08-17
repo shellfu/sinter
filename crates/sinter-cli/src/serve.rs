@@ -10,13 +10,11 @@ use anyhow::Result;
 use serde_json::{Value, json};
 use sinter_core::Node;
 use sinter_resolve::qualified_of;
-use sinter_store::Store;
 
 use crate::lookup::{Found, edge_filter, find_symbol, open_store, unique_symbol};
 
 pub fn run(repo: &Path) -> Result<()> {
     let repo = repo.canonicalize()?;
-    let store = open_store(&repo)?;
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -40,7 +38,7 @@ pub fn run(repo: &Path) -> Result<()> {
         let Some(id) = id else {
             continue; // notification — nothing to answer
         };
-        let response = match handle(&store, &repo, method, &params) {
+        let response = match handle(&repo, method, &params) {
             Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
             Err(e) => json!({
                 "jsonrpc": "2.0", "id": id,
@@ -53,7 +51,7 @@ pub fn run(repo: &Path) -> Result<()> {
     Ok(())
 }
 
-fn handle(store: &Store, repo: &Path, method: &str, params: &Value) -> Result<Value> {
+fn handle(repo: &Path, method: &str, params: &Value) -> Result<Value> {
     match method {
         "initialize" => Ok(json!({
             "protocolVersion": params
@@ -68,7 +66,12 @@ fn handle(store: &Store, repo: &Path, method: &str, params: &Value) -> Result<Va
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
-            let result = call_tool(store, repo, name, &args)?;
+            // Build per call, never a session-lived handle: redb's lock is
+            // exclusive, so holding the store across calls blocks
+            // `sinter build`/`watch` and pins a stale snapshot. The
+            // incremental build is a scan-floor no-op when nothing changed.
+            crate::pipeline::build(repo, None)?;
+            let result = call_tool(repo, name, &args)?;
             Ok(json!({
                 "content": [{"type": "text", "text": serde_json::to_string_pretty(&result)?}]
             }))
@@ -108,13 +111,20 @@ fn node_json(node: &Node) -> Value {
     })
 }
 
-fn call_tool(store: &Store, repo: &Path, name: &str, args: &Value) -> Result<Value> {
+fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
     let symbol = |key: &str| -> String {
         args.get(key)
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string()
     };
+    if name == "impact" {
+        // compute opens the store itself; redb forbids a second in-process
+        // open, so no shared handle may be alive here.
+        let report = crate::impact::compute(repo, &symbol("rev_range"))?;
+        return Ok(crate::impact::to_json(&report));
+    }
+    let store = &open_store(repo)?;
     match name {
         "query" => {
             let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize;
@@ -158,10 +168,6 @@ fn call_tool(store: &Store, repo: &Path, name: &str, args: &Value) -> Result<Val
                     "evidence": e.evidence.as_str(),
                 })).collect::<Vec<_>>(),
             }))
-        }
-        "impact" => {
-            let report = crate::impact::compute(repo, &symbol("rev_range"))?;
-            Ok(crate::impact::to_json(&report))
         }
         other => anyhow::bail!("unknown tool {other}"),
     }
