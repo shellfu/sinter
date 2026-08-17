@@ -45,7 +45,7 @@ name = "{name}"
     Ok(true)
 }
 
-pub fn run(repo: &Path, cursor: bool, scip: Option<bool>) -> Result<bool> {
+pub fn run(repo: &Path, cursor: bool, scip: Option<bool>, global: bool) -> Result<bool> {
     let repo = repo.canonicalize()?;
     // Cursor is auto-configured when the repo already carries Cursor state;
     // --cursor still forces it on a fresh checkout.
@@ -104,7 +104,13 @@ pub fn run(repo: &Path, cursor: bool, scip: Option<bool>) -> Result<bool> {
     if cursor {
         targets.push("cursor".to_string());
     }
-    install::run_targets(&targets, None, true, &repo)?;
+    // Enforcement is per-repo by default (committable, teammates inherit
+    // it); --global additionally wires ~/.claude so every repo on this
+    // machine gets the hooks.
+    install::run_targets(&targets, None, true, &repo, false)?;
+    if global {
+        install::enforce(None)?;
+    }
 
     println!("\n== doctor ==");
     doctor::run(&repo)

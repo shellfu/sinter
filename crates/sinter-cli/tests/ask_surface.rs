@@ -740,7 +740,7 @@ fn install_enforce_is_idempotent_and_preserving() {
 
     let run = || {
         let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
-            .args(["install", "--for", "enforce"])
+            .args(["install", "--for", "enforce", "--global"])
             .env("HOME", home.path())
             .env("USERPROFILE", home.path())
             .output()
@@ -777,5 +777,36 @@ fn install_enforce_is_idempotent_and_preserving() {
     assert!(
         !text.contains("permissionDecision"),
         "enforcement must never carry a permission decision"
+    );
+}
+
+/// Default enforce scope is the repo: script and settings land under
+/// <repo>/.claude with a relative command (committable, teammate-portable).
+#[test]
+fn install_enforce_defaults_to_repo_scope() {
+    let repo = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
+        .args(["install", "--for", "enforce"])
+        .current_dir(repo.path())
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .output()
+        .expect("run sinter");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(repo.path().join(".claude/hooks/sinter-first.sh").exists());
+    let settings =
+        std::fs::read_to_string(repo.path().join(".claude/settings.json")).unwrap();
+    assert!(
+        settings.contains("bash .claude/hooks/sinter-first.sh prompt"),
+        "repo scope must use a relative command: {settings}"
+    );
+    assert!(
+        !home.path().join(".claude/hooks/sinter-first.sh").exists(),
+        "repo scope must not touch the global home"
     );
 }
