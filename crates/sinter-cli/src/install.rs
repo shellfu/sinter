@@ -54,9 +54,9 @@ function-body behavior.
 - Anything else: `sinter --help`; graph problems: `sinter doctor`.
 "#;
 
-const AGENTS_BEGIN: &str =
+pub(crate) const AGENTS_BEGIN: &str =
     "<!-- BEGIN sinter (managed by `sinter install`; edits inside are overwritten) -->";
-const AGENTS_END: &str = "<!-- END sinter -->";
+pub(crate) const AGENTS_END: &str = "<!-- END sinter -->";
 
 /// Write the Cursor project rule (own file, native .mdc format).
 pub fn cursor(repo: &Path) -> Result<PathBuf> {
@@ -165,9 +165,9 @@ pub fn mcp(repo: &Path) -> Result<()> {
     Ok(())
 }
 
-const CODEX_BEGIN: &str =
+pub(crate) const CODEX_BEGIN: &str =
     "# BEGIN sinter (managed by `sinter install`; edits inside are overwritten)";
-const CODEX_END: &str = "# END sinter";
+pub(crate) const CODEX_END: &str = "# END sinter";
 
 /// Merge a managed sinter server block into `.codex/config.toml` (marker
 /// replacement, same convention as the AGENTS.md block — no TOML parser
@@ -199,7 +199,7 @@ required = true
 }
 
 /// Claude Code home (`~/.claude`), shared with the skill install.
-fn claude_home() -> Option<PathBuf> {
+pub(crate) fn claude_home() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(|home| PathBuf::from(home).join(".claude"))

@@ -14,6 +14,7 @@ mod query;
 mod render;
 mod scip;
 mod serve;
+mod uninit;
 mod show;
 mod watch;
 mod workspace;
@@ -70,6 +71,14 @@ enum Command {
         /// Workspace name for --workspace (defaults to manifest's parent dir name)
         #[arg(long, requires = "workspace")]
         name: Option<String>,
+    },
+    /// Offboard a repo: remove the graph and every sinter-managed artifact
+    Uninit {
+        #[arg(default_value = ".")]
+        repo: PathBuf,
+        /// Also remove the global skill card and ~/.claude enforcement hooks
+        #[arg(short = 'g', long)]
+        global: bool,
     },
     /// Build or incrementally refresh the graph for a repository
     Build {
@@ -218,6 +227,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Workspace { manifest } => workspace::run(&manifest),
+        Command::Uninit { repo, global } => uninit::run(&repo, global).map(|_| ()),
         Command::Init {
             repo,
             cursor,
