@@ -88,11 +88,11 @@ pub fn run(repo: &Path, global: bool) -> Result<bool> {
     // Enforcement: repo scope always; global scope on request.
     remove_enforcement(&repo.join(".claude"))?;
     if global {
-        if let Some(dir) = install::default_dir() {
-            if dir.exists() {
-                std::fs::remove_dir_all(&dir)?;
-                println!("removed {}", dir.display());
-            }
+        if let Some(dir) = install::default_dir()
+            && dir.exists()
+        {
+            std::fs::remove_dir_all(&dir)?;
+            println!("removed {}", dir.display());
         }
         if let Some(claude) = install::claude_home() {
             remove_enforcement(&claude)?;
