@@ -32,6 +32,29 @@ pub fn load_index(path: &Path) -> Result<Index, ScipError> {
     })
 }
 
+/// Merge several on-disk indexes into one file: documents and external
+/// symbols concatenate, metadata comes from the first. Per-language
+/// indexers cover disjoint files, so concatenation is the whole merge.
+pub fn merge_index_files(paths: &[&Path], out: &Path) -> Result<(), ScipError> {
+    let (first, rest) = paths.split_first().expect("at least one index");
+    let mut merged = load_index(first)?;
+    for path in rest {
+        let mut index = load_index(path)?;
+        merged.documents.append(&mut index.documents);
+        merged.external_symbols.append(&mut index.external_symbols);
+    }
+    let bytes = merged
+        .write_to_bytes()
+        .map_err(|source| ScipError::Parse {
+            path: out.display().to_string(),
+            source,
+        })?;
+    std::fs::write(out, bytes).map_err(|source| ScipError::Io {
+        path: out.display().to_string(),
+        source,
+    })
+}
+
 /// Bind our extracted references using a compiler-produced SCIP index —
 /// the highest evidence tier. A reference binds when a SCIP reference
 /// occurrence overlaps its span and the symbol's definition occurrence
