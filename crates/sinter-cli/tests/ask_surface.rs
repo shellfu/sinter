@@ -809,3 +809,61 @@ fn install_enforce_defaults_to_repo_scope() {
         "repo scope must not touch the global home"
     );
 }
+
+/// init then uninit round-trips: every managed artifact is gone, and
+/// pre-existing user content (AGENTS.md prose, foreign hooks, other MCP
+/// servers) survives untouched.
+#[test]
+fn uninit_reverses_init_and_preserves_user_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::write(repo.join("a.rs"), "pub fn f() {}\n").unwrap();
+    std::fs::write(repo.join("AGENTS.md"), "# My rules\n\nKeep me.\n").unwrap();
+    std::fs::write(
+        repo.join(".mcp.json"),
+        r#"{"mcpServers":{"other":{"command":"other"}}}"#,
+    )
+    .unwrap();
+    Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
+            .args(args)
+            .current_dir(repo)
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run sinter");
+        assert!(
+            out.status.success(),
+            "sinter {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run(&["init"]);
+    assert!(repo.join(".sinter/graph.redb").exists());
+    assert!(repo.join(".claude/hooks/sinter-first.sh").exists());
+    run(&["uninit"]);
+
+    for gone in [
+        ".sinter",
+        ".claude/hooks/sinter-first.sh",
+        ".claude/settings.json",
+        ".codex/config.toml",
+        ".git/hooks/post-commit",
+    ] {
+        assert!(!repo.join(gone).exists(), "{gone} should be removed");
+    }
+    let agents = std::fs::read_to_string(repo.join("AGENTS.md")).unwrap();
+    assert!(agents.contains("Keep me."), "{agents}");
+    assert!(!agents.contains("sinter"), "{agents}");
+    let mcp = std::fs::read_to_string(repo.join(".mcp.json")).unwrap();
+    assert!(mcp.contains("other"), "{mcp}");
+    assert!(!mcp.contains("sinter"), "{mcp}");
+}
