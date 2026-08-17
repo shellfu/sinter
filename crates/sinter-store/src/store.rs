@@ -192,6 +192,22 @@ impl Store {
         Ok(refs)
     }
 
+    /// Unresolved references whose written name ends in this name — the
+    /// honest-empty signal for blast-radius queries: a nonzero count means
+    /// the graph may be missing dependents of a symbol with that name.
+    pub fn unresolved_named(&self, name: &str) -> Result<usize, StoreError> {
+        let files = self.ref_files(&std::collections::BTreeSet::from([name.to_string()]))?;
+        let mut count = 0;
+        for file in files {
+            count += self
+                .references_in(&file)?
+                .iter()
+                .filter(|r| name_tail_matches(&r.name, name))
+                .count();
+        }
+        Ok(count)
+    }
+
     pub fn node(&self, id: &NodeId) -> Result<Option<Node>, StoreError> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(NODES)?;
@@ -320,4 +336,15 @@ impl Store {
         }
         Ok(graph)
     }
+}
+
+/// Does a written reference name (`acme_common::connect_grpc_channel`,
+/// `pkg.Func`) end at exactly this name?
+fn name_tail_matches(written: &str, name: &str) -> bool {
+    written == name
+        || (written.ends_with(name)
+            && written[..written.len() - name.len()]
+                .chars()
+                .next_back()
+                .is_some_and(|c| !c.is_alphanumeric() && c != '_'))
 }

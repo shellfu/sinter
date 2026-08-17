@@ -143,8 +143,12 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
             let depth = args.get("max_depth").and_then(Value::as_u64).unwrap_or(10) as usize;
             let node = unique_symbol(store, &symbol("symbol"))?;
             let reached = store.dependents(&node.id, &filter, depth)?;
+            // Honest-empty signal: unresolved refs sharing the name mean
+            // the dependents list may be incomplete, never authoritative.
+            let unresolved = store.unresolved_named(&node.name)?;
             Ok(json!({
                 "symbol": node_json(&node),
+                "unresolved_refs_matching_name": unresolved,
                 "dependents": reached.iter().map(|r| json!({
                     "node": node_json(&r.node),
                     "depth": r.depth,
@@ -192,7 +196,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "affected",
-            "description": "Reverse blast radius: everything transitively depending on a symbol, cross-file. Each edge reports its evidence.",
+            "description": "Reverse blast radius: everything transitively depending on a symbol, cross-file. Each edge reports its evidence. unresolved_refs_matching_name > 0 means the list may be incomplete — refine, or run `sinter scip`.",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": {"type": "string"},
                 "max_depth": {"type": "integer"},
