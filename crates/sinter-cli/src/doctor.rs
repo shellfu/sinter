@@ -179,10 +179,10 @@ pub fn run(repo: &Path) -> Result<bool> {
     } else {
         r.ok("MCP not registered (optional; `sinter install --mcp` for non-shell clients)");
     }
-    if repo.join("index.scip").exists() {
+    if crate::pipeline::scip_index_path(&repo).is_some() {
         r.ok("SCIP index present (compiler-grade evidence tier active)");
     } else {
-        r.ok("no SCIP index (optional; a compiler indexer would bind external/method refs)");
+        r.ok("no SCIP index (optional; `sinter scip` would bind external/method refs)");
     }
 
     println!("{} problem(s)", r.problems);
