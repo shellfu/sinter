@@ -113,7 +113,10 @@ ever does, the capture contract is wrong, not the language
 (`DECISIONS.md`, D13).
 
 If a compiler-produced SCIP index (`index.scip`) is present at the repo
-root, sinter ingests it as the highest evidence tier.
+root, sinter ingests it as the highest evidence tier. `sinter scip` runs
+the right indexer for the repo's dominant language (rust-analyzer,
+scip-go, scip-typescript, scip-python, scip-clang) and rebuilds with the
+result; without the indexer installed it prints the install command.
 
 ## Accuracy and performance are measured, not asserted
 
