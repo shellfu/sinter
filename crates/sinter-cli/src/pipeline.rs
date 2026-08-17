@@ -269,10 +269,7 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
     let scip_fingerprint = scip_index_path(&repo).and_then(|p| {
         let meta = std::fs::metadata(&p).ok()?;
         let mtime = meta.modified().ok()?;
-        let nanos = mtime
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .as_nanos();
+        let nanos = mtime.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
         Some(format!("{}:{}", meta.len(), nanos))
     });
     let roots_fingerprint = {

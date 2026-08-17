@@ -182,7 +182,10 @@ pub fn run(repo: &Path) -> Result<bool> {
         .is_ok_and(|s| s.contains("[mcp_servers.sinter]"));
     let registered: Vec<&str> = [
         (".mcp.json (Claude)", json_registered(".mcp.json")),
-        (".cursor/mcp.json (Cursor)", json_registered(".cursor/mcp.json")),
+        (
+            ".cursor/mcp.json (Cursor)",
+            json_registered(".cursor/mcp.json"),
+        ),
         (".codex/config.toml (Codex)", codex_registered),
     ]
     .into_iter()
