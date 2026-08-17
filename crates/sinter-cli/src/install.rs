@@ -162,7 +162,8 @@ pub fn mcp(repo: &Path) -> Result<()> {
     Ok(())
 }
 
-const CODEX_BEGIN: &str = "# BEGIN sinter (managed by `sinter install`; edits inside are overwritten)";
+const CODEX_BEGIN: &str =
+    "# BEGIN sinter (managed by `sinter install`; edits inside are overwritten)";
 const CODEX_END: &str = "# END sinter";
 
 /// Merge a managed sinter server block into `.codex/config.toml` (marker

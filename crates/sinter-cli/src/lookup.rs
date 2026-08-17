@@ -100,10 +100,7 @@ pub struct ExternalSite {
 /// Qualified queries must match the written path's tail; bare names match
 /// the final segment.
 pub fn external_sites(store: &Store, symbol: &str) -> Result<Vec<ExternalSite>> {
-    let tail = symbol
-        .rsplit([':', '/', '.'])
-        .next()
-        .unwrap_or(symbol);
+    let tail = symbol.rsplit([':', '/', '.']).next().unwrap_or(symbol);
     if tail.is_empty() {
         return Ok(Vec::new());
     }
