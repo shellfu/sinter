@@ -53,6 +53,13 @@ pub fn run(
             }
         }
     }
+    let unresolved = store.unresolved_named(&node.name)?;
+    if unresolved > 0 {
+        println!(
+            "  note: {unresolved} unresolved ref(s) also name `{}` — dependents may be missing; `sinter scip` would bind them",
+            node.name
+        );
+    }
     Ok(())
 }
 
