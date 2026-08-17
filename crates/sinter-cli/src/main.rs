@@ -55,6 +55,12 @@ enum Command {
         /// Also write the Cursor rule file
         #[arg(long)]
         cursor: bool,
+        /// Run compiler indexers (they execute repository build scripts)
+        #[arg(long, overrides_with = "no_scip")]
+        scip: bool,
+        /// Skip compiler indexers without prompting
+        #[arg(long)]
+        no_scip: bool,
         /// Write a starter workspace manifest instead (path defaults to ws.toml)
         #[arg(long, value_name = "MANIFEST")]
         workspace: Option<Option<PathBuf>>,
@@ -208,6 +214,8 @@ fn main() -> ExitCode {
         Command::Init {
             repo,
             cursor,
+            scip,
+            no_scip,
             workspace,
             name,
         } => {
@@ -237,7 +245,14 @@ fn main() -> ExitCode {
                     }
                 };
             }
-            return match init::run(&repo, cursor) {
+            let scip_consent = if scip {
+                Some(true)
+            } else if no_scip {
+                Some(false)
+            } else {
+                None
+            };
+            return match init::run(&repo, cursor, scip_consent) {
                 Ok(true) => ExitCode::SUCCESS,
                 Ok(false) => ExitCode::FAILURE,
                 Err(e) => {

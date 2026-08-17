@@ -25,7 +25,10 @@ Parsing is the attack surface: tree-sitter grammars and the SCIP protobuf
 decoder process repo-controlled bytes. Treat indexing a hostile repo like
 running any parser over it. `sinter scip` additionally runs language
 toolchains, which on hostile repos can execute build scripts — do not run
-it on repositories you would not build.
+it on repositories you would not build. `sinter init` only launches those
+indexers with consent: it asks on a terminal, and non-interactive init
+skips them unless `--scip` was passed. `--no-scip` declines without a
+prompt.
 
 ## Dependencies
 

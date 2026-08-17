@@ -669,3 +669,57 @@ fn init_onboards_repo() {
     let agents = std::fs::read_to_string(repo.join("AGENTS.md")).unwrap();
     assert_eq!(agents.matches("BEGIN sinter").count(), 1, "{agents}");
 }
+
+/// init must not execute repository-selected indexer binaries without
+/// consent: non-interactive default skips them; --scip runs them.
+#[cfg(unix)]
+#[test]
+fn init_runs_indexers_only_with_consent() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let bin = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::write(repo.join("a.rs"), "pub fn f() {}\n").unwrap();
+    // Fake rust-analyzer first on PATH: records execution, produces nothing.
+    let marker = bin.path().join("executed");
+    std::fs::write(
+        bin.path().join("rust-analyzer"),
+        format!("#!/bin/sh\ntouch {}\n", marker.display()),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(
+        bin.path().join("rust-analyzer"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let path_env = format!(
+        "{}:{}",
+        bin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let init = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_sinter"))
+            .args(args)
+            .current_dir(repo)
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .env("PATH", &path_env)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run sinter")
+    };
+
+    let out = init(&["init"]);
+    assert!(out.status.success());
+    assert!(
+        !marker.exists(),
+        "non-interactive init executed an indexer without consent"
+    );
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(text.contains("skipped: non-interactive"), "{text}");
+
+    init(&["init", "--scip"]);
+    assert!(marker.exists(), "--scip must run the indexer");
+}
