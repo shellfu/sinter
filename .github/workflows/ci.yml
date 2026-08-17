@@ -22,3 +22,11 @@ jobs:
       - run: cargo test -p sinter-extract --test golden -- --nocapture
       - run: cargo test -p sinter-resolve --test golden_resolution -- --nocapture
       - run: cargo test --workspace
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Blocking by design: a known-vulnerable dependency fails CI.
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
