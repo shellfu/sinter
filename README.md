@@ -134,6 +134,10 @@ proto have no SCIP indexers.
 - **Agent token benchmark** (`docs/bench-agent-tokens.md`): blast-radius
   questions cost an agent ~4× fewer tokens and 5× fewer turns than
   grepping; simple lookups are parity. Measured, honest, N=1 per cell.
+- **Agent routing benchmark** (`docs/bench-routing.md`): unprompted
+  Claude Code sessions chose sinter first on 10/10 structure questions
+  and never invoked it on content questions (0/6) — measured on Haiku,
+  the floor model. One repo, n=16; script checked in.
 - **Budgets** (measured on a ~2M-LOC Go repository, 271k nodes): full
   build 18s, no-op rebuild 73ms, one-file edit under 1s typical, cold
   point query under 100ms, `ask` 66ms end-to-end. Enforced by tests in
