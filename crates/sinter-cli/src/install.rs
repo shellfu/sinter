@@ -208,10 +208,17 @@ fn claude_home() -> Option<PathBuf> {
 /// Install Claude Code enforcement: the sinter-first hook script plus the
 /// three settings entries that fire it (per-prompt router, Bash grep
 /// nudge, Grep-tool nudge). The script gates on `.sinter/graph.redb`
-/// existing, so globally-installed hooks stay silent in graph-less repos.
-/// Merging is idempotent and preserves every other setting and hook.
-pub fn enforce() -> Result<()> {
-    let claude = claude_home().ok_or_else(|| anyhow::anyhow!("cannot locate home directory"))?;
+/// existing, so hooks stay silent in graph-less repos. Merging is
+/// idempotent and preserves every other setting and hook.
+///
+/// `repo` Some = project scope: <repo>/.claude with a relative command,
+/// so the settings file is committable and works for every teammate and
+/// checkout path. None = global scope: ~/.claude, absolute command.
+pub fn enforce(repo: Option<&Path>) -> Result<()> {
+    let claude = match repo {
+        Some(repo) => repo.canonicalize()?.join(".claude"),
+        None => claude_home().ok_or_else(|| anyhow::anyhow!("cannot locate home directory"))?,
+    };
     let hooks_dir = claude.join("hooks");
     std::fs::create_dir_all(&hooks_dir)?;
     let script = hooks_dir.join("sinter-first.sh");
@@ -229,7 +236,10 @@ pub fn enforce() -> Result<()> {
             .with_context(|| format!("{} exists but is not valid JSON", settings_path.display()))?,
         Err(_) => json!({}),
     };
-    let script_str = script.display().to_string();
+    let script_str = match repo {
+        Some(_) => ".claude/hooks/sinter-first.sh".to_string(),
+        None => script.display().to_string(),
+    };
     let entry =
         |mode: &str| json!({"type": "command", "command": format!("bash {script_str} {mode}")});
     let hooks = root
@@ -297,6 +307,7 @@ pub fn run_targets(
     dir: Option<PathBuf>,
     mcp_flag: bool,
     repo: &Path,
+    global: bool,
 ) -> Result<()> {
     let expanded: Vec<&str> = if targets.iter().any(|t| t == "all") {
         vec!["claude", "cursor", "agents", "enforce"]
@@ -314,7 +325,7 @@ pub fn run_targets(
                 let path = agents(&repo.canonicalize()?)?;
                 println!("merged managed sinter block into {}", path.display());
             }
-            "enforce" => enforce()?,
+            "enforce" => enforce((!global).then_some(repo))?,
             other => {
                 bail!("unknown install target `{other}` (claude, cursor, agents, enforce, all)")
             }

@@ -87,35 +87,39 @@ pub fn run(repo: &Path) -> Result<bool> {
         ),
     }
 
-    // Enforcement hooks: script current with this binary, and the three
-    // settings entries present (per-prompt router, Bash + Grep nudges).
-    if let Some(dir) =
-        install::default_dir().and_then(|d| d.parent()?.parent().map(Path::to_path_buf))
-    {
-        let script_current = std::fs::read_to_string(dir.join("hooks/sinter-first.sh"))
-            .is_ok_and(|s| s == install::ENFORCE_HOOK);
-        let settings = std::fs::read_to_string(dir.join("settings.json")).unwrap_or_default();
-        let wired = [
-            "sinter-first.sh prompt",
-            "sinter-first.sh grep",
-            "sinter-first.sh greptool",
-        ]
-        .iter()
-        .all(|m| settings.contains(m));
-        if script_current && wired {
-            r.ok("enforcement hooks installed and current (Claude Code)");
-        } else {
-            r.warn(
-                "enforcement hooks missing or stale (agents may grep instead of querying)",
-                "run `sinter install --for enforce`",
-            );
-        }
-    }
-
     // Repo checks. Subdirectory invocation resolves to the graph root,
     // matching every query command.
     let repo = pipeline::discover_root(repo);
     let repo = repo.canonicalize()?;
+
+    // Enforcement hooks: script current with this binary and the three
+    // settings entries present (per-prompt router, Bash + Grep nudges),
+    // satisfied by either the repo's .claude or the global ~/.claude.
+    let enforced_at = |claude: &Path| {
+        std::fs::read_to_string(claude.join("hooks/sinter-first.sh"))
+            .is_ok_and(|s| s == install::ENFORCE_HOOK)
+            && std::fs::read_to_string(claude.join("settings.json")).is_ok_and(|s| {
+                [
+                    "sinter-first.sh prompt",
+                    "sinter-first.sh grep\"",
+                    "sinter-first.sh greptool",
+                ]
+                .iter()
+                .all(|m| s.contains(m))
+            })
+    };
+    let global_claude =
+        install::default_dir().and_then(|d| d.parent()?.parent().map(Path::to_path_buf));
+    if enforced_at(&repo.join(".claude")) {
+        r.ok("enforcement hooks installed and current (repo .claude)");
+    } else if global_claude.as_deref().is_some_and(enforced_at) {
+        r.ok("enforcement hooks installed and current (global ~/.claude)");
+    } else {
+        r.warn(
+            "enforcement hooks missing or stale (agents may grep instead of querying)",
+            "run `sinter install --for enforce` (or --global)",
+        );
+    }
     let db = pipeline::db_path(&repo);
     if !db.exists() {
         r.warn(

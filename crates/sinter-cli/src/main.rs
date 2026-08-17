@@ -61,6 +61,9 @@ enum Command {
         /// Skip compiler indexers without prompting
         #[arg(long)]
         no_scip: bool,
+        /// Also install enforcement hooks globally (~/.claude), not just this repo
+        #[arg(short = 'g', long)]
+        global: bool,
         /// Write a starter workspace manifest instead (path defaults to ws.toml)
         #[arg(long, value_name = "MANIFEST")]
         workspace: Option<Option<PathBuf>>,
@@ -99,9 +102,12 @@ enum Command {
         /// Also register the MCP server in the repo's project-scope .mcp.json
         #[arg(long)]
         mcp: bool,
-        /// Repo for cursor/agents/--mcp targets
+        /// Repo for cursor/agents/enforce/--mcp targets
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        /// Install enforcement hooks globally (~/.claude) instead of in the repo
+        #[arg(short = 'g', long)]
+        global: bool,
     },
     /// Install git hooks that refresh the graph after commits/checkouts
     Hooks {
@@ -217,6 +223,7 @@ fn main() -> ExitCode {
             cursor,
             scip,
             no_scip,
+            global,
             workspace,
             name,
         } => {
@@ -253,7 +260,7 @@ fn main() -> ExitCode {
             } else {
                 None
             };
-            return match init::run(&repo, cursor, scip_consent) {
+            return match init::run(&repo, cursor, scip_consent, global) {
                 Ok(true) => ExitCode::SUCCESS,
                 Ok(false) => ExitCode::FAILURE,
                 Err(e) => {
@@ -283,7 +290,8 @@ fn main() -> ExitCode {
             dir,
             mcp,
             repo,
-        } => install::run_targets(&targets, dir, mcp, &repo),
+            global,
+        } => install::run_targets(&targets, dir, mcp, &repo, global),
         Command::Hooks {
             action: HooksAction::Install { repo },
         } => hooks::install(&repo),
