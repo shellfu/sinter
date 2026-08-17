@@ -19,6 +19,11 @@ pub fn open_store(repo: &Path) -> Result<Store> {
     if !path.exists() {
         bail!("no graph at {} — run `sinter build` first", path.display());
     }
+    // Freshness lives at the query boundary: every CLI command and MCP tool
+    // syncs before answering, so agents never read a stale graph between
+    // commits (hooks cover commit-time; this covers uncommitted edits).
+    // A fresh corpus is a scan-floor no-op.
+    pipeline::build(&repo, None)?;
     Ok(Store::open(&path)?)
 }
 
