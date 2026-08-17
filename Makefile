@@ -2,7 +2,7 @@
 #
 # Every target is a thin wrapper over cargo; the Makefile adds no logic of
 # its own (orchestration lives in the binary, R6 — and in CI, which runs
-# exactly `make gate` plus the nightly `make test-scale`).
+# the `make gate` checks plus the nightly `make test-scale`).
 #
 # `make` or `make help` lists targets. Variables you may override:
 #
@@ -62,8 +62,14 @@ fmt-check: ## Fail if any file is unformatted (CI form of fmt)
 lint: ## Clippy across all targets; warnings are errors
 	cargo clippy --all-targets -- -D warnings
 
+.PHONY: audit
+audit: ## Fail on known-vulnerable dependencies (requires cargo-audit)
+	@command -v cargo-audit >/dev/null 2>&1 \
+		|| { echo "error: cargo-audit is required; run: cargo install cargo-audit --locked"; exit 1; }
+	cargo audit
+
 .PHONY: gate
-gate: fmt-check lint test ## Everything the PR CI gate runs, in CI order
+gate: fmt-check lint test audit ## Everything the blocking CI gate runs
 	@echo "gate: all green"
 
 # ------------------------------------------------------------ installation
@@ -105,6 +111,7 @@ endif
 		|| { echo "error: working tree not clean — commit or stash first"; exit 1; }
 	@git rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null \
 		&& { echo "error: tag v$(VERSION) already exists"; exit 1; } || true
+	$(MAKE) gate
 	sed -i 's/^version = ".*"/version = "$(VERSION)"/' Cargo.toml
 	cargo update --workspace --quiet   # sync Cargo.lock to the new version
 	git add Cargo.toml Cargo.lock
