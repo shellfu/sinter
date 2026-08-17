@@ -17,6 +17,9 @@ use crate::lookup::open_store;
 #[derive(Serialize)]
 pub struct ImpactReport {
     pub rev_range: String,
+    /// Hunks come from the rev range but spans match the working-tree
+    /// graph; uncommitted edits shift spans, so totals may include drift.
+    pub working_tree_dirty: bool,
     pub changed_symbols: Vec<SymbolRef>,
     pub blast_radius: Vec<SymbolRef>,
     pub affected_tests: Vec<SymbolRef>,
@@ -51,6 +54,12 @@ fn is_test(node: &Node) -> bool {
 pub fn compute(repo: &Path, rev_range: &str) -> Result<ImpactReport> {
     let repo = repo.canonicalize()?;
     let store = open_store(&repo)?;
+
+    let working_tree_dirty = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&repo)
+        .output()
+        .is_ok_and(|s| s.status.success() && !s.stdout.is_empty());
 
     // New-side hunks per file from git.
     let output = Command::new("git")
@@ -156,6 +165,7 @@ pub fn compute(repo: &Path, rev_range: &str) -> Result<ImpactReport> {
 
     Ok(ImpactReport {
         rev_range: rev_range.to_string(),
+        working_tree_dirty,
         changed_symbols: changed.iter().map(symbol_ref).collect(),
         blast_radius: radius.values().map(symbol_ref).collect(),
         affected_tests,
@@ -216,6 +226,12 @@ pub fn run(repo: &Path, rev_range: &str, manifest: Option<&Path>) -> Result<()> 
         report.blast_radius.len(),
         report.affected_tests.len()
     );
+    if report.working_tree_dirty {
+        println!(
+            "  note: working tree has uncommitted changes — spans match the current tree, so totals may include drift beyond {}",
+            report.rev_range
+        );
+    }
     println!("changed:");
     for s in &report.changed_symbols {
         println!("  {} {}  {}", s.kind, s.qualified, s.file);
