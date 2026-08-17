@@ -5,6 +5,6 @@ mod traverse;
 mod update;
 
 pub use error::StoreError;
-pub use store::Store;
+pub use store::{Store, create_database};
 pub use traverse::{EdgeFilter, Reached};
 pub use update::NameDelta;

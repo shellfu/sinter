@@ -247,3 +247,37 @@ fn workspace_stale_and_declared_errors() {
     assert!(!ok, "{out}");
     assert!(out.contains("NoSuchSymbol"), "{out}");
 }
+
+/// Parallel workspace queries share the link store; opens must ride out
+/// contention instead of failing with DatabaseAlreadyOpen.
+#[test]
+fn parallel_workspace_queries_all_succeed() {
+    let root = tempfile::tempdir().unwrap();
+    let manifest = build_workspace(root.path());
+    let (ok, out) = sinter(root.path(), &["workspace", manifest.to_str().unwrap()]);
+    assert!(ok, "{out}");
+    let threads: Vec<_> = (0..8)
+        .map(|_| {
+            let manifest = manifest.clone();
+            std::thread::spawn(move || {
+                Command::new(env!("CARGO_BIN_EXE_sinter"))
+                    .args([
+                        "affected",
+                        "common:Backoff",
+                        "--workspace",
+                        manifest.to_str().unwrap(),
+                    ])
+                    .output()
+                    .expect("run sinter")
+            })
+        })
+        .collect();
+    for t in threads {
+        let out = t.join().unwrap();
+        assert!(
+            out.status.success(),
+            "workspace query failed under contention: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
