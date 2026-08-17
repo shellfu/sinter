@@ -114,9 +114,10 @@ ever does, the capture contract is wrong, not the language
 
 If a compiler-produced SCIP index (`index.scip`) is present at the repo
 root, sinter ingests it as the highest evidence tier. `sinter scip` runs
-the right indexer for the repo's dominant language (rust-analyzer,
-scip-go, scip-typescript, scip-python, scip-clang) and rebuilds with the
-result; without the indexer installed it prints the install command.
+the matching indexer for every language present (rust-analyzer, scip-go,
+scip-typescript, scip-python, scip-clang), merges the results into one
+index, and rebuilds; a missing indexer prints its install command and is
+skipped. Bash and proto have no SCIP indexers.
 
 ## Accuracy and performance are measured, not asserted
 

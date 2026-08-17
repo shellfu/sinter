@@ -43,8 +43,6 @@ const INDEXERS: &[(&str, &[&str], &str)] = &[
 pub fn run(repo: &Path) -> Result<()> {
     let repo = repo.canonicalize()?;
 
-    // One index.scip per repo and every indexer writes that same file, so
-    // the dominant language by file count picks the indexer.
     let hashes = pipeline::scan_hashes(&repo, &HashMap::new())?;
     let mut counts: Vec<(&str, usize)> = Vec::new();
     for (file, _) in &hashes {
@@ -57,33 +55,54 @@ pub fn run(repo: &Path) -> Result<()> {
         }
     }
     counts.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
-    let Some(&(lang, files)) = counts.first() else {
+    if counts.is_empty() {
         bail!("no language files found under {}", repo.display());
-    };
-    let Some((_, argv, hint)) = INDEXERS.iter().find(|(l, ..)| *l == lang) else {
-        bail!("no SCIP indexer known for {lang}");
-    };
-    if counts.len() > 1 {
-        eprintln!(
-            "multiple languages present; indexing the dominant one only ({lang}, {files} files)"
-        );
     }
 
-    eprintln!("running {}...", argv.join(" "));
-    let status = Command::new(argv[0])
-        .args(&argv[1..])
-        .current_dir(&repo)
-        .status();
-    match status {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            bail!("{} is not on PATH — install it: {hint}", argv[0])
+    // Every indexer writes index.scip at the repo root, so each run is
+    // renamed aside into .sinter/ and the per-language indexes merge back
+    // into the one root index the ingest contract expects.
+    let scratch = repo.join(".sinter");
+    std::fs::create_dir_all(&scratch)?;
+    let final_index = repo.join("index.scip");
+    let mut produced: Vec<std::path::PathBuf> = Vec::new();
+    for &(lang, files) in &counts {
+        let Some((_, argv, hint)) = INDEXERS.iter().find(|(l, ..)| *l == lang) else {
+            eprintln!("{lang}: no SCIP indexer exists — skipped ({files} files)");
+            continue;
+        };
+        eprintln!("{lang}: running {}...", argv.join(" "));
+        let status = Command::new(argv[0])
+            .args(&argv[1..])
+            .current_dir(&repo)
+            .status();
+        match status {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("{lang}: {} is not on PATH — install it: {hint}", argv[0]);
+                continue;
+            }
+            Err(e) => return Err(e).with_context(|| format!("run {}", argv[0])),
+            Ok(s) if !s.success() => {
+                eprintln!("{lang}: {} failed with {s} — skipped", argv[0]);
+                continue;
+            }
+            Ok(_) => {}
         }
-        Err(e) => return Err(e).with_context(|| format!("run {}", argv[0])),
-        Ok(s) if !s.success() => bail!("{} failed with {s}", argv[0]),
-        Ok(_) => {}
+        if !final_index.exists() {
+            eprintln!("{lang}: {} succeeded but wrote no index.scip", argv[0]);
+            continue;
+        }
+        let aside = scratch.join(format!("index-{lang}.scip"));
+        std::fs::rename(&final_index, &aside)?;
+        produced.push(aside);
     }
-    if !repo.join("index.scip").exists() {
-        bail!("{} succeeded but wrote no index.scip", argv[0]);
+    if produced.is_empty() {
+        bail!("no SCIP index produced for any language");
+    }
+    let parts: Vec<&Path> = produced.iter().map(std::path::PathBuf::as_path).collect();
+    sinter_resolve::merge_index_files(&parts, &final_index)?;
+    for aside in &produced {
+        let _ = std::fs::remove_file(aside);
     }
 
     // SCIP binds at resolve time and only for files in the affected set, so
