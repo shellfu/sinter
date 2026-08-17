@@ -74,3 +74,49 @@ fn one_file_edit_is_incremental_and_fast() {
     let removed = sinter(repo, &["build"]);
     assert!(removed.contains("0 changed, 1 removed"), "{removed}");
 }
+
+/// A package rename in Cargo.toml changes module roots without touching any
+/// source file. The build must re-resolve the corpus (dropping edges bound
+/// through the old root), not report a no-op that leaves stale dependents.
+#[test]
+fn manifest_rename_invalidates_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../harness/golden/fixtures/rust-workspace-crates/crates");
+    for (src, dst) in [("util", "util"), ("app", "app")] {
+        let out = repo.join("crates").join(dst).join("src");
+        std::fs::create_dir_all(&out).unwrap();
+        for entry in std::fs::read_dir(fixture.join(src).join("src")).unwrap() {
+            let entry = entry.unwrap();
+            std::fs::copy(entry.path(), out.join(entry.file_name())).unwrap();
+        }
+        std::fs::copy(
+            fixture.join(src).join("Cargo.toml"),
+            repo.join("crates").join(dst).join("Cargo.toml"),
+        )
+        .unwrap();
+    }
+
+    sinter(repo, &["build"]);
+    let before = sinter(repo, &["affected", "double", "--repo"]);
+    assert!(before.contains("main"), "expected dependents: {before}");
+
+    // Rename the package; imports still say `acme_util`, so nothing binds.
+    let manifest = repo.join("crates/util/Cargo.toml");
+    let renamed = std::fs::read_to_string(&manifest)
+        .unwrap()
+        .replace("acme-util", "renamed-util");
+    std::fs::write(&manifest, renamed).unwrap();
+
+    let rebuild = sinter(repo, &["build"]);
+    assert!(
+        !rebuild.contains(" 0 files re-resolved"),
+        "manifest change must re-resolve: {rebuild}"
+    );
+    let after = sinter(repo, &["affected", "double", "--repo"]);
+    assert!(
+        !after.contains("main"),
+        "stale dependents survived the rename: {after}"
+    );
+}
