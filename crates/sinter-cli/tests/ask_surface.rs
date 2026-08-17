@@ -607,11 +607,13 @@ fn version_subcommand_matches_flag() {
 }
 
 /// `sinter init` onboards a repo end to end: graph built, hooks installed,
-/// AGENTS.md block + MCP registered, doctor clean (skill dir overridden is
-/// not possible here, so only repo-level outcomes assert).
+/// AGENTS.md block + MCP registered, doctor clean. HOME points at a temp
+/// dir so the global skill-card write never touches the real user
+/// environment (hermetic under any sandbox).
 #[test]
 fn init_onboards_repo() {
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
     let repo = dir.path();
     std::fs::write(repo.join("a.rs"), "pub fn f() {}\n").unwrap();
     Command::new("git")
@@ -620,7 +622,29 @@ fn init_onboards_repo() {
         .output()
         .unwrap();
 
-    let (_, out) = sinter(repo, &["init"]);
+    let init = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
+            .args(args)
+            .current_dir(repo)
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .output()
+            .expect("run sinter");
+        (
+            out.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        )
+    };
+    let (ok, out) = init(&["init"]);
+    assert!(ok, "{out}");
+    assert!(
+        home.path().join(".claude/skills/sinter/SKILL.md").exists(),
+        "{out}"
+    );
     assert!(out.contains("== build =="), "{out}");
     assert!(repo.join(".sinter/graph.redb").exists(), "{out}");
     assert!(
@@ -640,7 +664,7 @@ fn init_onboards_repo() {
     assert_eq!(mcp["mcpServers"]["sinter"]["command"], "sinter");
     assert!(out.contains("== doctor =="), "{out}");
     // Idempotent: second init changes nothing and still succeeds.
-    let (_, again) = sinter(repo, &["init"]);
+    let (_, again) = init(&["init"]);
     assert!(again.contains("0 changed"), "{again}");
     let agents = std::fs::read_to_string(repo.join("AGENTS.md")).unwrap();
     assert_eq!(agents.matches("BEGIN sinter").count(), 1, "{agents}");
