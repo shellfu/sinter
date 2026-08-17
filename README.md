@@ -127,6 +127,9 @@ proto have no SCIP indexers.
   gate CI at precision/recall 1.0; any change that moves the metric fails
   with the exact missing/extra tuples printed. Expectations derive from
   language semantics, never from engine output (`harness/golden/`).
+- **Agent token benchmark** (`docs/bench-agent-tokens.md`): blast-radius
+  questions cost an agent ~4× fewer tokens and 5× fewer turns than
+  grepping; simple lookups are parity. Measured, honest, N=1 per cell.
 - **Budgets** (measured on a ~2M-LOC Go repository, 271k nodes): full
   build 18s, no-op rebuild 73ms, one-file edit under 1s typical, cold
   point query under 100ms, `ask` 66ms end-to-end. Enforced by tests in
