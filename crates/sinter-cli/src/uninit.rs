@@ -36,7 +36,10 @@ pub fn run(repo: &Path, global: bool) -> Result<bool> {
             .lines()
             .filter(|l| !l.contains(MARKER) && !l.contains("sinter build"))
             .collect();
-        if kept.iter().all(|l| l.trim().is_empty() || l.starts_with("#!")) {
+        if kept
+            .iter()
+            .all(|l| l.trim().is_empty() || l.starts_with("#!"))
+        {
             std::fs::remove_file(&path)?;
             println!("removed {}", path.display());
         } else {
@@ -66,10 +69,7 @@ pub fn run(repo: &Path, global: bool) -> Result<bool> {
         let Some(mut root) = read_json(&path) else {
             continue;
         };
-        let Some(servers) = root
-            .get_mut("mcpServers")
-            .and_then(Value::as_object_mut)
-        else {
+        let Some(servers) = root.get_mut("mcpServers").and_then(Value::as_object_mut) else {
             continue;
         };
         if servers.remove("sinter").is_none() {
@@ -100,7 +100,13 @@ pub fn run(repo: &Path, global: bool) -> Result<bool> {
     }
 
     // Empty managed directories left behind.
-    for rel in [".cursor/rules", ".cursor", ".codex", ".claude/hooks", ".claude"] {
+    for rel in [
+        ".cursor/rules",
+        ".cursor",
+        ".codex",
+        ".claude/hooks",
+        ".claude",
+    ] {
         let _ = std::fs::remove_dir(repo.join(rel)); // fails when non-empty — correct
     }
 
@@ -152,7 +158,9 @@ fn remove_enforcement(claude: &Path) -> Result<()> {
         return Ok(());
     }
     if hooks.is_empty() {
-        root.as_object_mut().expect("checked object").remove("hooks");
+        root.as_object_mut()
+            .expect("checked object")
+            .remove("hooks");
     }
     if root.as_object().is_some_and(serde_json::Map::is_empty) {
         std::fs::remove_file(&settings_path)?;
@@ -178,11 +186,7 @@ fn strip_block(path: &Path, begin: &str, end: &str) -> Result<()> {
     if stop <= start {
         return Ok(());
     }
-    let remainder = format!(
-        "{}{}",
-        &content[..start],
-        &content[stop + end.len()..]
-    );
+    let remainder = format!("{}{}", &content[..start], &content[stop + end.len()..]);
     if remainder.trim().is_empty() {
         std::fs::remove_file(path)?;
         println!("removed {}", path.display());
