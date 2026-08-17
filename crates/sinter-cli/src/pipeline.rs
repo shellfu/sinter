@@ -238,10 +238,13 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
     for file in &removed {
         affected.remove(file);
     }
-    // A changed SCIP index moves bindings in files whose source did not
-    // change: re-resolve the whole corpus, but never re-extract (facts are
-    // content-addressed and untouched). len:mtime fingerprint, not a content
-    // hash — indexes run to hundreds of MB and this runs on every build.
+    // Non-source resolution inputs can move bindings in files whose source
+    // did not change: a new/regenerated SCIP index, or a manifest edit that
+    // renames a module root (package rename with imports untouched). Either
+    // fingerprint changing re-resolves the whole corpus, but never
+    // re-extracts (facts are content-addressed and untouched). The index
+    // uses len:mtime, not a content hash — indexes run to hundreds of MB
+    // and this runs on every build.
     let scip_fingerprint = scip_index_path(&repo).and_then(|p| {
         let meta = std::fs::metadata(&p).ok()?;
         let mtime = meta.modified().ok()?;
@@ -251,7 +254,21 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
             .as_nanos();
         Some(format!("{}:{}", meta.len(), nanos))
     });
-    if store.scip_fingerprint()? != scip_fingerprint {
+    let roots_fingerprint = {
+        let mut hasher = blake3::Hasher::new();
+        for root in &module_roots {
+            hasher.update(root.name.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(root.dir.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(root.language.as_bytes());
+            hasher.update(b"\n");
+        }
+        Some(hasher.finalize().to_hex().to_string())
+    };
+    if store.resolve_fingerprint("scip")? != scip_fingerprint
+        || store.resolve_fingerprint("module_roots")? != roots_fingerprint
+    {
         affected.extend(hashes.iter().map(|(f, _)| f.clone()));
         for file in &removed {
             affected.remove(file);
@@ -332,7 +349,8 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
     // Hashes commit only now: every derived table is consistent, so a crash
     // anywhere above re-runs these files as changed on the next build.
     store.commit_hashes(&changed_facts)?;
-    store.set_scip_fingerprint(scip_fingerprint.as_deref())?;
+    store.set_resolve_fingerprint("scip", scip_fingerprint.as_deref())?;
+    store.set_resolve_fingerprint("module_roots", roots_fingerprint.as_deref())?;
 
     // Reclaim free pages after bulk (re)builds; never on incremental
     // updates — compaction rewrites the file and would blow the <1s

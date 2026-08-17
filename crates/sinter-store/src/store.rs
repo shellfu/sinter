@@ -53,9 +53,11 @@ pub(crate) const IMPORTS: MultimapTableDefinition<&str, &[u8]> =
 /// Single-row schema stamp; a mismatch on open wipes the database (facts
 /// are derivable, a stale-format db is not worth migrating).
 pub(crate) const META: TableDefinition<&str, u32> = TableDefinition::new("meta");
-/// Single-row SCIP index fingerprint (len:mtime). A change re-resolves the
-/// corpus without re-extracting. Additive table — absent in older dbs.
-pub(crate) const SCIP_META: TableDefinition<&str, &str> = TableDefinition::new("scip_meta");
+/// Fingerprints of non-source resolution inputs (SCIP index, manifest
+/// module roots), keyed by input kind. A change re-resolves the corpus
+/// without re-extracting. Additive table — absent in older dbs, which
+/// makes the first build after upgrade re-resolve once.
+pub(crate) const RESOLVE_META: TableDefinition<&str, &str> = TableDefinition::new("resolve_meta");
 const SCHEMA_VERSION: u32 = 4;
 
 impl Store {
@@ -65,7 +67,7 @@ impl Store {
     /// Read a database's schema stamp without opening for write and
     /// without triggering the wipe-on-mismatch in [`Store::create`].
     pub fn schema_of(path: impl AsRef<Path>) -> Result<Option<u32>, StoreError> {
-        let db = Database::open(path)?;
+        let db = open_retrying(path.as_ref(), |p| Database::open(p))?;
         let txn = db.begin_read()?;
         match txn.open_table(META) {
             Ok(table) => Ok(table.get("schema")?.map(|g| g.value())),
@@ -80,6 +82,28 @@ pub struct Store {
     pub(crate) db: Database,
 }
 
+/// redb opens are exclusive, so a query racing a short-lived build (or a
+/// queue of sibling queries — parallel agents fan out dozens) sees
+/// AlreadyOpen. Backoff up to 5s rides out the queue; a handle held by a
+/// long-lived process still errors after the budget.
+fn open_retrying(
+    path: &Path,
+    open: fn(&Path) -> Result<Database, redb::DatabaseError>,
+) -> Result<Database, redb::DatabaseError> {
+    let budget = std::time::Duration::from_secs(5);
+    let started = std::time::Instant::now();
+    let mut delay = std::time::Duration::from_millis(10);
+    loop {
+        match open(path) {
+            Err(redb::DatabaseError::DatabaseAlreadyOpen) if started.elapsed() < budget => {
+                std::thread::sleep(delay);
+                delay = (delay * 2).min(std::time::Duration::from_millis(200));
+            }
+            other => return other,
+        }
+    }
+}
+
 impl Store {
     /// Create or open the database and ensure all tables exist. An
     /// existing database with a different schema version is deleted and
@@ -87,7 +111,7 @@ impl Store {
     pub fn create(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let path = path.as_ref();
         if path.exists() {
-            let db = Database::open(path)?;
+            let db = open_retrying(path, |p| Database::open(p))?;
             let txn = db.begin_read()?;
             let stored = match txn.open_table(META) {
                 Ok(table) => table.get("schema")?.map(|g| g.value()),
@@ -101,7 +125,7 @@ impl Store {
             }
         }
         let store = Self {
-            db: Database::create(path)?,
+            db: open_retrying(path, |p| Database::create(p))?,
         };
         let txn = store.db.begin_write()?;
         {
@@ -121,7 +145,7 @@ impl Store {
             txn.open_multimap_table(IMPORTS)?;
             txn.open_table(INTERN)?;
             txn.open_table(INTERN_REV)?;
-            txn.open_table(SCIP_META)?;
+            txn.open_table(RESOLVE_META)?;
         }
         txn.commit()?;
         Ok(store)
@@ -129,7 +153,7 @@ impl Store {
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         Ok(Self {
-            db: Database::open(path)?,
+            db: open_retrying(path.as_ref(), |p| Database::open(p))?,
         })
     }
 
@@ -196,27 +220,31 @@ impl Store {
         Ok(refs)
     }
 
-    /// The SCIP index fingerprint the current resolution state was built
-    /// against, if any.
-    pub fn scip_fingerprint(&self) -> Result<Option<String>, StoreError> {
+    /// The fingerprint a non-source resolution input (key: "scip",
+    /// "module_roots") was last resolved against, if any.
+    pub fn resolve_fingerprint(&self, key: &str) -> Result<Option<String>, StoreError> {
         let txn = self.db.begin_read()?;
-        let table = match txn.open_table(SCIP_META) {
+        let table = match txn.open_table(RESOLVE_META) {
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
             other => other?,
         };
-        Ok(table.get("fingerprint")?.map(|g| g.value().to_string()))
+        Ok(table.get(key)?.map(|g| g.value().to_string()))
     }
 
-    pub fn set_scip_fingerprint(&self, fingerprint: Option<&str>) -> Result<(), StoreError> {
+    pub fn set_resolve_fingerprint(
+        &self,
+        key: &str,
+        fingerprint: Option<&str>,
+    ) -> Result<(), StoreError> {
         let txn = self.db.begin_write()?;
         {
-            let mut table = txn.open_table(SCIP_META)?;
+            let mut table = txn.open_table(RESOLVE_META)?;
             match fingerprint {
                 Some(f) => {
-                    table.insert("fingerprint", f)?;
+                    table.insert(key, f)?;
                 }
                 None => {
-                    table.remove("fingerprint")?;
+                    table.remove(key)?;
                 }
             }
         }
