@@ -52,6 +52,15 @@ pub fn run(repo: &Path, cursor: bool) -> Result<bool> {
     let report = pipeline::build(&repo, None)?;
     pipeline::print_report(&report);
 
+    // Compiler evidence by default: without it, receiver-method calls stay
+    // unresolved and the first blast-radius query underdelivers. Optional —
+    // a missing indexer is a note, never a failed init.
+    println!("\n== scip (compiler evidence) ==");
+    if let Err(e) = crate::scip::run(&repo) {
+        println!("skipped: {e:#}");
+        println!("(optional — rerun `sinter scip` once an indexer is installed)");
+    }
+
     println!("\n== git hooks ==");
     if repo.join(".git").exists() {
         hooks::install(&repo)?;
