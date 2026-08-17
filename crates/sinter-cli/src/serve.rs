@@ -111,28 +111,40 @@ fn node_json(node: &Node) -> Value {
 }
 
 fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
-    let symbol = |key: &str| -> String {
+    // A missing/misnamed parameter must say so — an empty-string default
+    // falls through to misleading downstream errors ("no searchable
+    // terms") that hide the actual mistake from the calling agent.
+    let symbol = |key: &str| -> Result<String> {
         args.get(key)
             .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "missing required parameter `{key}` (got: {})",
+                    args.as_object()
+                        .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
+                        .filter(|k| !k.is_empty())
+                        .unwrap_or_else(|| "no arguments".to_string())
+                )
+            })
     };
     if name == "impact" {
         // compute opens the store itself; redb forbids a second in-process
         // open, so no shared handle may be alive here.
-        let report = crate::impact::compute(repo, &symbol("rev_range"))?;
+        let report = crate::impact::compute(repo, &symbol("rev_range")?)?;
         return Ok(crate::impact::to_json(&report));
     }
     if name == "ask" {
         // ask_json opens the store itself — same constraint as impact.
         let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(5) as usize;
-        let hits = crate::ask::ask_json(repo, &symbol("question"), limit)?;
+        let hits = crate::ask::ask_json(repo, &symbol("question")?, limit)?;
         return Ok(json!({ "hits": hits }));
     }
     let store = &open_store(repo)?;
     match name {
         "show" => {
-            let node = unique_symbol(store, &symbol("symbol"))?;
+            let node = unique_symbol(store, &symbol("symbol")?)?;
             let edge_json = |e: &sinter_core::Edge, other: &sinter_core::NodeId| {
                 json!({
                     "symbol": qualified_of(other.as_str()),
@@ -158,7 +170,7 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
         }
         "query" => {
             let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize;
-            let (exact, nodes) = match find_symbol(store, &symbol("symbol"))? {
+            let (exact, nodes) = match find_symbol(store, &symbol("symbol")?)? {
                 Found::Exact(nodes) => (true, nodes),
                 Found::Suggestions(nodes) => (false, nodes),
             };
@@ -171,10 +183,10 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
             let (evidence, certain) = filter_args(args);
             let filter = edge_filter(&evidence, certain)?;
             let depth = args.get("max_depth").and_then(Value::as_u64).unwrap_or(10) as usize;
-            let node = match unique_symbol(store, &symbol("symbol")) {
+            let node = match unique_symbol(store, &symbol("symbol")?) {
                 Ok(node) => node,
                 Err(e) => {
-                    let sites = crate::lookup::external_sites(store, &symbol("symbol"))?;
+                    let sites = crate::lookup::external_sites(store, &symbol("symbol")?)?;
                     if sites.is_empty() {
                         return Err(e);
                     }
@@ -208,8 +220,8 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
         "path" => {
             let (evidence, certain) = filter_args(args);
             let filter = edge_filter(&evidence, certain)?;
-            let from = unique_symbol(store, &symbol("from"))?;
-            let to = unique_symbol(store, &symbol("to"))?;
+            let from = unique_symbol(store, &symbol("from")?)?;
+            let to = unique_symbol(store, &symbol("to")?)?;
             let path = store.shortest_path(&from.id, &to.id, &filter)?;
             Ok(json!({
                 "found": path.is_some(),
