@@ -8,6 +8,9 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 pub const SKILL: &str = include_str!("../skill/SKILL.md");
+/// Claude Code enforcement hook script, embedded so it can never drift
+/// from the modes the settings entries invoke.
+pub const ENFORCE_HOOK: &str = include_str!("../skill/sinter-first.sh");
 
 /// Card body without the Claude-specific YAML frontmatter — the single
 /// source every assistant adapter wraps. One content, many writers:
@@ -195,6 +198,99 @@ required = true
     Ok(())
 }
 
+/// Claude Code home (`~/.claude`), shared with the skill install.
+fn claude_home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|home| PathBuf::from(home).join(".claude"))
+}
+
+/// Install Claude Code enforcement: the sinter-first hook script plus the
+/// three settings entries that fire it (per-prompt router, Bash grep
+/// nudge, Grep-tool nudge). The script gates on `.sinter/graph.redb`
+/// existing, so globally-installed hooks stay silent in graph-less repos.
+/// Merging is idempotent and preserves every other setting and hook.
+pub fn enforce() -> Result<()> {
+    let claude = claude_home().ok_or_else(|| anyhow::anyhow!("cannot locate home directory"))?;
+    let hooks_dir = claude.join("hooks");
+    std::fs::create_dir_all(&hooks_dir)?;
+    let script = hooks_dir.join("sinter-first.sh");
+    std::fs::write(&script, ENFORCE_HOOK)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+    }
+    println!("installed {}", script.display());
+
+    let settings_path = claude.join("settings.json");
+    let mut root: Value = match std::fs::read_to_string(&settings_path) {
+        Ok(existing) => serde_json::from_str(&existing)
+            .with_context(|| format!("{} exists but is not valid JSON", settings_path.display()))?,
+        Err(_) => json!({}),
+    };
+    let script_str = script.display().to_string();
+    let entry =
+        |mode: &str| json!({"type": "command", "command": format!("bash {script_str} {mode}")});
+    let hooks = root
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("{} top level is not an object", settings_path.display()))?
+        .entry("hooks")
+        .or_insert(json!({}));
+    // (event, matcher, mode): matcher None = event-level hook (no matcher key).
+    for (event, matcher, mode) in [
+        ("PreToolUse", Some("Bash"), "grep"),
+        ("PreToolUse", Some("Grep"), "greptool"),
+        ("UserPromptSubmit", None, "prompt"),
+    ] {
+        let groups = hooks
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("settings `hooks` is not an object"))?
+            .entry(event)
+            .or_insert(json!([]));
+        let groups = groups
+            .as_array_mut()
+            .ok_or_else(|| anyhow::anyhow!("settings hooks.{event} is not an array"))?;
+        let group = groups
+            .iter_mut()
+            .find(|g| g.get("matcher").and_then(Value::as_str) == matcher);
+        let group = match group {
+            Some(g) => g,
+            None => {
+                groups.push(match matcher {
+                    Some(m) => json!({"matcher": m, "hooks": []}),
+                    None => json!({"hooks": []}),
+                });
+                groups.last_mut().expect("just pushed")
+            }
+        };
+        let list = group
+            .as_object_mut()
+            .and_then(|g| g.get_mut("hooks"))
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| anyhow::anyhow!("settings hooks.{event} group has no hooks array"))?;
+        let marker = format!("sinter-first.sh {mode}");
+        // Idempotent: refresh a stale entry in place, append when absent.
+        match list.iter_mut().find(|h| {
+            h.get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|c| c.contains(&marker))
+        }) {
+            Some(existing) => *existing = entry(mode),
+            None => list.push(entry(mode)),
+        }
+    }
+    std::fs::write(
+        &settings_path,
+        format!("{}\n", serde_json::to_string_pretty(&root)?),
+    )?;
+    println!(
+        "registered enforcement hooks in {}",
+        settings_path.display()
+    );
+    Ok(())
+}
+
 /// Dispatch `--for` targets. Unknown names fail loudly with the list.
 pub fn run_targets(
     targets: &[String],
@@ -203,7 +299,7 @@ pub fn run_targets(
     repo: &Path,
 ) -> Result<()> {
     let expanded: Vec<&str> = if targets.iter().any(|t| t == "all") {
-        vec!["claude", "cursor", "agents"]
+        vec!["claude", "cursor", "agents", "enforce"]
     } else {
         targets.iter().map(String::as_str).collect()
     };
@@ -218,7 +314,10 @@ pub fn run_targets(
                 let path = agents(&repo.canonicalize()?)?;
                 println!("merged managed sinter block into {}", path.display());
             }
-            other => bail!("unknown install target `{other}` (claude, cursor, agents, all)"),
+            "enforce" => enforce()?,
+            other => {
+                bail!("unknown install target `{other}` (claude, cursor, agents, enforce, all)")
+            }
         }
     }
     if mcp_flag {

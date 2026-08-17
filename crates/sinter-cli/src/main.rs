@@ -89,7 +89,8 @@ enum Command {
     /// Install the assistant integration card (embedded, drift-proof)
     Install {
         /// Targets: claude (global skill), cursor (.cursor/rules),
-        /// agents (AGENTS.md managed block: Codex/Gemini/etc), all
+        /// agents (AGENTS.md managed block: Codex/Gemini/etc),
+        /// enforce (Claude Code hooks: sinter-first routing), all
         #[arg(long = "for", value_delimiter = ',', default_value = "claude")]
         targets: Vec<String>,
         /// Claude skill directory override (default: ~/.claude/skills/sinter)

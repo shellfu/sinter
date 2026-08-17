@@ -87,6 +87,31 @@ pub fn run(repo: &Path) -> Result<bool> {
         ),
     }
 
+    // Enforcement hooks: script current with this binary, and the three
+    // settings entries present (per-prompt router, Bash + Grep nudges).
+    if let Some(dir) =
+        install::default_dir().and_then(|d| d.parent()?.parent().map(Path::to_path_buf))
+    {
+        let script_current = std::fs::read_to_string(dir.join("hooks/sinter-first.sh"))
+            .is_ok_and(|s| s == install::ENFORCE_HOOK);
+        let settings = std::fs::read_to_string(dir.join("settings.json")).unwrap_or_default();
+        let wired = [
+            "sinter-first.sh prompt",
+            "sinter-first.sh grep",
+            "sinter-first.sh greptool",
+        ]
+        .iter()
+        .all(|m| settings.contains(m));
+        if script_current && wired {
+            r.ok("enforcement hooks installed and current (Claude Code)");
+        } else {
+            r.warn(
+                "enforcement hooks missing or stale (agents may grep instead of querying)",
+                "run `sinter install --for enforce`",
+            );
+        }
+    }
+
     // Repo checks. Subdirectory invocation resolves to the graph root,
     // matching every query command.
     let repo = pipeline::discover_root(repo);
