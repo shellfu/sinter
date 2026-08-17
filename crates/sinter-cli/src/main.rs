@@ -199,6 +199,10 @@ enum Command {
     Serve {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        /// Serve a whole workspace instead (path to manifest); tools then
+        /// resolve `member:Symbol` and traverse across repositories
+        #[arg(long, conflicts_with = "repo")]
+        workspace: Option<PathBuf>,
     },
     /// Run the repo's SCIP indexer and rebuild with compiler-grade evidence
     Scip {
@@ -357,7 +361,10 @@ fn main() -> ExitCode {
             workspace,
         } => impact::run(&repo, &rev_range, workspace.as_deref()),
         Command::Overlap { ranges, repo, json } => overlap::run(&repo, &ranges, json),
-        Command::Serve { repo } => serve::run(&repo),
+        Command::Serve { repo, workspace } => match workspace {
+            Some(manifest) => serve::run_workspace(&manifest),
+            None => serve::run(&repo),
+        },
         Command::Scip { repo } => scip::run(&repo),
         Command::Completion { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "sinter", &mut std::io::stdout());

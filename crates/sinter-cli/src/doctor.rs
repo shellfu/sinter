@@ -129,7 +129,20 @@ pub fn run(repo: &Path) -> Result<bool> {
         println!("{} problem(s)", r.problems);
         return Ok(r.problems == 0);
     }
-    match Store::schema_of(&db)? {
+    // A held lock (long-lived serve/watch from another process) is a
+    // finding to report, never a crash.
+    let schema = match Store::schema_of(&db) {
+        Ok(schema) => schema,
+        Err(e) => {
+            r.warn(
+                &format!("graph database is not readable right now: {e}"),
+                "another process holds it (serve/watch?); stop it or retry, then `sinter doctor`",
+            );
+            println!("{} problem(s)", r.problems);
+            return Ok(false);
+        }
+    };
+    match schema {
         Some(v) if v == Store::CURRENT_SCHEMA => r.ok(&format!("graph schema v{v} (current)")),
         Some(v) => r.warn(
             &format!(
@@ -230,6 +243,30 @@ pub fn run(repo: &Path) -> Result<bool> {
             "run `sinter install --mcp` to register every client",
         );
     }
+    // Registered is not working: handshake the server the way a client
+    // would and confirm the expected tools come back.
+    if !registered.is_empty() {
+        match mcp_handshake(&repo) {
+            Ok(tools)
+                if ["ask", "affected", "path"]
+                    .iter()
+                    .all(|t| tools.contains(&t.to_string())) =>
+            {
+                r.ok(&format!("MCP handshake ok ({} tools served)", tools.len()));
+            }
+            Ok(tools) => r.warn(
+                &format!(
+                    "MCP handshake served unexpected tools: {}",
+                    tools.join(", ")
+                ),
+                "reinstall sinter and rerun `sinter install --mcp`",
+            ),
+            Err(e) => r.warn(
+                &format!("MCP registered but the server failed to answer: {e:#}"),
+                "check `sinter` is on PATH for your MCP client; rerun `sinter install --mcp`",
+            ),
+        }
+    }
     match crate::pipeline::scip_index_path(&repo) {
         Some(index) => match stale_since_index(&repo, &index) {
             0 => r.ok("SCIP index present and fresh (compiler-grade evidence tier active)"),
@@ -269,4 +306,46 @@ fn stale_since_index(repo: &Path, index: &Path) -> usize {
         }
     }
     newer
+}
+
+/// Spawn this binary as the MCP server (registrations say `sinter`; this
+/// binary IS that product, so testing current_exe tests the real path
+/// without depending on the caller's PATH), run initialize + tools/list
+/// over stdio, and return the served tool names.
+fn mcp_handshake(repo: &Path) -> anyhow::Result<Vec<String>> {
+    use std::io::Write;
+    let exe = std::env::current_exe()?;
+    let mut child = std::process::Command::new(exe)
+        .args(["serve", "--repo"])
+        .arg(repo)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    {
+        let stdin = child.stdin.as_mut().expect("piped");
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{}}}}"#
+        )?;
+        writeln!(stdin, r#"{{"jsonrpc":"2.0","id":2,"method":"tools/list"}}"#)?;
+    }
+    drop(child.stdin.take());
+    let output = child.wait_with_output()?;
+    let mut tools = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(list) = v["result"]["tools"].as_array() {
+            tools.extend(
+                list.iter()
+                    .filter_map(|t| t["name"].as_str().map(str::to_string)),
+            );
+        }
+    }
+    if tools.is_empty() {
+        anyhow::bail!("no tools/list response");
+    }
+    Ok(tools)
 }

@@ -4,7 +4,7 @@
 //! Every edge-walking tool takes evidence/confidence filters.
 
 use std::io::{BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -13,8 +13,21 @@ use sinter_resolve::qualified_of;
 
 use crate::lookup::{Found, edge_filter, find_symbol, open_store, unique_symbol};
 
+/// One server owns one scope (D28): a repository, or a whole workspace.
+enum Scope {
+    Repo(PathBuf),
+    Workspace(PathBuf),
+}
+
 pub fn run(repo: &Path) -> Result<()> {
-    let repo = repo.canonicalize()?;
+    serve(Scope::Repo(repo.canonicalize()?))
+}
+
+pub fn run_workspace(manifest: &Path) -> Result<()> {
+    serve(Scope::Workspace(manifest.canonicalize()?))
+}
+
+fn serve(scope: Scope) -> Result<()> {
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -38,7 +51,7 @@ pub fn run(repo: &Path) -> Result<()> {
         let Some(id) = id else {
             continue; // notification — nothing to answer
         };
-        let response = match handle(&repo, method, &params) {
+        let response = match handle(&scope, method, &params) {
             Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
             Err(e) => json!({
                 "jsonrpc": "2.0", "id": id,
@@ -51,7 +64,7 @@ pub fn run(repo: &Path) -> Result<()> {
     Ok(())
 }
 
-fn handle(repo: &Path, method: &str, params: &Value) -> Result<Value> {
+fn handle(scope: &Scope, method: &str, params: &Value) -> Result<Value> {
     match method {
         "initialize" => Ok(json!({
             "protocolVersion": params
@@ -62,15 +75,23 @@ fn handle(repo: &Path, method: &str, params: &Value) -> Result<Value> {
             "serverInfo": {"name": "sinter", "version": env!("CARGO_PKG_VERSION")},
         })),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(tools_list()),
+        // The list is the scope's honest surface: workspace mode serves
+        // only the tools that genuinely cross repositories.
+        "tools/list" => Ok(match scope {
+            Scope::Repo(_) => tools_list(),
+            Scope::Workspace(_) => ws_tools_list(),
+        }),
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
             // No session-lived handle: redb's lock is exclusive, so holding
             // the store across calls would block `sinter build`/`watch` and
             // pin a stale snapshot. Freshness itself is enforced inside
-            // open_store, which every tool path goes through.
-            let result = call_tool(repo, name, &args)?;
+            // open_store (repo scope) or the per-member sync (workspace).
+            let result = match scope {
+                Scope::Repo(repo) => call_tool(repo, name, &args)?,
+                Scope::Workspace(manifest) => ws_call_tool(manifest, name, &args)?,
+            };
             Ok(json!({
                 "content": [{"type": "text", "text": serde_json::to_string_pretty(&result)?}]
             }))
@@ -295,6 +316,131 @@ fn tools_list() -> Value {
             "inputSchema": {"type": "object", "properties": {
                 "rev_range": {"type": "string"},
             }, "required": ["rev_range"]},
+        },
+    ]})
+}
+
+/// Workspace-scope dispatch. Freshness first: every member syncs (scan-
+/// floor no-op when clean) and boundary links refresh when any member
+/// changed, so cross-repo answers are as current as repo-scope ones.
+fn ws_call_tool(manifest: &Path, name: &str, args: &Value) -> Result<Value> {
+    let symbol = |key: &str| -> Result<String> {
+        args.get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("missing required parameter `{key}`"))
+    };
+    let ws = crate::workspace::load(manifest)?;
+    for repo in ws.members.values() {
+        crate::pipeline::build(repo, None)?;
+    }
+    if !crate::workspace::stale_members(&ws)?.is_empty() {
+        crate::workspace::refresh(&ws)?;
+    }
+
+    let member_node = |node: &Node, member: &str| {
+        json!({
+            "member": member,
+            "qualified": format!("{member}:{}", qualified_of(node.id.as_str())),
+            "name": node.name,
+            "kind": node.kind.as_str(),
+            "file": node.file,
+            "signature": node.signature,
+            "doc": node.doc,
+        })
+    };
+
+    match name {
+        "query" => {
+            let (member, node) = crate::workspace::find_symbol(&ws, &symbol("symbol")?)?;
+            Ok(json!({"result": member_node(&node, &member)}))
+        }
+        "affected" => {
+            let (evidence, certain) = filter_args(args);
+            let filter = edge_filter(&evidence, certain)?;
+            let depth = args.get("max_depth").and_then(Value::as_u64).unwrap_or(10) as usize;
+            let (member, node) = crate::workspace::find_symbol(&ws, &symbol("symbol")?)?;
+            let reached = crate::workspace::dependents(&ws, &member, &node.id, &filter, depth)?;
+            // Honest-empty signal from the origin member's store.
+            let store = sinter_store::Store::open(crate::pipeline::db_path(&ws.members[&member]))?;
+            let unresolved = store.unresolved_named(&node.name)?;
+            Ok(json!({
+                "symbol": member_node(&node, &member),
+                "unresolved_refs_matching_name": unresolved,
+                "dependents": reached.iter().map(|r| json!({
+                    "node": member_node(&r.node, &r.member),
+                    "relation": r.relation.as_str(),
+                    "evidence": r.evidence.as_str(),
+                    "parent": format!("{}:{}", r.parent.0, qualified_of(&r.parent.1)),
+                })).collect::<Vec<_>>(),
+            }))
+        }
+        "path" => {
+            let (from_member, from) = crate::workspace::find_symbol(&ws, &symbol("from")?)?;
+            let (to_member, to) = crate::workspace::find_symbol(&ws, &symbol("to")?)?;
+            let (evidence, certain) = filter_args(args);
+            let filter = edge_filter(&evidence, certain)?;
+            let steps = crate::workspace::shortest_path(
+                &ws,
+                (&from_member, &from.id),
+                (&to_member, &to.id),
+                &filter,
+            )?;
+            Ok(json!({
+                "found": steps.is_some(),
+                "steps": steps.unwrap_or_default().iter().map(
+                    |(fm, fid, rel, evid, tm, tid)| json!({
+                        "from": format!("{fm}:{}", qualified_of(fid)),
+                        "to": format!("{tm}:{}", qualified_of(tid)),
+                        "relation": rel.as_str(),
+                        "evidence": evid.as_str(),
+                    })
+                ).collect::<Vec<_>>(),
+            }))
+        }
+        other => {
+            anyhow::bail!("unknown tool {other} (workspace scope serves: query, affected, path)")
+        }
+    }
+}
+
+fn ws_tools_list() -> Value {
+    let filters = json!({
+        "evidence": {"type": "array", "items": {"type": "string",
+            "enum": ["structural", "scope", "import", "scip"]},
+            "description": "restrict to these evidence kinds"},
+        "min_confidence": {"type": "string", "enum": ["certain", "inferred"],
+            "description": "certain = compiler-grade edges only"},
+    });
+    let addressing = "Symbols accept `member:Symbol` (member from the workspace manifest) or any bare name that resolves uniquely across members.";
+    json!({"tools": [
+        {
+            "name": "query",
+            "description": format!("Resolve a symbol across every workspace member. {addressing}"),
+            "inputSchema": {"type": "object", "properties": {
+                "symbol": {"type": "string"},
+            }, "required": ["symbol"]},
+        },
+        {
+            "name": "affected",
+            "description": format!("Cross-repository blast radius: everything transitively depending on a symbol across all workspace members, boundary links included. Each edge reports its evidence; unresolved_refs_matching_name > 0 means the list may be incomplete. {addressing}"),
+            "inputSchema": {"type": "object", "properties": {
+                "symbol": {"type": "string"},
+                "max_depth": {"type": "integer"},
+                "evidence": filters["evidence"],
+                "min_confidence": filters["min_confidence"],
+            }, "required": ["symbol"]},
+        },
+        {
+            "name": "path",
+            "description": format!("Shortest dependency path between two symbols, crossing repository boundaries through import and declared links. {addressing}"),
+            "inputSchema": {"type": "object", "properties": {
+                "from": {"type": "string"},
+                "to": {"type": "string"},
+                "evidence": filters["evidence"],
+                "min_confidence": filters["min_confidence"],
+            }, "required": ["from", "to"]},
         },
     ]})
 }

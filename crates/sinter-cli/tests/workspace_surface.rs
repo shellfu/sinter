@@ -281,3 +281,51 @@ fn parallel_workspace_queries_all_succeed() {
         );
     }
 }
+
+/// Workspace scope over MCP: one server spans the members, tools/list is
+/// the honest cross-repo surface, and affected crosses repositories.
+#[test]
+fn serve_workspace_answers_across_members() {
+    use std::io::Write;
+    let root = tempfile::tempdir().unwrap();
+    let manifest = build_workspace(root.path());
+    let (ok, out) = sinter(root.path(), &["workspace", manifest.to_str().unwrap()]);
+    assert!(ok, "{out}");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sinter"))
+        .args(["serve", "--workspace", manifest.to_str().unwrap()])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn serve");
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(stdin, r#"{{"jsonrpc":"2.0","id":1,"method":"tools/list"}}"#).unwrap();
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"affected","arguments":{{"symbol":"common:Backoff"}}}}}}"#
+        )
+        .unwrap();
+    }
+    drop(child.stdin.take());
+    let output = child.wait_with_output().unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut lines = text.lines();
+
+    let tools: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    let names: Vec<&str> = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["query", "affected", "path"], "honest ws surface");
+
+    let affected: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    let body = affected["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(body.contains("\"member\": \"common\""), "{body}");
+    assert!(
+        body.contains("auth") || body.contains("billing"),
+        "dependents must cross into other members: {body}"
+    );
+}
