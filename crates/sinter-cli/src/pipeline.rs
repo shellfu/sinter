@@ -281,9 +281,11 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
         stats = resolved_stats;
         let internal_set: HashSet<usize> = internal_indices.into_iter().collect();
         let mut resolved_idx: HashSet<usize> = HashSet::new();
+        let mut internal_dst: HashMap<usize, sinter_core::NodeId> = HashMap::new();
         let mut edges = Vec::new();
         for binding in bindings {
             resolved_idx.insert(binding.reference);
+            internal_dst.insert(binding.reference, binding.edge.dst.clone());
             edges.push(binding.edge);
         }
         if let Some(scip_path) = scip_index_path(&repo) {
@@ -299,6 +301,14 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
                         stats.unresolved_external -= 1;
                     }
                     edges.push(binding.edge);
+                } else if let Some(dst) = internal_dst.get(&binding.reference) {
+                    // Both tiers bound this ref: score internal evidence
+                    // against the compiler's answer.
+                    if *dst == binding.edge.dst {
+                        stats.scip_agree += 1;
+                    } else {
+                        stats.scip_disagree += 1;
+                    }
                 }
             }
         }
@@ -372,6 +382,15 @@ pub fn print_report(report: &BuildReport) {
         "  accuracy gauge: {:.1}% internal-unresolved (external refs need dependency indexes, not resolver fixes)",
         report.stats.internal_unresolved_rate() * 100.0,
     );
+    let both = report.stats.scip_agree + report.stats.scip_disagree;
+    if both > 0 {
+        println!(
+            "  scip cross-check: {:.1}% of internally-bound refs match the compiler ({}/{} agree)",
+            report.stats.scip_agree as f64 / both as f64 * 100.0,
+            report.stats.scip_agree,
+            both,
+        );
+    }
     println!(
         "  totals: {} nodes, {} edges, {} unresolved refs",
         report.total_nodes, report.total_edges, report.total_unresolved,
