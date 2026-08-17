@@ -24,6 +24,10 @@ jobs:
       - run: cargo test --workspace
   audit:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # rustsec/audit-check publishes its result as a GitHub Check.
+      checks: write
     steps:
       - uses: actions/checkout@v4
       # Blocking by design: a known-vulnerable dependency fails CI.
