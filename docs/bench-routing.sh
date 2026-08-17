@@ -42,10 +42,22 @@ INELIGIBLE=(
 
 WORK=$(mktemp -d)
 echo "workdir: $WORK (kept for inspection — delete when done)"
-git clone -q "$SRC" "$WORK/repo"
+if [ -d "$SRC/.git" ] || [[ "$SRC" == *://* || "$SRC" == git@* ]]; then
+  git clone -q "$SRC" "$WORK/repo"
+else
+  # Plain directory (no git history): copy it, seed one commit so
+  # git-backed questions (impact) still have something to diff.
+  cp -a "$SRC" "$WORK/repo"
+fi
 cd "$WORK/repo"
-# Neutral start: only what `sinter init` itself installs may steer the agent.
-rm -f CLAUDE.md
+# Neutral start: only what `sinter init` itself installs may steer the
+# agent, and no derived state rides along from the source checkout.
+rm -rf CLAUDE.md .sinter .claude .mcp.json .cursor .codex
+if [ ! -d .git ]; then
+  git init -q
+  git add -A
+  git -c user.name=bench -c user.email=bench@local commit -q -m "seed"
+fi
 sinter init --no-scip . >/dev/null
 echo "onboarded $(basename "$SRC") with sinter init"
 
