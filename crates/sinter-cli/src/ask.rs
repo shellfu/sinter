@@ -362,7 +362,9 @@ pub fn run_workspace(manifest: &Path, question: &str, limit: usize) -> Result<()
     Ok(())
 }
 
-pub fn run(repo: &Path, question: &str, limit: usize, json: bool) -> Result<()> {
+/// Structured hits — the single shape behind `ask --json` and the MCP
+/// `ask` tool.
+pub fn ask_json(repo: &Path, question: &str, limit: usize) -> Result<Vec<serde_json::Value>> {
     let repo = repo.canonicalize()?;
     let store = open_store(&repo)?;
     let terms = terms_of(question);
@@ -370,30 +372,44 @@ pub fn run(repo: &Path, question: &str, limit: usize, json: bool) -> Result<()> 
         bail!("no searchable terms in {question:?} — try naming the thing you're looking for");
     }
     let hits = score_candidates(&store, &terms)?;
-
-    if json {
-        let out: Vec<serde_json::Value> = hits
-            .iter()
-            .take(limit)
-            .map(|h| {
-                json!({
-                    "id": h.node.id.as_str(),
-                    "qualified": qualified_of(h.node.id.as_str()),
-                    "name": h.node.name,
-                    "kind": h.node.kind.as_str(),
-                    "file": h.node.file,
-                    "span": {"start": h.node.span.start, "end": h.node.span.end},
-                    "line": line_of(&repo, &h.node.file, h.node.span.start),
-                    "signature": h.node.signature,
-                    "doc": h.node.doc,
-                    "score": h.score,
-                    "matched": h.matched,
-                })
+    Ok(hits
+        .iter()
+        .take(limit)
+        .map(|h| {
+            json!({
+                "id": h.node.id.as_str(),
+                "qualified": qualified_of(h.node.id.as_str()),
+                "name": h.node.name,
+                "kind": h.node.kind.as_str(),
+                "file": h.node.file,
+                "span": {"start": h.node.span.start, "end": h.node.span.end},
+                "line": line_of(&repo, &h.node.file, h.node.span.start),
+                "signature": h.node.signature,
+                "doc": h.node.doc,
+                "score": h.score,
+                "matched": h.matched,
             })
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        })
+        .collect())
+}
+
+pub fn run(repo: &Path, question: &str, limit: usize, json: bool) -> Result<()> {
+    let repo = repo.canonicalize()?;
+    if json {
+        // ask_json opens the store itself; must run before this function
+        // takes its own handle (redb forbids a second in-process open).
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&ask_json(&repo, question, limit)?)?
+        );
         return Ok(());
     }
+    let store = open_store(&repo)?;
+    let terms = terms_of(question);
+    if terms.is_empty() {
+        bail!("no searchable terms in {question:?} — try naming the thing you're looking for");
+    }
+    let hits = score_candidates(&store, &terms)?;
 
     if hits.is_empty() {
         println!("no match for {:?}", terms.join(" "));

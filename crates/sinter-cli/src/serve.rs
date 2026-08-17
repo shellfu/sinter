@@ -123,8 +123,39 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
         let report = crate::impact::compute(repo, &symbol("rev_range"))?;
         return Ok(crate::impact::to_json(&report));
     }
+    if name == "ask" {
+        // ask_json opens the store itself — same constraint as impact.
+        let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(5) as usize;
+        let hits = crate::ask::ask_json(repo, &symbol("question"), limit)?;
+        return Ok(json!({ "hits": hits }));
+    }
     let store = &open_store(repo)?;
     match name {
+        "show" => {
+            let node = unique_symbol(store, &symbol("symbol"))?;
+            let edge_json = |e: &sinter_core::Edge, other: &sinter_core::NodeId| {
+                json!({
+                    "symbol": qualified_of(other.as_str()),
+                    "relation": e.relation.as_str(),
+                    "evidence": e.evidence.as_str(),
+                })
+            };
+            let out: Vec<Value> = store
+                .out_edges(&node.id)?
+                .iter()
+                .map(|e| edge_json(e, &e.dst))
+                .collect();
+            let inn: Vec<Value> = store
+                .in_edges(&node.id)?
+                .iter()
+                .map(|e| edge_json(e, &e.src))
+                .collect();
+            Ok(json!({
+                "symbol": node_json(&node),
+                "outgoing": out,
+                "incoming": inn,
+            }))
+        }
         "query" => {
             let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize;
             let (exact, nodes) = match find_symbol(store, &symbol("symbol"))? {
@@ -203,6 +234,21 @@ fn tools_list() -> Value {
             "description": "certain = compiler-grade edges only"},
     });
     json!({"tools": [
+        {
+            "name": "ask",
+            "description": "Answer a vague or conceptual codebase question (\"where is X handled\", \"how does Y work\") with ranked, content-bearing hits: signature, doc, file:line, and match provenance. Use this first when no exact symbol is known.",
+            "inputSchema": {"type": "object", "properties": {
+                "question": {"type": "string"},
+                "limit": {"type": "integer"},
+            }, "required": ["question"]},
+        },
+        {
+            "name": "show",
+            "description": "Orient on one symbol: signature, doc, file, plus every incoming and outgoing edge with relation and evidence.",
+            "inputSchema": {"type": "object", "properties": {
+                "symbol": {"type": "string"},
+            }, "required": ["symbol"]},
+        },
         {
             "name": "query",
             "description": "Find symbols by exact name, qualified name, or fuzzy match. Results carry signature, doc comment, file, and byte span.",
