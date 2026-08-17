@@ -14,8 +14,8 @@ mod query;
 mod render;
 mod scip;
 mod serve;
-mod uninit;
 mod show;
+mod uninit;
 mod watch;
 mod workspace;
 
