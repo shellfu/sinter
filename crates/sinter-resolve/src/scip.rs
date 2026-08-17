@@ -43,12 +43,10 @@ pub fn merge_index_files(paths: &[&Path], out: &Path) -> Result<(), ScipError> {
         merged.documents.append(&mut index.documents);
         merged.external_symbols.append(&mut index.external_symbols);
     }
-    let bytes = merged
-        .write_to_bytes()
-        .map_err(|source| ScipError::Parse {
-            path: out.display().to_string(),
-            source,
-        })?;
+    let bytes = merged.write_to_bytes().map_err(|source| ScipError::Parse {
+        path: out.display().to_string(),
+        source,
+    })?;
     std::fs::write(out, bytes).map_err(|source| ScipError::Io {
         path: out.display().to_string(),
         source,

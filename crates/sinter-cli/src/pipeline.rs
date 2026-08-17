@@ -30,6 +30,17 @@ pub fn db_path(repo: &Path) -> PathBuf {
     repo.join(".sinter").join("graph.redb")
 }
 
+/// The SCIP index to ingest, if any: `sinter scip` writes .sinter/index.scip;
+/// a repo-root index.scip (hand-generated) still counts.
+pub fn scip_index_path(repo: &Path) -> Option<PathBuf> {
+    [
+        repo.join(".sinter").join("index.scip"),
+        repo.join("index.scip"),
+    ]
+    .into_iter()
+    .find(|p| p.exists())
+}
+
 /// Human-readable size of the graph database file — real allocated blocks
 /// where available (redb files are sparse; apparent length overstates).
 pub fn db_size(repo: &Path) -> String {
@@ -256,15 +267,7 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
             resolved_idx.insert(binding.reference);
             edges.push(binding.edge);
         }
-        // `sinter scip` writes .sinter/index.scip; a repo-root index.scip
-        // (hand-generated) still works.
-        let scip_path = [
-            repo.join(".sinter").join("index.scip"),
-            repo.join("index.scip"),
-        ]
-        .into_iter()
-        .find(|p| p.exists());
-        if let Some(scip_path) = scip_path {
+        if let Some(scip_path) = scip_index_path(&repo) {
             let index = sinter_resolve::load_index(&scip_path)?;
             for binding in sinter_resolve::resolve_with_index(&index, &nodes, &refs, |rel| {
                 std::fs::read_to_string(repo.join(rel)).ok()
