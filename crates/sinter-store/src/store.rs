@@ -53,6 +53,9 @@ pub(crate) const IMPORTS: MultimapTableDefinition<&str, &[u8]> =
 /// Single-row schema stamp; a mismatch on open wipes the database (facts
 /// are derivable, a stale-format db is not worth migrating).
 pub(crate) const META: TableDefinition<&str, u32> = TableDefinition::new("meta");
+/// Single-row SCIP index fingerprint (len:mtime). A change re-resolves the
+/// corpus without re-extracting. Additive table — absent in older dbs.
+pub(crate) const SCIP_META: TableDefinition<&str, &str> = TableDefinition::new("scip_meta");
 const SCHEMA_VERSION: u32 = 4;
 
 impl Store {
@@ -118,6 +121,7 @@ impl Store {
             txn.open_multimap_table(IMPORTS)?;
             txn.open_table(INTERN)?;
             txn.open_table(INTERN_REV)?;
+            txn.open_table(SCIP_META)?;
         }
         txn.commit()?;
         Ok(store)
@@ -190,6 +194,34 @@ impl Store {
             refs.push(postcard::from_bytes(guard?.value())?);
         }
         Ok(refs)
+    }
+
+    /// The SCIP index fingerprint the current resolution state was built
+    /// against, if any.
+    pub fn scip_fingerprint(&self) -> Result<Option<String>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let table = match txn.open_table(SCIP_META) {
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            other => other?,
+        };
+        Ok(table.get("fingerprint")?.map(|g| g.value().to_string()))
+    }
+
+    pub fn set_scip_fingerprint(&self, fingerprint: Option<&str>) -> Result<(), StoreError> {
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(SCIP_META)?;
+            match fingerprint {
+                Some(f) => {
+                    table.insert("fingerprint", f)?;
+                }
+                None => {
+                    table.remove("fingerprint")?;
+                }
+            }
+        }
+        txn.commit()?;
+        Ok(())
     }
 
     /// Unresolved references whose written name ends in this name — the

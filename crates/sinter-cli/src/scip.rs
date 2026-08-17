@@ -106,14 +106,8 @@ pub fn run(repo: &Path) -> Result<()> {
         let _ = std::fs::remove_file(aside);
     }
 
-    // SCIP binds at resolve time and only for files in the affected set, so
-    // an index appearing over an already-built graph would never be read.
-    // ponytail: full rebuild forces the re-resolve; hash index.scip into the
-    // scan for an incremental re-resolve if the rebuild cost ever matters.
-    let db = pipeline::db_path(&repo);
-    if db.exists() {
-        std::fs::remove_file(&db).context("reset graph for full re-resolve")?;
-    }
+    // The build notices the index fingerprint changed and re-resolves the
+    // corpus without re-extracting; no db reset needed.
     let report = pipeline::build(&repo, None)?;
     pipeline::print_report(&report);
     Ok(())

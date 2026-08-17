@@ -238,6 +238,25 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
     for file in &removed {
         affected.remove(file);
     }
+    // A changed SCIP index moves bindings in files whose source did not
+    // change: re-resolve the whole corpus, but never re-extract (facts are
+    // content-addressed and untouched). len:mtime fingerprint, not a content
+    // hash — indexes run to hundreds of MB and this runs on every build.
+    let scip_fingerprint = scip_index_path(&repo).and_then(|p| {
+        let meta = std::fs::metadata(&p).ok()?;
+        let mtime = meta.modified().ok()?;
+        let nanos = mtime
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_nanos();
+        Some(format!("{}:{}", meta.len(), nanos))
+    });
+    if store.scip_fingerprint()? != scip_fingerprint {
+        affected.extend(hashes.iter().map(|(f, _)| f.clone()));
+        for file in &removed {
+            affected.remove(file);
+        }
+    }
 
     let mut stats = sinter_resolve::ResolutionStats::default();
     if !affected.is_empty() {
@@ -303,6 +322,7 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
     // Hashes commit only now: every derived table is consistent, so a crash
     // anywhere above re-runs these files as changed on the next build.
     store.commit_hashes(&changed_facts)?;
+    store.set_scip_fingerprint(scip_fingerprint.as_deref())?;
 
     // Reclaim free pages after bulk (re)builds; never on incremental
     // updates — compaction rewrites the file and would blow the <1s
