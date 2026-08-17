@@ -22,7 +22,7 @@ mod workspace;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 
 /// sinter — code knowledge-graph engine.
 #[derive(Parser)]
@@ -207,6 +207,8 @@ enum Command {
     },
     /// Print version, graph schema, and language packs (for bug reports)
     Version,
+    /// Shell completions: `source <(sinter completion bash)`
+    Completion { shell: clap_complete::Shell },
 }
 
 #[derive(Subcommand)]
@@ -357,6 +359,10 @@ fn main() -> ExitCode {
         Command::Overlap { ranges, repo, json } => overlap::run(&repo, &ranges, json),
         Command::Serve { repo } => serve::run(&repo),
         Command::Scip { repo } => scip::run(&repo),
+        Command::Completion { shell } => {
+            clap_complete::generate(shell, &mut Cli::command(), "sinter", &mut std::io::stdout());
+            Ok(())
+        }
         Command::Version => {
             let languages: Vec<&str> = sinter_extract::LANGUAGES.iter().map(|l| l.name).collect();
             println!(

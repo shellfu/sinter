@@ -19,6 +19,7 @@ thiserror = "2"
 postcard = { version = "1", features = ["alloc"] }
 redb = "3"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 proptest = "1"
 tempfile = "3"
 sinter-core = { path = "crates/sinter-core" }
