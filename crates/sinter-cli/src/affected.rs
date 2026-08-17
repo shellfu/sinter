@@ -15,7 +15,31 @@ pub fn run(
     max_depth: usize,
 ) -> Result<()> {
     let store = open_store(repo)?;
-    let node = unique_symbol(&store, symbol)?;
+    let node = match unique_symbol(&store, symbol) {
+        Ok(node) => node,
+        // Not defined here — dependency blast radius at the repo boundary
+        // is still an answer: every site referencing the external symbol.
+        Err(e) => {
+            let sites = crate::lookup::external_sites(&store, symbol)?;
+            if sites.is_empty() {
+                return Err(e);
+            }
+            let total: usize = sites.iter().map(|s| s.refs).sum();
+            println!(
+                "`{symbol}` is not defined in this repo; {total} reference(s) at {} site(s):",
+                sites.len()
+            );
+            for s in &sites {
+                println!(
+                    "  {}  {}  ({} ref(s))",
+                    s.enclosing.as_deref().unwrap_or("<file scope>"),
+                    s.file,
+                    s.refs
+                );
+            }
+            return Ok(());
+        }
+    };
     let filter = edge_filter(evidence, certain)?;
     let reached = store.dependents(&node.id, &filter, max_depth)?;
     println!(
