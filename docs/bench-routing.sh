@@ -22,7 +22,12 @@ REPS=${2:-2}
 MODEL=${BENCH_MODEL:-claude-haiku-4-5-20251001}
 case "$MODEL" in
   *haiku*) ;;
-  *) echo "refusing non-haiku model '$MODEL' (set BENCH_MODEL explicitly to override... with a haiku model)" >&2; exit 1 ;;
+  *)
+    if [ "${BENCH_ALLOW_EXPENSIVE:-}" != "1" ]; then
+      echo "refusing non-haiku model '$MODEL' — set BENCH_ALLOW_EXPENSIVE=1 for a deliberate comparison run" >&2
+      exit 1
+    fi
+    ;;
 esac
 
 # EDIT ME: structure questions the graph answers (use real symbols).

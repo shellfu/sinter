@@ -43,7 +43,7 @@ function-body behavior.
 | Orient on a symbol (signature, docs, callers) | `sinter show <symbol>` |
 | What depends on X / blast radius | `sinter affected <symbol>` |
 | How does A reach B | `sinter path <A> <B>` |
-| What does this diff/PR affect | `sinter impact <rev-range>` |
+| What does this commit/diff/PR affect downstream | `sinter impact <rev-range>` (e.g. `HEAD~1..HEAD`) |
 
 - Queries self-sync before answering — no manual refresh needed
   (`sinter build` remains for CI/scripts; git hooks refresh on commit).
