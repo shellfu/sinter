@@ -18,9 +18,9 @@ in prose. If the user types `/sinter`, use this card before anything else.
   `sinter affected` for blast radius. Results are scoped and ranked —
   usually much smaller than raw grep output, and content-bearing enough
   to answer without opening files.
-- After modifying code, run `sinter build <repo>` to keep the graph
-  current (incremental hash-diff; fast, no-op when nothing changed).
-  Skip only if `sinter watch` or the git hooks are active.
+- Queries self-sync: every command refreshes the graph incrementally
+  before answering, so results reflect uncommitted edits with no manual
+  step. `sinter build <repo>` remains for CI, scripting, and hooks.
 - `.sinter/` is derived local state: never commit it, never edit it, and
   never treat it as stale-proof — `sinter doctor` reports freshness and
   names the fix for anything wrong.

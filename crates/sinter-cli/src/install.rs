@@ -28,8 +28,11 @@ pub fn card_body() -> &'static str {
 const AGENTS_CARD: &str = r#"## sinter
 
 This repo has a code knowledge graph at `.sinter/` (derived state — never
-commit or edit it). For any codebase-structure question, query it before
-grepping; results are ranked, scoped, and content-bearing.
+commit or edit it). When `.sinter/graph.redb` exists, query sinter BEFORE
+any broad filesystem search for symbol location, callers, dependency
+impact, structural paths, or diff impact. Fall back to grep only when
+sinter returns no usable evidence; read source directly for
+function-body behavior.
 
 | Question | Command |
 |---|---|
@@ -39,8 +42,8 @@ grepping; results are ranked, scoped, and content-bearing.
 | How does A reach B | `sinter path <A> <B>` |
 | What does this diff/PR affect | `sinter impact <rev-range>` |
 
-- After modifying code: `sinter build` (fast no-op when fresh; skip if
-  git hooks or `sinter watch` are active).
+- Queries self-sync before answering — no manual refresh needed
+  (`sinter build` remains for CI/scripts; git hooks refresh on commit).
 - "unresolved" and candidate lists are real answers — refine and rerun,
   never guess a binding.
 - Cross-repo workspace? Add `--workspace <manifest.toml>`; symbols may
@@ -122,37 +125,72 @@ pub fn default_dir() -> Option<PathBuf> {
         })
 }
 
-/// Merge the sinter server into a repo's project-scope `.mcp.json` —
-/// the file Claude Code reads natively. Other servers are preserved;
-/// only the "sinter" entry is written. Global client configs belong to
-/// their applications and are never edited here.
+/// Register the sinter server in every client's project-scope MCP config:
+/// `.mcp.json` (Claude Code), `.cursor/mcp.json` (Cursor), and a managed
+/// block in `.codex/config.toml` (Codex, `required = true` so sessions
+/// start with a working server). Other entries are preserved; only the
+/// sinter entry is written. Global client configs belong to their
+/// applications and are never edited here.
 pub fn mcp(repo: &Path) -> Result<()> {
     let repo = repo.canonicalize()?;
-    let path = repo.join(".mcp.json");
-    let mut root: Value = match std::fs::read_to_string(&path) {
-        Ok(existing) => serde_json::from_str(&existing)
-            .with_context(|| format!("{} exists but is not valid JSON", path.display()))?,
-        Err(_) => json!({}),
-    };
-    root.as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("{} top level is not an object", path.display()))?
-        .entry("mcpServers")
-        .or_insert(json!({}));
-    root["mcpServers"]["sinter"] = json!({
-        "command": "sinter",
-        "args": ["serve", "--repo", "."],
-    });
-    std::fs::write(
-        &path,
-        format!(
-            "{}
+    for path in [repo.join(".mcp.json"), repo.join(".cursor/mcp.json")] {
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        let mut root: Value = match std::fs::read_to_string(&path) {
+            Ok(existing) => serde_json::from_str(&existing)
+                .with_context(|| format!("{} exists but is not valid JSON", path.display()))?,
+            Err(_) => json!({}),
+        };
+        root.as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("{} top level is not an object", path.display()))?
+            .entry("mcpServers")
+            .or_insert(json!({}));
+        root["mcpServers"]["sinter"] = json!({
+            "command": "sinter",
+            "args": ["serve", "--repo", "."],
+        });
+        std::fs::write(
+            &path,
+            format!(
+                "{}
 ",
-            serde_json::to_string_pretty(&root)?
-        ),
-    )?;
+                serde_json::to_string_pretty(&root)?
+            ),
+        )?;
+        println!("registered sinter MCP server in {}", path.display());
+    }
+    codex_mcp(&repo)?;
+    Ok(())
+}
+
+const CODEX_BEGIN: &str = "# BEGIN sinter (managed by `sinter install`; edits inside are overwritten)";
+const CODEX_END: &str = "# END sinter";
+
+/// Merge a managed sinter server block into `.codex/config.toml` (marker
+/// replacement, same convention as the AGENTS.md block — no TOML parser
+/// needed for an append-or-replace of our own block).
+fn codex_mcp(repo: &Path) -> Result<()> {
+    let dir = repo.join(".codex");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("config.toml");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let block = format!(
+        "{CODEX_BEGIN}
+[mcp_servers.sinter]
+command = \"sinter\"
+args = [\"serve\", \"--repo\", \".\"]
+required = true
+{CODEX_END}"
+    );
+    let merged = match (existing.find(CODEX_BEGIN), existing.find(CODEX_END)) {
+        (Some(start), Some(end)) if end > start => {
+            let after = existing[end + CODEX_END.len()..].to_string();
+            format!("{}{}{}", &existing[..start], block, after)
+        }
+        _ if existing.trim().is_empty() => format!("{block}\n"),
+        _ => format!("{}\n\n{block}\n", existing.trim_end()),
+    };
+    std::fs::write(&path, merged)?;
     println!("registered sinter MCP server in {}", path.display());
-    println!("(project scope; for Claude Desktop or other clients, add the equivalent");
-    println!(" command `sinter serve --repo <repo>` to that client's own MCP config)");
     Ok(())
 }
 

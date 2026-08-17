@@ -170,14 +170,31 @@ pub fn run(repo: &Path) -> Result<bool> {
             _ => {}
         }
     }
-    let mcp_registered = std::fs::read_to_string(repo.join(".mcp.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .is_some_and(|v| v["mcpServers"]["sinter"].is_object());
-    if mcp_registered {
-        r.ok("MCP server registered in .mcp.json");
+    let json_registered = |rel: &str| {
+        std::fs::read_to_string(repo.join(rel))
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .is_some_and(|v| v["mcpServers"]["sinter"].is_object())
+    };
+    let codex_registered = std::fs::read_to_string(repo.join(".codex/config.toml"))
+        .is_ok_and(|s| s.contains("[mcp_servers.sinter]"));
+    let registered: Vec<&str> = [
+        (".mcp.json (Claude)", json_registered(".mcp.json")),
+        (".cursor/mcp.json (Cursor)", json_registered(".cursor/mcp.json")),
+        (".codex/config.toml (Codex)", codex_registered),
+    ]
+    .into_iter()
+    .filter_map(|(name, ok)| ok.then_some(name))
+    .collect();
+    if registered.len() == 3 {
+        r.ok("MCP server registered for Claude, Cursor, and Codex");
+    } else if registered.is_empty() {
+        r.ok("MCP not registered (optional; `sinter install --mcp` registers all clients)");
     } else {
-        r.ok("MCP not registered (optional; `sinter install --mcp` for non-shell clients)");
+        r.warn(
+            &format!("MCP registered for {} only", registered.join(", ")),
+            "run `sinter install --mcp` to register every client",
+        );
     }
     match crate::pipeline::scip_index_path(&repo) {
         Some(index) => match stale_since_index(&repo, &index) {
