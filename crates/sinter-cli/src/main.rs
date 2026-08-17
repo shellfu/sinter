@@ -12,6 +12,7 @@ mod pathcmd;
 mod pipeline;
 mod query;
 mod render;
+mod scip;
 mod serve;
 mod show;
 mod watch;
@@ -177,6 +178,11 @@ enum Command {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
     },
+    /// Run the repo's SCIP indexer and rebuild with compiler-grade evidence
+    Scip {
+        #[arg(default_value = ".")]
+        repo: PathBuf,
+    },
     /// Print version, graph schema, and language packs (for bug reports)
     Version,
 }
@@ -316,6 +322,7 @@ fn main() -> ExitCode {
         } => impact::run(&repo, &rev_range, workspace.as_deref()),
         Command::Overlap { ranges, repo, json } => overlap::run(&repo, &ranges, json),
         Command::Serve { repo } => serve::run(&repo),
+        Command::Scip { repo } => scip::run(&repo),
         Command::Version => {
             let languages: Vec<&str> = sinter_extract::LANGUAGES.iter().map(|l| l.name).collect();
             println!(
