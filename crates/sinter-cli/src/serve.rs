@@ -141,7 +141,24 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
             let (evidence, certain) = filter_args(args);
             let filter = edge_filter(&evidence, certain)?;
             let depth = args.get("max_depth").and_then(Value::as_u64).unwrap_or(10) as usize;
-            let node = unique_symbol(store, &symbol("symbol"))?;
+            let node = match unique_symbol(store, &symbol("symbol")) {
+                Ok(node) => node,
+                Err(e) => {
+                    let sites = crate::lookup::external_sites(store, &symbol("symbol"))?;
+                    if sites.is_empty() {
+                        return Err(e);
+                    }
+                    return Ok(json!({
+                        "external": true,
+                        "note": "symbol is not defined in this repo; sites reference it (dependency blast radius at the repo boundary)",
+                        "sites": sites.iter().map(|s| json!({
+                            "enclosing": s.enclosing,
+                            "file": s.file,
+                            "refs": s.refs,
+                        })).collect::<Vec<_>>(),
+                    }));
+                }
+            };
             let reached = store.dependents(&node.id, &filter, depth)?;
             // Honest-empty signal: unresolved refs sharing the name mean
             // the dependents list may be incomplete, never authoritative.
@@ -149,6 +166,7 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
             Ok(json!({
                 "symbol": node_json(&node),
                 "unresolved_refs_matching_name": unresolved,
+                "scip_evidence_available": crate::pipeline::scip_index_path(repo).is_some(),
                 "dependents": reached.iter().map(|r| json!({
                     "node": node_json(&r.node),
                     "depth": r.depth,

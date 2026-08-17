@@ -81,6 +81,56 @@ pub fn unique_symbol(store: &Store, symbol: &str) -> Result<Node> {
     }
 }
 
+/// One place a symbol not defined in this repo is referenced: the
+/// enclosing definition (or file) and how many refs it holds.
+pub struct ExternalSite {
+    pub file: String,
+    pub enclosing: Option<String>,
+    pub refs: usize,
+}
+
+/// Reference sites for a symbol the corpus does not define — dependency
+/// blast radius at the repo boundary ("what here touches tokio::spawn").
+/// Qualified queries must match the written path's tail; bare names match
+/// the final segment.
+pub fn external_sites(store: &Store, symbol: &str) -> Result<Vec<ExternalSite>> {
+    let tail = symbol
+        .rsplit([':', '/', '.'])
+        .next()
+        .unwrap_or(symbol);
+    if tail.is_empty() {
+        return Ok(Vec::new());
+    }
+    let matches = |written: &str| {
+        written == symbol
+            || (written.ends_with(symbol)
+                && written[..written.len() - symbol.len()]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| !c.is_alphanumeric() && c != '_'))
+    };
+    let files = store.ref_files(&BTreeSet::from([tail.to_string()]))?;
+    let mut sites: std::collections::BTreeMap<(String, Option<String>), usize> =
+        std::collections::BTreeMap::new();
+    for file in files {
+        for r in store.references_in(&file)? {
+            let written = r.path.as_deref().unwrap_or(&r.name);
+            if matches(written) || matches(&r.name) {
+                let enclosing = r.enclosing.map(|id| qualified_of(id.as_str()).to_string());
+                *sites.entry((r.file, enclosing)).or_default() += 1;
+            }
+        }
+    }
+    Ok(sites
+        .into_iter()
+        .map(|((file, enclosing), refs)| ExternalSite {
+            file,
+            enclosing,
+            refs,
+        })
+        .collect())
+}
+
 /// --evidence / --certain flags to an EdgeFilter.
 pub fn edge_filter(evidence: &[String], certain: bool) -> Result<EdgeFilter> {
     let evidence = if evidence.is_empty() {
