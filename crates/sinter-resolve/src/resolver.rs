@@ -34,11 +34,16 @@ pub struct ResolutionStats {
     /// of non-scip edges.
     pub scip_agree: usize,
     pub scip_disagree: usize,
+    /// Refs bound to synthesized dependency-surface nodes (D29). Counted
+    /// apart from `scip` and excluded from the cross-check and recall
+    /// denominators: internal evidence can never find a symbol with no
+    /// in-corpus definition, so mixing these in would fake a regression.
+    pub scip_external: usize,
 }
 
 impl ResolutionStats {
     pub fn resolved(&self) -> usize {
-        self.scope + self.import + self.scip
+        self.scope + self.import + self.scip + self.scip_external
     }
 
     pub fn unresolved(&self) -> usize {
@@ -56,8 +61,10 @@ impl ResolutionStats {
 
     /// Internal-unresolved over corpus-anchored references — the number
     /// that measures resolver accuracy rather than corpus openness.
+    /// Dep-surface binds are excluded from the denominator: they are not
+    /// corpus-anchored, and counting them would flatter the gauge.
     pub fn internal_unresolved_rate(&self) -> f64 {
-        let total = self.resolved() + self.unresolved_internal;
+        let total = self.scope + self.import + self.scip + self.unresolved_internal;
         if total == 0 {
             0.0
         } else {

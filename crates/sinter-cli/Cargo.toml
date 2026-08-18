@@ -30,3 +30,6 @@ postcard.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Hand-crafted index.scip fixtures for the dependency-surface tests.
+scip = "0.9"
+protobuf = "3.7.2"

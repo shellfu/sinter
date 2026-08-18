@@ -20,6 +20,10 @@ pub struct BuildReport {
     pub syntax_error_files: usize,
     pub failures: Vec<(String, String)>,
     pub stats: sinter_resolve::ResolutionStats,
+    /// Distinct dependency-surface symbols bound this pass (D29).
+    pub dep_symbols: usize,
+    /// Distinct packages those symbols belong to.
+    pub dep_packages: usize,
     pub total_nodes: u64,
     pub total_edges: u64,
     pub total_unresolved: u64,
@@ -345,9 +349,9 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
         }
         Some(hasher.finalize().to_hex().to_string())
     };
-    if store.resolve_fingerprint("scip")? != scip_fingerprint
-        || store.resolve_fingerprint("module_roots")? != roots_fingerprint
-    {
+    let full_reresolve = store.resolve_fingerprint("scip")? != scip_fingerprint
+        || store.resolve_fingerprint("module_roots")? != roots_fingerprint;
+    if full_reresolve {
         affected.extend(hashes.iter().map(|(f, _)| f.clone()));
         for file in &removed {
             affected.remove(file);
@@ -355,13 +359,26 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
     }
 
     let mut stats = sinter_resolve::ResolutionStats::default();
+    let mut dep_symbols = 0usize;
+    let mut dep_packages = 0usize;
     if !affected.is_empty() {
         // Dynamic fan-out edges are re-derived from their dst files' facts;
         // any such file losing edges here must join the set (its unchanged
         // refs re-resolve to identical edges — a set-semantics no-op).
         let dynamic_dst = store.remove_resolution_edges(&affected)?;
         affected.extend(dynamic_dst);
-        let nodes = store.all_nodes()?;
+        // Stored dep-surface nodes (D29) are scip output, never internal-
+        // evidence input: feeding them back would let scope/import bind to
+        // synthesized nodes and contaminate the cross-check. Split them off
+        // for lifecycle bookkeeping below.
+        let (dep_nodes, nodes): (Vec<sinter_core::Node>, Vec<sinter_core::Node>) = store
+            .all_nodes()?
+            .into_iter()
+            .partition(|n| n.file.starts_with("dep:"));
+        let mut dep_stored: HashMap<String, Vec<sinter_core::Node>> = HashMap::new();
+        for node in dep_nodes {
+            dep_stored.entry(node.file.clone()).or_default().push(node);
+        }
         let all_imports = store.all_imports()?;
         let mut refs: Vec<Reference> = Vec::new();
         let mut locals: Vec<sinter_core::LocalBinding> = Vec::new();
@@ -396,11 +413,14 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
             &all_imports,
             &module_roots,
         ));
+        // Dep-surface facts derived this pass: pseudo-file -> its nodes.
+        let mut dep_derived: HashMap<String, Vec<sinter_core::Node>> = HashMap::new();
         if let Some(scip_path) = scip_index_path(&repo) {
             let index = sinter_resolve::load_index(&scip_path)?;
-            for binding in sinter_resolve::resolve_with_index(&index, &nodes, &refs, |rel| {
+            let resolution = sinter_resolve::resolve_with_index(&index, &nodes, &refs, |rel| {
                 std::fs::read_to_string(repo.join(rel)).ok()
-            }) {
+            });
+            for binding in resolution.bindings {
                 if resolved_idx.insert(binding.reference) {
                     stats.scip += 1;
                     if internal_set.contains(&binding.reference) {
@@ -442,6 +462,108 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
                     }
                 }
             }
+            // Dependency surface (D29): refs the compiler resolved into a
+            // package bind to synthesized dep nodes — but never over an
+            // existing bind (internal evidence or in-corpus scip wins).
+            let mut used_dep_ids: HashSet<String> = HashSet::new();
+            for binding in resolution.external {
+                if resolved_idx.insert(binding.reference) {
+                    stats.scip_external += 1;
+                    if internal_set.contains(&binding.reference) {
+                        stats.unresolved_internal -= 1;
+                    } else {
+                        stats.unresolved_external -= 1;
+                    }
+                    used_dep_ids.insert(binding.edge.dst.as_str().to_string());
+                    edges.push(binding.edge);
+                }
+            }
+            for node in resolution.external_nodes {
+                if used_dep_ids.contains(node.id.as_str()) {
+                    dep_derived.entry(node.file.clone()).or_default().push(node);
+                }
+            }
+            dep_symbols = used_dep_ids.len();
+            dep_packages = dep_derived.len();
+        }
+
+        // Dep pseudo-file lifecycle: the per-file replace machinery owns
+        // it. A full re-resolve derived the complete surface, so replace
+        // everything and drop packages that vanished. A partial pass only
+        // re-derived the affected files' binds: merge stored nodes in so
+        // untouched files' dep targets survive, and skip files whose facts
+        // come out identical (an unchanged rebuild must not tear down and
+        // rebuild the surface).
+        if !full_reresolve {
+            for (file, stored_nodes) in &dep_stored {
+                if let Some(new) = dep_derived.get_mut(file) {
+                    let have: HashSet<String> =
+                        new.iter().map(|n| n.id.as_str().to_string()).collect();
+                    new.extend(
+                        stored_nodes
+                            .iter()
+                            .filter(|n| !have.contains(n.id.as_str()))
+                            .cloned(),
+                    );
+                }
+            }
+        }
+        let mut dep_changed: Vec<FileFacts> = Vec::new();
+        let mut dep_present: HashSet<String> = HashSet::new();
+        for (file, mut dep_nodes) in dep_derived {
+            dep_present.insert(file.clone());
+            dep_nodes.sort_by(|a, b| a.id.cmp(&b.id));
+            if dep_stored.get(&file).is_some_and(|stored_nodes| {
+                let mut stored_sorted = stored_nodes.clone();
+                stored_sorted.sort_by(|a, b| a.id.cmp(&b.id));
+                stored_sorted == dep_nodes
+            }) {
+                continue;
+            }
+            dep_changed.push(FileFacts {
+                file,
+                // Never committed to FILE_HASH: dep pseudo-files are not on
+                // disk, so the scan neither hashes nor removes them — the
+                // dep: removal exemption falls out of that.
+                content_hash: String::new(),
+                has_syntax_errors: false,
+                nodes: dep_nodes,
+                contains: Vec::new(),
+                references: Vec::new(),
+                locals: Vec::new(),
+                embeds: Vec::new(),
+                trait_impls: Vec::new(),
+            });
+        }
+        let dep_removed: Vec<String> = if full_reresolve {
+            dep_stored
+                .keys()
+                .filter(|f| !dep_present.contains(f.as_str()))
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if !dep_changed.is_empty() || !dep_removed.is_empty() {
+            // update_files tears down every in-edge of a replaced file's
+            // nodes, including binds from files outside this pass. Snapshot
+            // those and re-insert them below; affected files' binds were
+            // already torn (remove_resolution_edges) and re-derived above.
+            for facts in &dep_changed {
+                for node in dep_stored.get(&facts.file).into_iter().flatten() {
+                    for edge in store.in_edges(&node.id)? {
+                        let src_file = edge
+                            .src
+                            .as_str()
+                            .split_once('#')
+                            .map_or(edge.src.as_str(), |(f, _)| f);
+                        if !affected.contains(src_file) {
+                            edges.push(edge);
+                        }
+                    }
+                }
+            }
+            store.update_files(&dep_changed, &dep_removed)?;
         }
         let unresolved: Vec<Reference> = refs
             .iter()
@@ -497,6 +619,8 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
         syntax_error_files,
         failures,
         stats,
+        dep_symbols,
+        dep_packages,
         total_nodes: store.node_count()?,
         total_edges: store.edge_count()?,
         total_unresolved: store.unresolved_count()?,
@@ -548,6 +672,12 @@ pub fn print_report(report: &BuildReport) {
             both as f64 / compiler_bound as f64 * 100.0,
             both,
             compiler_bound,
+        );
+    }
+    if report.stats.scip_external > 0 {
+        println!(
+            "  dependency surface: {} refs bound to {} external symbols across {} packages",
+            report.stats.scip_external, report.dep_symbols, report.dep_packages,
         );
     }
     println!(

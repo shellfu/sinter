@@ -71,17 +71,144 @@ fn scip_binds_reference_to_definition() {
         ..Default::default()
     };
 
-    let bindings = resolve_with_index(&index, &nodes, &references, |path| match path {
+    let resolution = resolve_with_index(&index, &nodes, &references, |path| match path {
         "a.rs" => Some(a_src.to_string()),
         "b.rs" => Some(b_src.to_string()),
         _ => None,
     });
 
+    let bindings = resolution.bindings;
     assert_eq!(bindings.len(), 1);
+    assert!(resolution.external.is_empty());
+    assert_eq!(resolution.external_skipped, 0);
     let edge = &bindings[0].edge;
     assert_eq!(edge.src.as_str(), "b.rs#caller@0");
     assert_eq!(edge.dst.as_str(), "a.rs#target@0");
     assert_eq!(edge.relation, Relation::Calls);
     assert_eq!(edge.evidence, Evidence::Scip);
     assert_eq!(bindings[0].reference, 0);
+}
+
+/// A reference occurrence whose symbol has no in-corpus definition
+/// synthesizes a dependency-surface node from the moniker (D29): pseudo-file
+/// `dep:<package>@<version>`, package-rooted qualified path, kind from the
+/// final descriptor marker.
+#[test]
+fn external_moniker_synthesizes_dep_node() {
+    let src = "fn caller() { tokio::task::spawn(f); }\n";
+    let nodes = vec![node(
+        "m.rs#caller@0",
+        "m.rs",
+        "caller",
+        Span { start: 0, end: 38 },
+    )];
+    let references = vec![Reference {
+        file: "m.rs".to_string(),
+        name: "spawn".to_string(),
+        path: Some("tokio::task::spawn".to_string()),
+        relation: Relation::Calls,
+        span: Span { start: 14, end: 32 },
+        enclosing: Some(NodeId::new("m.rs#caller@0")),
+        alias: None,
+    }];
+    let index = Index {
+        documents: vec![Document {
+            relative_path: "m.rs".to_string(),
+            occurrences: vec![
+                // Rightmost rule: the module occurrence loses to the item.
+                Occurrence {
+                    range: vec![0, 14, 19],
+                    symbol: "rust-analyzer cargo tokio 1.0.0 task/".to_string(),
+                    symbol_roles: 0,
+                    ..Default::default()
+                },
+                Occurrence {
+                    range: vec![0, 27, 32],
+                    symbol: "rust-analyzer cargo tokio 1.0.0 task/spawn().".to_string(),
+                    symbol_roles: 0,
+                    ..Default::default()
+                },
+                // Unparseable moniker overlapping the ref: skipped, counted.
+                Occurrence {
+                    range: vec![0, 14, 19],
+                    symbol: "rust-analyzer cargo . . task/".to_string(),
+                    symbol_roles: 0,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let resolution = resolve_with_index(&index, &nodes, &references, |path| {
+        (path == "m.rs").then(|| src.to_string())
+    });
+
+    assert!(resolution.bindings.is_empty());
+    assert_eq!(resolution.external.len(), 1);
+    let edge = &resolution.external[0].edge;
+    assert_eq!(edge.src.as_str(), "m.rs#caller@0");
+    assert_eq!(edge.dst.as_str(), "dep:tokio@1.0.0#tokio::task::spawn@0");
+    assert_eq!(edge.evidence, Evidence::Scip);
+    let dep = resolution
+        .external_nodes
+        .iter()
+        .find(|n| n.id.as_str() == "dep:tokio@1.0.0#tokio::task::spawn@0")
+        .expect("dep node synthesized");
+    assert_eq!(dep.file, "dep:tokio@1.0.0");
+    assert_eq!(dep.name, "spawn");
+    assert_eq!(dep.kind, SymbolKind::Function);
+    assert_eq!(dep.span, Span { start: 0, end: 0 });
+    assert_eq!(resolution.external_skipped, 1);
+}
+
+/// Descriptor markers map to kinds: `#` type -> Struct, `#name().` ->
+/// Method, trailing `.` term -> Constant, `!` -> Macro, `/` -> Module.
+#[test]
+fn descriptor_markers_pick_kinds() {
+    let cases = [
+        ("runtime/Runtime#", SymbolKind::Struct, "Runtime"),
+        (
+            "runtime/Runtime#block_on().",
+            SymbolKind::Method,
+            "block_on",
+        ),
+        ("sync/MAX.", SymbolKind::Constant, "MAX"),
+        ("select!", SymbolKind::Macro, "select"),
+        ("task/", SymbolKind::Module, "task"),
+    ];
+    for (descriptors, kind, name) in cases {
+        let symbol = format!("rust-analyzer cargo tokio 1.0.0 {descriptors}");
+        let src = "fn c() { xxxxx }\n";
+        let references = vec![Reference {
+            file: "m.rs".to_string(),
+            name: name.to_string(),
+            path: None,
+            relation: Relation::Uses,
+            span: Span { start: 9, end: 14 },
+            enclosing: None,
+            alias: None,
+        }];
+        let index = Index {
+            documents: vec![Document {
+                relative_path: "m.rs".to_string(),
+                occurrences: vec![Occurrence {
+                    range: vec![0, 9, 14],
+                    symbol,
+                    symbol_roles: 0,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let resolution = resolve_with_index(&index, &[], &references, |path| {
+            (path == "m.rs").then(|| src.to_string())
+        });
+        assert_eq!(resolution.external.len(), 1, "{descriptors}");
+        let dep = &resolution.external_nodes[0];
+        assert_eq!(dep.kind, kind, "{descriptors}");
+        assert_eq!(dep.name, name, "{descriptors}");
+    }
 }
