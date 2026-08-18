@@ -217,6 +217,13 @@ enum Command {
     Scip {
         #[arg(default_value = ".")]
         repo: PathBuf,
+        /// Exit 0 iff .sinter/index.scip exists and no source file is
+        /// newer (CI guard; runs no indexer)
+        #[arg(long, conflicts_with = "if_stale")]
+        check: bool,
+        /// Index only when --check would fail; no-op when fresh
+        #[arg(long)]
+        if_stale: bool,
     },
     /// Print version, graph schema, and language packs (for bug reports)
     Version,
@@ -375,7 +382,19 @@ fn main() -> ExitCode {
             Some(manifest) => serve::run_workspace(&manifest),
             None => serve::run(&repo),
         },
-        Command::Scip { repo } => scip::run(&repo),
+        Command::Scip {
+            repo,
+            check,
+            if_stale,
+        } => {
+            if check {
+                scip::check(&repo)
+            } else if if_stale {
+                scip::run_if_stale(&repo)
+            } else {
+                scip::run(&repo)
+            }
+        }
         Command::Completion { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "sinter", &mut std::io::stdout());
             Ok(())

@@ -57,6 +57,75 @@ const INDEXERS: &[(&str, &[&str], &str)] = &[
     // sql/bash/proto: no SCIP indexers exist.
 ];
 
+enum Staleness {
+    Fresh,
+    Missing,
+    /// How many source files are newer than the index.
+    Stale(usize),
+}
+
+/// The doctor's staleness notion, reimplemented here so `--check` needs
+/// neither a graph nor an indexer: mtime of every language file vs the
+/// index's mtime.
+fn staleness(repo: &Path) -> Staleness {
+    let Some(index) = pipeline::scip_index_path(repo) else {
+        return Staleness::Missing;
+    };
+    let Ok(index_mtime) = std::fs::metadata(&index).and_then(|m| m.modified()) else {
+        return Staleness::Missing;
+    };
+    let mut newer = 0;
+    for entry in ignore::WalkBuilder::new(repo).build().flatten() {
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        let rel = sinter_core::rel_display(entry.path().strip_prefix(repo).unwrap_or(entry.path()));
+        if rel.starts_with(".sinter/") || sinter_extract::spec_for_path(&rel).is_none() {
+            continue;
+        }
+        if entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .is_some_and(|m| m > index_mtime)
+        {
+            newer += 1;
+        }
+    }
+    if newer == 0 {
+        Staleness::Fresh
+    } else {
+        Staleness::Stale(newer)
+    }
+}
+
+/// `sinter scip --check`: the CI guard. Exit 0 when the index exists and
+/// no source file is newer; exit 1 otherwise. Never runs an indexer.
+pub fn check(repo: &Path) -> Result<()> {
+    let repo = repo.canonicalize()?;
+    match staleness(&repo) {
+        Staleness::Fresh => {
+            println!("index fresh");
+            Ok(())
+        }
+        Staleness::Missing => bail!("no SCIP index at .sinter/index.scip"),
+        Staleness::Stale(n) => bail!("index stale: {n} source file(s) newer than the index"),
+    }
+}
+
+/// `sinter scip --if-stale`: index only when `--check` would fail, so the
+/// CI job is idempotent and a cache hit costs one directory walk.
+pub fn run_if_stale(repo: &Path) -> Result<()> {
+    let canon = repo.canonicalize()?;
+    match staleness(&canon) {
+        Staleness::Fresh => {
+            println!("index fresh — nothing to do");
+            Ok(())
+        }
+        Staleness::Missing | Staleness::Stale(_) => run(repo),
+    }
+}
+
 pub fn run(repo: &Path) -> Result<()> {
     let repo = repo.canonicalize()?;
 
