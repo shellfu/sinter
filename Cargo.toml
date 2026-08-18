@@ -12,6 +12,7 @@ members = [
 version = "0.37.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/shellfu/sinter"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -22,7 +23,9 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 proptest = "1"
 tempfile = "3"
-sinter-core = { path = "crates/sinter-core" }
-sinter-store = { path = "crates/sinter-store" }
-sinter-extract = { path = "crates/sinter-extract" }
-sinter-resolve = { path = "crates/sinter-resolve" }
+# version alongside path so the crates are publishable to crates.io;
+# `make bump` rewrites these version strings together with the workspace one.
+sinter-core = { version = "0.37.0", path = "crates/sinter-core" }
+sinter-store = { version = "0.37.0", path = "crates/sinter-store" }
+sinter-extract = { version = "0.37.0", path = "crates/sinter-extract" }
+sinter-resolve = { version = "0.37.0", path = "crates/sinter-resolve" }

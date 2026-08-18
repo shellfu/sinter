@@ -3,6 +3,7 @@ name = "sinter-store"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Embedded persistent graph store (redb), queryable without loading the world"
 
 [dependencies]

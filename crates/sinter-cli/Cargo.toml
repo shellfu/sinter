@@ -3,6 +3,7 @@ name = "sinter-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "sinter command-line interface"
 
 [[bin]]
@@ -33,3 +34,16 @@ tempfile.workspace = true
 # Hand-crafted index.scip fixtures for the dependency-surface tests.
 scip = "0.9"
 protobuf = "3.7.2"
+
+# cargo-binstall: release assets are sinter-<target>.tar.gz (.zip on Windows)
+# with the binary at the archive root, published under the vX.Y.Z tag.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/sinter-{ target }{ archive-suffix }"
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-fmt = "zip"

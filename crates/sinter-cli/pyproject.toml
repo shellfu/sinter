@@ -1,0 +1,23 @@
+# PyPI packaging of the sinter binary via maturin (bindings = "bin").
+# The wheel ships the compiled `sinter` executable as a script entry point.
+#
+# `name` below is the ONE place the PyPI package name lives. "sinter" may be
+# taken on PyPI — verify availability and adjust here before first publish
+# (see docs/publishing.md).
+
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "sinter"
+description = "Code graph for agents: typed nodes/edges with evidence-based resolution"
+requires-python = ">=3.8"
+license = { text = "MIT OR Apache-2.0" }
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/shellfu/sinter"
+
+[tool.maturin]
+bindings = "bin"
