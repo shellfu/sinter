@@ -12,6 +12,8 @@ use crate::{install, pipeline};
 
 struct Report {
     problems: usize,
+    fix: bool,
+    fixed: usize,
 }
 
 impl Report {
@@ -22,12 +24,50 @@ impl Report {
         self.problems += 1;
         println!("  FIX   {msg}\n        -> {fix}");
     }
+    /// A finding doctor can repair itself. Under `--fix` the action runs
+    /// (falling back to a warning naming the failure); otherwise it
+    /// warns with the manual command. Auto-fix only ever refreshes what
+    /// is already installed or rebuilds derived state — it never makes a
+    /// new opt-in decision on the user's behalf.
+    fn fixable(&mut self, msg: &str, cmd: &str, action: impl FnOnce() -> Result<()>) {
+        if !self.fix {
+            self.warn(msg, cmd);
+            return;
+        }
+        match action() {
+            Ok(()) => {
+                self.fixed += 1;
+                println!("  FIXED {msg}");
+            }
+            Err(e) => self.warn(&format!("{msg} (auto-fix failed: {e:#})"), cmd),
+        }
+    }
+    fn summary(&self) {
+        if self.fix {
+            println!(
+                "{} fixed, {} problem(s) remaining",
+                self.fixed, self.problems
+            );
+        } else {
+            println!("{} problem(s)", self.problems);
+        }
+    }
 }
 
 /// Workspace health: member freshness and boundary-link staleness.
-pub fn run_workspace(manifest: &Path) -> Result<bool> {
+pub fn run_workspace(manifest: &Path, fix: bool) -> Result<bool> {
+    // The one fix for every workspace finding is the build itself, and it
+    // is stat-gated (cheap when fresh) — so `--fix` runs it up front and
+    // the diagnosis below reports the post-fix state.
+    if fix {
+        crate::workspace::run(manifest)?;
+    }
     let ws = crate::workspace::load(manifest)?;
-    let mut r = Report { problems: 0 };
+    let mut r = Report {
+        problems: 0,
+        fix,
+        fixed: 0,
+    };
     println!(
         "workspace `{}` ({} members)",
         ws.manifest.workspace.name,
@@ -60,12 +100,16 @@ pub fn run_workspace(manifest: &Path) -> Result<bool> {
         ),
         Err(_) => r.warn("no link store yet", "run `sinter workspace <manifest>`"),
     }
-    println!("{} problem(s)", r.problems);
+    r.summary();
     Ok(r.problems == 0)
 }
 
-pub fn run(repo: &Path) -> Result<bool> {
-    let mut r = Report { problems: 0 };
+pub fn run(repo: &Path, fix: bool) -> Result<bool> {
+    let mut r = Report {
+        problems: 0,
+        fix,
+        fixed: 0,
+    };
 
     println!("sinter {}", env!("CARGO_PKG_VERSION"));
     let names: Vec<&str> = LANGUAGES.iter().map(|l| l.name).collect();
@@ -75,11 +119,14 @@ pub fn run(repo: &Path) -> Result<bool> {
     match install::default_dir() {
         Some(dir) => match std::fs::read_to_string(dir.join("SKILL.md")) {
             Ok(card) if card == install::SKILL => r.ok("skill card installed and current"),
-            Ok(_) => r.warn(
+            Ok(_) => r.fixable(
                 "skill card is stale (differs from this binary's embedded copy)",
                 "run `sinter install`",
+                || install::run(None),
             ),
-            Err(_) => r.warn("skill card not installed", "run `sinter install`"),
+            Err(_) => r.fixable("skill card not installed", "run `sinter install`", || {
+                install::run(None)
+            }),
         },
         None => r.warn(
             "cannot locate home directory for skill card",
@@ -116,19 +163,44 @@ pub fn run(repo: &Path) -> Result<bool> {
     } else if global_claude.as_deref().is_some_and(enforced_at) {
         r.ok("enforcement hooks installed and current (global ~/.claude)");
     } else {
-        r.warn(
-            "enforcement hooks missing or stale (agents may grep instead of querying)",
-            "run `sinter install enforce` (or --global)",
-        );
+        // Refresh-only: a scope counts for auto-fix when its script file
+        // exists at all — first-time enforcement stays an opt-in.
+        let repo_scope = repo.join(".claude/hooks").join(hook_file).exists();
+        let global_scope = global_claude
+            .as_ref()
+            .is_some_and(|c| c.join("hooks").join(hook_file).exists());
+        if repo_scope || global_scope {
+            r.fixable(
+                "enforcement hooks stale (agents may grep instead of querying)",
+                "run `sinter install enforce` (or --global)",
+                || {
+                    if repo_scope {
+                        install::enforce(Some(&repo))?;
+                    }
+                    if global_scope {
+                        install::enforce(None)?;
+                    }
+                    Ok(())
+                },
+            );
+        } else {
+            r.warn(
+                "enforcement hooks not installed (agents may grep instead of querying)",
+                "run `sinter install enforce` (or --global)",
+            );
+        }
     }
     let db = pipeline::db_path(&repo);
     if !db.exists() {
-        r.warn(
+        r.fixable(
             &format!("no graph at {}", db.display()),
             "run `sinter build`",
+            || pipeline::build(&repo, None).map(drop),
         );
-        println!("{} problem(s)", r.problems);
-        return Ok(r.problems == 0);
+        if !db.exists() {
+            r.summary();
+            return Ok(r.problems == 0);
+        }
     }
     // A held lock (long-lived serve/watch from another process) is a
     // finding to report, never a crash.
@@ -139,20 +211,23 @@ pub fn run(repo: &Path) -> Result<bool> {
                 &format!("graph database is not readable right now: {e}"),
                 "another process holds it (serve/watch?); stop it or retry, then `sinter doctor`",
             );
-            println!("{} problem(s)", r.problems);
+            r.summary();
             return Ok(false);
         }
     };
     match schema {
         Some(v) if v == Store::CURRENT_SCHEMA => r.ok(&format!("graph schema v{v} (current)")),
-        Some(v) => r.warn(
+        Some(v) => r.fixable(
             &format!(
                 "graph schema v{v}, binary writes v{}",
                 Store::CURRENT_SCHEMA
             ),
             "run `sinter build` (rebuilds automatically)",
+            || pipeline::build(&repo, None).map(drop),
         ),
-        None => r.warn("graph has no schema stamp", "run `sinter build`"),
+        None => r.fixable("graph has no schema stamp", "run `sinter build`", || {
+            pipeline::build(&repo, None).map(drop)
+        }),
     }
 
     let store = Store::open(&db)?;
@@ -168,15 +243,19 @@ pub fn run(repo: &Path) -> Result<bool> {
             current.iter().map(|(f, _)| f.as_str()).collect();
         stored.keys().filter(|f| !live.contains(f.as_str())).count()
     };
+    // The rebuild (and the stats reopen below) needs this handle released.
+    drop(store);
     if stale == 0 && removed == 0 {
         r.ok(&format!("graph fresh ({} files indexed)", stored.len()));
     } else {
-        r.warn(
+        r.fixable(
             &format!("graph stale: {stale} changed, {removed} removed files"),
             "run `sinter build`",
+            || pipeline::build(&repo, None).map(drop),
         );
     }
 
+    let store = Store::open(&db)?;
     r.ok(&format!(
         "{} nodes, {} edges, {} unresolved refs, {} on disk",
         store.node_count()?,
@@ -191,9 +270,10 @@ pub fn run(repo: &Path) -> Result<bool> {
         if installed {
             r.ok("git hooks installed");
         } else {
-            r.warn(
+            r.fixable(
                 "git hooks not installed (graph won't refresh on commit/checkout)",
                 "run `sinter hooks install`",
+                || crate::hooks::install(&repo),
             );
         }
     }
@@ -208,9 +288,16 @@ pub fn run(repo: &Path) -> Result<bool> {
             }
             Ok(content) if content.contains("BEGIN sinter") || label == "cursor rule" => {
                 let _ = content;
-                r.warn(
+                r.fixable(
                     &format!("{label} is stale (differs from this binary's embedded card)"),
                     "rerun `sinter install cursor agents`",
+                    || {
+                        if label == "cursor rule" {
+                            install::cursor(&repo).map(drop)
+                        } else {
+                            install::agents(&repo).map(drop)
+                        }
+                    },
                 );
             }
             _ => {}
@@ -240,9 +327,10 @@ pub fn run(repo: &Path) -> Result<bool> {
     } else if registered.is_empty() {
         r.ok("MCP not registered (optional; `sinter install --mcp` registers all clients)");
     } else {
-        r.warn(
+        r.fixable(
             &format!("MCP registered for {} only", registered.join(", ")),
             "run `sinter install --mcp` to register every client",
+            || install::mcp(&repo),
         );
     }
     // Registered is not working: handshake the server the way a client
@@ -280,7 +368,7 @@ pub fn run(repo: &Path) -> Result<bool> {
         None => r.ok("no SCIP index (optional; `sinter scip` would bind external/method refs)"),
     }
 
-    println!("{} problem(s)", r.problems);
+    r.summary();
     Ok(r.problems == 0)
 }
 

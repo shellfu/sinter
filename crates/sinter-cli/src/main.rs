@@ -97,6 +97,10 @@ enum Command {
         /// Diagnose a workspace instead (path to manifest)
         #[arg(long)]
         workspace: Option<PathBuf>,
+        /// Repair what doctor can: refresh installed cards/hooks, rebuild
+        /// the graph. Never makes new opt-in decisions.
+        #[arg(long, short = 'f')]
+        fix: bool,
     },
     /// Install the assistant integration card (embedded, drift-proof)
     Install {
@@ -328,10 +332,14 @@ fn main() -> ExitCode {
         }
         Command::Build { repo } => build::run(&repo),
         Command::Watch { repo } => watch::run(&repo),
-        Command::Doctor { repo, workspace } => {
+        Command::Doctor {
+            repo,
+            workspace,
+            fix,
+        } => {
             let result = match workspace {
-                Some(manifest) => doctor::run_workspace(&manifest),
-                None => doctor::run(&repo),
+                Some(manifest) => doctor::run_workspace(&manifest, fix),
+                None => doctor::run(&repo, fix),
             };
             return match result {
                 Ok(true) => ExitCode::SUCCESS,
