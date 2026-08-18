@@ -491,6 +491,13 @@ fn doc_comment(
                     break;
                 }
             }
+            // Block-comment continuation: a leading `*` (Javadoc/C-style
+            // interior line) is decoration — but `**bold**` is markdown.
+            if let Some(rest) = l.strip_prefix('*')
+                && !l.starts_with("**")
+            {
+                l = rest;
+            }
             l = l.strip_suffix("*/").unwrap_or(l);
             lines.push(l.trim());
         }

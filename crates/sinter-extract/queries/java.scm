@@ -12,9 +12,11 @@
 
 ; extends/implements reference the supertype; `implements` additionally
 ; records interface-impl pairing (dynamic-dispatch fan-out, like Rust traits)
+; superclass also embeds: inherited members resolve on the subclass
+; (same member-promotion machinery as Go embedded structs)
 (class_declaration superclass: (superclass [
-  (type_identifier) @ref.use
-  (generic_type (type_identifier) @ref.use)
+  (type_identifier) @ref.use @embed
+  (generic_type (type_identifier) @ref.use @embed)
 ]))
 (class_declaration
   interfaces: (super_interfaces (type_list [
