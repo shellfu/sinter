@@ -155,11 +155,12 @@ pub fn run(repo: &Path) -> Result<bool> {
     }
 
     let store = Store::open(&db)?;
-    let stored: HashMap<String, String> = store.file_hashes()?.into_iter().collect();
+    let stored: HashMap<String, sinter_store::FileStamp> =
+        store.file_hashes()?.into_iter().collect();
     let current = pipeline::scan_hashes(&repo, &stored)?;
     let stale = current
         .iter()
-        .filter(|(f, h)| stored.get(f) != Some(h))
+        .filter(|(f, h)| stored.get(f).map(|s| &s.hash) != Some(h))
         .count();
     let removed = {
         let live: std::collections::HashSet<&str> =

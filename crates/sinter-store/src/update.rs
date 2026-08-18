@@ -51,6 +51,10 @@ impl Store {
         removed: &[String],
     ) -> Result<NameDelta, StoreError> {
         let mut delta = NameDelta::default();
+        // Clean build: nothing touched, no write transaction.
+        if changed.is_empty() && removed.is_empty() {
+            return Ok(delta);
+        }
         let txn = self.db.begin_write()?;
         {
             let mut nodes = txn.open_table(NODES)?;
@@ -181,12 +185,36 @@ impl Store {
 
     /// Mark files fully derived by recording their content hashes. Call
     /// only after every derived table (edges, unresolved) is consistent.
+    /// Stores a bare hash (no stat stamp), so the next scan re-hashes
+    /// these files once; the build path uses [`Store::commit_stamps`].
     pub fn commit_hashes(&self, changed: &[FileFacts]) -> Result<(), StoreError> {
+        if changed.is_empty() {
+            return Ok(());
+        }
         let txn = self.db.begin_write()?;
         {
             let mut hash_table = txn.open_table(FILE_HASH)?;
             for facts in changed {
                 hash_table.insert(facts.file.as_str(), facts.content_hash.as_str())?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// [`Store::commit_hashes`] with the stat identity attached: the scan
+    /// reuses each stored hash while (mtime, len) still match. Also the
+    /// stamp-refresh path for touched-but-unchanged files. Empty input
+    /// opens no write transaction (the clean-build no-op path).
+    pub fn commit_stamps(&self, rows: &[(String, crate::FileStamp)]) -> Result<(), StoreError> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let txn = self.db.begin_write()?;
+        {
+            let mut hash_table = txn.open_table(FILE_HASH)?;
+            for (file, stamp) in rows {
+                hash_table.insert(file.as_str(), stamp.encode().as_str())?;
             }
         }
         txn.commit()?;

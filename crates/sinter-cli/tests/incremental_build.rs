@@ -75,6 +75,39 @@ fn one_file_edit_is_incremental_and_fast() {
     assert!(removed.contains("0 changed, 1 removed"), "{removed}");
 }
 
+/// mtime-gated hashing: a touch (new mtime, identical content) re-hashes
+/// once, reports nothing changed, and refreshes the stored stamp so the
+/// next scan is stat-only again — while a real edit that preserves file
+/// length still comes out as changed.
+#[test]
+fn touched_but_unchanged_file_stays_clean_and_restamps() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    let content = "pub fn f() -> u32 { 1 }\n";
+    std::fs::write(repo.join("src/a.rs"), content).unwrap();
+    std::fs::write(repo.join("src/b.rs"), "pub fn g() -> u32 { 2 }\n").unwrap();
+    let first = sinter(repo, &["build"]);
+    assert!(first.contains("2 scanned, 2 changed"), "{first}");
+
+    // Touch: rewrite with identical content, forcing a new mtime.
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(repo.join("src/a.rs"), content).unwrap();
+    let touched = sinter(repo, &["build"]);
+    assert!(touched.contains("2 scanned, 0 changed"), "{touched}");
+    // That build refreshed the stored stamp: the next build is a clean
+    // stat-only pass and must still report nothing changed.
+    let clean = sinter(repo, &["build"]);
+    assert!(clean.contains("2 scanned, 0 changed"), "{clean}");
+
+    // Same length, different bytes, new mtime: the stat gate must miss
+    // (mtime moved), re-hash, and surface the edit.
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(repo.join("src/a.rs"), "pub fn f() -> u32 { 9 }\n").unwrap();
+    let edited = sinter(repo, &["build"]);
+    assert!(edited.contains("2 scanned, 1 changed"), "{edited}");
+}
+
 /// A package rename in Cargo.toml changes module roots without touching any
 /// source file. The build must re-resolve the corpus (dropping edges bound
 /// through the old root), not report a no-op that leaves stale dependents.

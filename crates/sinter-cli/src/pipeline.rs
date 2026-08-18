@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
 use sinter_core::{FileFacts, Graph, Reference};
 use sinter_extract::{Extractor, LanguageSpec, ModuleRoot, manifest_root, spec_for_path};
-use sinter_store::Store;
+use sinter_store::{FileStamp, Store};
 
 pub struct BuildReport {
     pub scanned: usize,
@@ -86,21 +86,35 @@ pub fn db_size(repo: &Path) -> String {
 }
 
 /// Walk the repo and hash every language-matched file. `stored` supplies
-/// fallback hashes for transiently unreadable files.
-pub fn scan_hashes(repo: &Path, stored: &HashMap<String, String>) -> Result<Vec<(String, String)>> {
-    Ok(scan(repo, stored)?.hashes)
+/// stat stamps for hash reuse and fallback hashes for transiently
+/// unreadable files.
+pub fn scan_hashes(
+    repo: &Path,
+    stored: &HashMap<String, FileStamp>,
+) -> Result<Vec<(String, String)>> {
+    Ok(scan(repo, stored)?
+        .hashes
+        .into_iter()
+        .map(|(f, s)| (f, s.hash))
+        .collect())
 }
 
 /// One walk, two harvests: language files to hash, and package manifests
 /// (Cargo.toml, ...) whose declared names become module roots for the
 /// resolver. Piggybacked so incremental builds never walk twice.
-/// (file, blake3) rows plus the manifest-declared module roots.
+/// (file, stamp) rows plus the manifest-declared module roots.
 pub struct Scan {
-    pub hashes: Vec<(String, String)>,
+    pub hashes: Vec<(String, FileStamp)>,
     pub roots: Vec<ModuleRoot>,
 }
 
-pub fn scan(repo: &Path, stored: &HashMap<String, String>) -> Result<Scan> {
+/// mtime-gated hashing (the `make` trick): a file whose stat (mtime, len)
+/// matches its stored stamp reuses the stored hash without being read, so
+/// a clean scan is O(stat), not O(corpus bytes). Standard make caveat: a
+/// rewrite that preserves both mtime and length with different content is
+/// invisible. Set SINTER_FULL_SCAN=1 to force content hashing (escape
+/// hatch for filesystems with untrustworthy mtimes).
+pub fn scan(repo: &Path, stored: &HashMap<String, FileStamp>) -> Result<Scan> {
     let mut current: Vec<String> = Vec::new();
     let mut roots: Vec<ModuleRoot> = Vec::new();
     for entry in ignore::WalkBuilder::new(repo).build() {
@@ -127,15 +141,48 @@ pub fn scan(repo: &Path, stored: &HashMap<String, String>) -> Result<Scan> {
         current.push(rel);
     }
     roots.sort_by(|a, b| (&a.dir, &a.name).cmp(&(&b.dir, &b.name)));
+    let full_scan = std::env::var_os("SINTER_FULL_SCAN").is_some();
     let hashes = current
         .par_iter()
-        .filter_map(|rel| match std::fs::read(repo.join(rel)) {
-            Ok(bytes) if bytes.is_empty() => None,
-            Ok(bytes) => Some((rel.clone(), blake3::hash(&bytes).to_hex().to_string())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            // Transient read error (permissions, editor race): keep the
-            // stored state instead of tearing the file down as removed.
-            Err(_) => stored.get(rel).map(|h| (rel.clone(), h.clone())),
+        .filter_map(|rel| {
+            let path = repo.join(rel);
+            // Stat identity of this file right now; (0, 0) when the stat
+            // fails or the mtime predates the epoch — matches no stored
+            // stamp (empty files are never stamped), so the file is read.
+            let (mtime_nanos, len) = std::fs::metadata(&path)
+                .ok()
+                .map(|m| {
+                    let nanos = m
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map_or(0, |d| d.as_nanos());
+                    (nanos, m.len())
+                })
+                .unwrap_or((0, 0));
+            if !full_scan
+                && len > 0
+                && let Some(stamp) = stored.get(rel)
+                && stamp.mtime_nanos == mtime_nanos
+                && stamp.len == len
+            {
+                return Some((rel.clone(), stamp.clone()));
+            }
+            match std::fs::read(&path) {
+                Ok(bytes) if bytes.is_empty() => None,
+                Ok(bytes) => Some((
+                    rel.clone(),
+                    FileStamp {
+                        hash: blake3::hash(&bytes).to_hex().to_string(),
+                        mtime_nanos,
+                        len: bytes.len() as u64,
+                    },
+                )),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                // Transient read error (permissions, editor race): keep the
+                // stored state instead of tearing the file down as removed.
+                Err(_) => stored.get(rel).map(|s| (rel.clone(), s.clone())),
+            }
         })
         .collect();
     Ok(Scan { hashes, roots })
@@ -151,7 +198,21 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
         .with_context(|| format!("repo path {}", repo.display()))?;
     let out_dir = repo.join(".sinter");
     std::fs::create_dir_all(&out_dir)?;
-    let mut store = Store::create(db_path(&repo))?;
+    // Current-schema databases open plain (no ensure-tables write
+    // transaction); create — with its wipe-on-mismatch — runs only on
+    // first build or schema change. Keeps a clean build write-free and
+    // pays a single Database::open per build.
+    let db = db_path(&repo);
+    let mut store = match db
+        .exists()
+        .then(|| Store::open(&db))
+        .transpose()?
+        .filter(|s| s.schema().ok().flatten() == Some(Store::CURRENT_SCHEMA))
+    {
+        Some(store) => store,
+        // Drops any mismatched handle first: create must reopen to wipe.
+        None => Store::create(&db)?,
+    };
 
     // Current corpus: (file, hash) for every language-matched file in scope.
     let scoped: Option<HashSet<String>> = only.map(|paths| {
@@ -165,7 +226,7 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
             })
             .collect()
     });
-    let stored: HashMap<String, String> = store.file_hashes()?.into_iter().collect();
+    let stored: HashMap<String, FileStamp> = store.file_hashes()?.into_iter().collect();
     let Scan {
         hashes,
         roots: module_roots,
@@ -184,7 +245,7 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
     };
     let changed_files: Vec<&str> = hashes
         .iter()
-        .filter(|(f, h)| stored.get(f) != Some(h) && in_scope(f))
+        .filter(|(f, s)| stored.get(f).map(|st| &st.hash) != Some(&s.hash) && in_scope(f))
         .map(|(f, _)| f.as_str())
         .collect();
     let removed: Vec<String> = stored
@@ -389,7 +450,22 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
 
     // Hashes commit only now: every derived table is consistent, so a crash
     // anywhere above re-runs these files as changed on the next build.
-    store.commit_hashes(&changed_facts)?;
+    // Two kinds of rows: freshly derived files, and touched-but-unchanged
+    // files (same hash, new mtime/len) whose stamp must refresh or every
+    // future scan would re-hash them forever. One write per real touch;
+    // a fully clean build commits nothing and opens no write transaction.
+    let derived: HashSet<&str> = changed_facts.iter().map(|f| f.file.as_str()).collect();
+    let stamp_rows: Vec<(String, FileStamp)> = hashes
+        .iter()
+        .filter(|(f, s)| {
+            derived.contains(f.as_str())
+                || stored.get(f).is_some_and(|st| {
+                    st.hash == s.hash && (st.mtime_nanos, st.len) != (s.mtime_nanos, s.len)
+                })
+        })
+        .cloned()
+        .collect();
+    store.commit_stamps(&stamp_rows)?;
     store.set_resolve_fingerprint("scip", scip_fingerprint.as_deref())?;
     store.set_resolve_fingerprint("module_roots", roots_fingerprint.as_deref())?;
 

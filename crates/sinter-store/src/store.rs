@@ -58,7 +58,36 @@ pub(crate) const META: TableDefinition<&str, u32> = TableDefinition::new("meta")
 /// without re-extracting. Additive table — absent in older dbs, which
 /// makes the first build after upgrade re-resolve once.
 pub(crate) const RESOLVE_META: TableDefinition<&str, &str> = TableDefinition::new("resolve_meta");
-const SCHEMA_VERSION: u32 = 4;
+const SCHEMA_VERSION: u32 = 5;
+
+/// Per-file freshness record: content hash plus the stat identity
+/// (mtime, len) it was hashed at. A scan whose stat matches reuses the
+/// hash without reading the file (the `make` trick). Encoded in
+/// FILE_HASH as `hash|mtime_nanos|len`; a bare hash (no stamp) never
+/// matches a stat, forcing a re-hash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileStamp {
+    pub hash: String,
+    pub mtime_nanos: u128,
+    pub len: u64,
+}
+
+impl FileStamp {
+    pub(crate) fn encode(&self) -> String {
+        format!("{}|{}|{}", self.hash, self.mtime_nanos, self.len)
+    }
+
+    pub(crate) fn decode(value: &str) -> Self {
+        let mut parts = value.split('|');
+        let hash = parts.next().unwrap_or_default().to_string();
+        Self {
+            hash,
+            mtime_nanos: parts.next().and_then(|p| p.parse().ok()).unwrap_or(0),
+            // len 0 never matches: scan only stamps non-empty files.
+            len: parts.next().and_then(|p| p.parse().ok()).unwrap_or(0),
+        }
+    }
+}
 
 impl Store {
     /// The schema version this binary writes.
@@ -67,13 +96,7 @@ impl Store {
     /// Read a database's schema stamp without opening for write and
     /// without triggering the wipe-on-mismatch in [`Store::create`].
     pub fn schema_of(path: impl AsRef<Path>) -> Result<Option<u32>, StoreError> {
-        let db = open_retrying(path.as_ref(), |p| Database::open(p))?;
-        let txn = db.begin_read()?;
-        match txn.open_table(META) {
-            Ok(table) => Ok(table.get("schema")?.map(|g| g.value())),
-            Err(redb::TableError::TableDoesNotExist(_)) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        Self::open(path)?.schema()
     }
 }
 
@@ -164,6 +187,16 @@ impl Store {
         })
     }
 
+    /// The schema stamp of this open database, if any.
+    pub fn schema(&self) -> Result<Option<u32>, StoreError> {
+        let txn = self.db.begin_read()?;
+        match txn.open_table(META) {
+            Ok(table) => Ok(table.get("schema")?.map(|g| g.value())),
+            Err(redb::TableError::TableDoesNotExist(_)) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Persist a whole graph in one transaction (test/export convenience;
     /// the incremental path goes through `update_files`).
     pub fn write_graph(&self, graph: &Graph) -> Result<(), StoreError> {
@@ -238,11 +271,17 @@ impl Store {
         Ok(table.get(key)?.map(|g| g.value().to_string()))
     }
 
+    /// Idempotent: an unchanged fingerprint opens no write transaction,
+    /// keeping a clean build write-free (parallel readers never queue
+    /// behind redb's exclusive writer for a no-op).
     pub fn set_resolve_fingerprint(
         &self,
         key: &str,
         fingerprint: Option<&str>,
     ) -> Result<(), StoreError> {
+        if self.resolve_fingerprint(key)?.as_deref() == fingerprint {
+            return Ok(());
+        }
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(RESOLVE_META)?;
@@ -318,14 +357,14 @@ impl Store {
         Ok(edges)
     }
 
-    /// (file, content hash) for every stored file — the changed-set diff base.
-    pub fn file_hashes(&self) -> Result<Vec<(String, String)>, StoreError> {
+    /// (file, stamp) for every stored file — the changed-set diff base.
+    pub fn file_hashes(&self) -> Result<Vec<(String, FileStamp)>, StoreError> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(FILE_HASH)?;
         let mut out = Vec::new();
         for entry in table.iter()? {
             let (k, v) = entry?;
-            out.push((k.value().to_string(), v.value().to_string()));
+            out.push((k.value().to_string(), FileStamp::decode(v.value())));
         }
         Ok(out)
     }
