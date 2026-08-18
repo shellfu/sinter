@@ -61,6 +61,9 @@ function-body behavior.
   (`sinter build` remains for CI/scripts; git hooks refresh on commit).
 - "unresolved" and candidate lists are real answers — refine and rerun,
   never guess a binding.
+- Spawning subagents? Their prompts must mandate sinter for structure
+  claims (callers, dependencies, blast radius, "no usages" proofs) and
+  reserve grep/rg for content-only searches.
 - Cross-repo workspace? Add `--workspace <manifest.toml>`; symbols may
   be `member:Symbol`.
 - Anything else: `sinter --help`; graph problems: `sinter doctor`.
@@ -260,8 +263,8 @@ pub(crate) fn claude_home() -> Option<PathBuf> {
 }
 
 /// Install Claude Code enforcement: the sinter-first hook script plus the
-/// three settings entries that fire it (per-prompt router, Bash grep
-/// nudge, Grep-tool nudge). The script gates on `.sinter/graph.redb`
+/// four settings entries that fire it (per-prompt router, Bash grep
+/// nudge, Grep-tool nudge, subagent-spawn orchestration rule). The script gates on `.sinter/graph.redb`
 /// existing, so hooks stay silent in graph-less repos. Merging is
 /// idempotent and preserves every other setting and hook.
 ///
@@ -315,6 +318,10 @@ pub fn enforce(repo: Option<&Path>) -> Result<()> {
     for (event, matcher, mode) in [
         ("PreToolUse", Some("Bash"), "grep"),
         ("PreToolUse", Some("Grep"), "greptool"),
+        // Subagent spawn (the tool is Task in stable Claude Code, Agent in
+        // newer builds): the orchestrator writes the subagent's prompt at
+        // this moment — the one point where grep-steering can be caught.
+        ("PreToolUse", Some("Task|Agent"), "task"),
         ("UserPromptSubmit", None, "prompt"),
     ] {
         let groups = hooks

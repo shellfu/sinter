@@ -151,7 +151,7 @@ pub fn run(repo: &Path, fix: bool) -> Result<bool> {
                 // Commands end with their mode in both variants; the
                 // closing JSON quote anchors "grep" against "greptool".
                 s.contains(hook_file)
-                    && [" prompt\"", " grep\"", " greptool\""]
+                    && [" prompt\"", " grep\"", " greptool\"", " task\""]
                         .iter()
                         .all(|m| s.contains(m))
             })
