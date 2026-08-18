@@ -107,13 +107,16 @@ pub struct Store {
 
 /// redb opens are exclusive, so a query racing a short-lived build (or a
 /// queue of sibling queries — parallel agents fan out dozens) sees
-/// AlreadyOpen. Backoff up to 5s rides out the queue; a handle held by a
-/// long-lived process still errors after the budget.
+/// AlreadyOpen. Backoff rides out the queue; a handle held by a
+/// long-lived process still errors after the budget. Windows gets a
+/// longer budget: file locks release lazily after process exit (handle
+/// teardown + AV scans), so a waiter there can outlive 5s of real
+/// contention that unix clears instantly.
 pub(crate) fn open_retrying(
     path: &Path,
     open: fn(&Path) -> Result<Database, redb::DatabaseError>,
 ) -> Result<Database, redb::DatabaseError> {
-    let budget = std::time::Duration::from_secs(5);
+    let budget = std::time::Duration::from_secs(if cfg!(windows) { 20 } else { 5 });
     let started = std::time::Instant::now();
     let mut delay = std::time::Duration::from_millis(10);
     loop {
