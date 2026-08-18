@@ -51,7 +51,7 @@ integration, ending with a doctor report:
 | Cross-repo (distributed system) versions of the above | add `--workspace <manifest.toml>`; symbols may be `member:Symbol` |
 
 Add `--json` to `ask` for structured output. `affected`/`path` accept
-`--evidence scip,import,scope` and `--certain` to restrict to stronger
+`--evidence scip,import,scope,dynamic` and `--certain` to restrict to stronger
 evidence tiers.
 
 ## Reading results
