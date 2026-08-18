@@ -110,6 +110,24 @@ fn terms_of(question: &str) -> Vec<String> {
     if hard.is_empty() { terms } else { hard }
 }
 
+/// Multi-topic question -> (label, terms) per clause. Dumb and predictable:
+/// split on `,`/`;` and standalone " or ", stopword each clause via
+/// terms_of(), drop clauses with no terms, dedup identical term lists.
+/// 0 or 1 clause means the caller takes the single-topic path unchanged.
+fn clauses_of(question: &str) -> Vec<(String, Vec<String>)> {
+    let lower = question.to_lowercase();
+    let mut seen = HashSet::new();
+    lower
+        .split([',', ';'])
+        .flat_map(|seg| seg.split(" or "))
+        .filter_map(|clause| {
+            let terms = terms_of(clause);
+            (!terms.is_empty()).then(|| (terms.join(" "), terms))
+        })
+        .filter(|(label, _)| seen.insert(label.clone()))
+        .collect()
+}
+
 /// Term matches with a trailing-`s` second chance (variant, not replacement).
 fn contains_term(haystack_lower: &str, term: &str) -> bool {
     haystack_lower.contains(term)
@@ -302,6 +320,38 @@ fn score_candidates(store: &Store, terms: &[String]) -> Result<Vec<Hit>> {
     Ok(hits)
 }
 
+/// Score each clause independently, then dedup: a node hit by several
+/// clauses shows once, in its best clause (highest score; earlier clause
+/// on ties). Per-clause cap keeps total output near the single-topic limit.
+fn multi_hits(
+    store: &Store,
+    clauses: &[(String, Vec<String>)],
+    limit: usize,
+) -> Result<Vec<(String, Vec<Hit>)>> {
+    let per = limit.div_ceil(clauses.len()).clamp(2, 3);
+    let mut groups: Vec<(String, Vec<Hit>)> = Vec::with_capacity(clauses.len());
+    for (label, terms) in clauses {
+        groups.push((label.clone(), score_candidates(store, terms)?));
+    }
+    let mut best: std::collections::HashMap<String, (i64, usize)> =
+        std::collections::HashMap::new();
+    for (ci, (_, hits)) in groups.iter().enumerate() {
+        for hit in hits {
+            let entry = best
+                .entry(hit.node.id.as_str().to_string())
+                .or_insert((hit.score, ci));
+            if hit.score > entry.0 {
+                *entry = (hit.score, ci);
+            }
+        }
+    }
+    for (ci, (_, hits)) in groups.iter_mut().enumerate() {
+        hits.retain(|h| best[h.node.id.as_str()].1 == ci);
+        hits.truncate(per);
+    }
+    Ok(groups)
+}
+
 fn adjacency_counts(store: &Store, node: &Node) -> Result<(usize, usize, Vec<String>)> {
     let out = store.out_edges(&node.id)?;
     let contains = out
@@ -330,7 +380,8 @@ fn adjacency_counts(store: &Store, node: &Node) -> Result<(usize, usize, Vec<Str
 
 /// `sinter ask --workspace`: fan candidate gathering out across members,
 /// merge-rank with the same deterministic formula, tie-break extended by
-/// member name.
+/// member name. Stays single-topic: clause splitting (clauses_of) is
+/// repo-scope only until a workspace question demands it.
 pub fn run_workspace(manifest: &Path, question: &str, limit: usize) -> Result<()> {
     let ws = crate::workspace::load(manifest)?;
     let terms = terms_of(question);
@@ -392,11 +443,41 @@ pub fn run_workspace(manifest: &Path, question: &str, limit: usize) -> Result<()
     Ok(())
 }
 
+fn hit_json(repo: &Path, h: &Hit) -> serde_json::Value {
+    json!({
+        "id": h.node.id.as_str(),
+        "qualified": qualified_of(h.node.id.as_str()),
+        "name": h.node.name,
+        "kind": h.node.kind.as_str(),
+        "file": h.node.file,
+        "span": {"start": h.node.span.start, "end": h.node.span.end},
+        "line": line_of(repo, &h.node.file, h.node.span.start),
+        "signature": h.node.signature,
+        "doc": h.node.doc,
+        "score": h.score,
+        "matched": h.matched,
+    })
+}
+
 /// Structured hits — the single shape behind `ask --json` and the MCP
-/// `ask` tool.
+/// `ask` tool. A multi-topic question keeps the flat array (least breaking
+/// for existing consumers) and adds a "topic" field per hit; single-topic
+/// output is unchanged.
 pub fn ask_json(repo: &Path, question: &str, limit: usize) -> Result<Vec<serde_json::Value>> {
     let repo = repo.canonicalize()?;
     let store = open_store(&repo)?;
+    let clauses = clauses_of(question);
+    if clauses.len() >= 2 {
+        let mut out = Vec::new();
+        for (topic, hits) in multi_hits(&store, &clauses, limit)? {
+            for h in &hits {
+                let mut v = hit_json(&repo, h);
+                v["topic"] = json!(topic);
+                out.push(v);
+            }
+        }
+        return Ok(out);
+    }
     let terms = terms_of(question);
     if terms.is_empty() {
         bail!("no searchable terms in {question:?} — try naming the thing you're looking for");
@@ -405,22 +486,77 @@ pub fn ask_json(repo: &Path, question: &str, limit: usize) -> Result<Vec<serde_j
     Ok(hits
         .iter()
         .take(limit)
-        .map(|h| {
-            json!({
-                "id": h.node.id.as_str(),
-                "qualified": qualified_of(h.node.id.as_str()),
-                "name": h.node.name,
-                "kind": h.node.kind.as_str(),
-                "file": h.node.file,
-                "span": {"start": h.node.span.start, "end": h.node.span.end},
-                "line": line_of(&repo, &h.node.file, h.node.span.start),
-                "signature": h.node.signature,
-                "doc": h.node.doc,
-                "score": h.score,
-                "matched": h.matched,
-            })
-        })
+        .map(|h| hit_json(&repo, h))
         .collect())
+}
+
+fn print_hit(repo: &Path, store: &Store, rank: usize, hit: &Hit) -> Result<()> {
+    let line = line_of(repo, &hit.node.file, hit.node.span.start);
+    println!(
+        "{}. {} {}    [{} {}/{} terms]",
+        rank + 1,
+        hit.node.kind.as_str(),
+        qualified_of(hit.node.id.as_str()),
+        hit.channels.join("+"),
+        hit.matched.len(),
+        hit.total_terms,
+    );
+    println!("   {}", location(repo, &hit.node.file, line));
+    if let Some(doc) = &hit.node.doc
+        && let Some(first) = doc.lines().next()
+    {
+        println!("   /// {first}");
+    }
+    if !hit.node.signature.is_empty() {
+        println!("   {}", ellipsize(&hit.node.signature, 100));
+    }
+    let (contains, used_by, extends) = adjacency_counts(store, &hit.node)?;
+    let mut facts = Vec::new();
+    if contains > 0 {
+        facts.push(format!("contains {contains}"));
+    }
+    if used_by > 0 {
+        facts.push(format!("used by {used_by} files"));
+    }
+    if !extends.is_empty() {
+        facts.push(format!("extends {}", extends.join(", ")));
+    }
+    if !facts.is_empty() {
+        println!("   {}", facts.join(" · "));
+    }
+    println!();
+    Ok(())
+}
+
+/// Multi-topic path: one heading per clause, top hits under each,
+/// per-clause "no match" lines keep honesty.
+fn run_multi(
+    repo: &Path,
+    store: &Store,
+    clauses: &[(String, Vec<String>)],
+    limit: usize,
+) -> Result<()> {
+    let groups = multi_hits(store, clauses, limit)?;
+    println!("Best matches ({} topics):\n", groups.len());
+    let mut best: Option<(i64, &Hit)> = None;
+    for (topic, hits) in &groups {
+        println!("## {topic}");
+        if hits.is_empty() {
+            println!("no match\n");
+            continue;
+        }
+        for (rank, hit) in hits.iter().enumerate() {
+            print_hit(repo, store, rank, hit)?;
+            if best.is_none_or(|(s, _)| hit.score > s) {
+                best = Some((hit.score, hit));
+            }
+        }
+    }
+    if let Some((_, top)) = best {
+        let q = qualified_of(top.node.id.as_str());
+        println!("Next: sinter show {q} · sinter affected {q}");
+    }
+    Ok(())
 }
 
 pub fn run(repo: &Path, question: &str, limit: usize, json: bool) -> Result<()> {
@@ -435,6 +571,10 @@ pub fn run(repo: &Path, question: &str, limit: usize, json: bool) -> Result<()> 
         return Ok(());
     }
     let store = open_store(&repo)?;
+    let clauses = clauses_of(question);
+    if clauses.len() >= 2 {
+        return run_multi(&repo, &store, &clauses, limit);
+    }
     let terms = terms_of(question);
     if terms.is_empty() {
         bail!("no searchable terms in {question:?} — try naming the thing you're looking for");
@@ -469,40 +609,7 @@ pub fn run(repo: &Path, question: &str, limit: usize, json: bool) -> Result<()> 
         );
     }
     for (rank, hit) in hits.iter().take(limit).enumerate() {
-        let line = line_of(&repo, &hit.node.file, hit.node.span.start);
-        println!(
-            "{}. {} {}    [{} {}/{} terms]",
-            rank + 1,
-            hit.node.kind.as_str(),
-            qualified_of(hit.node.id.as_str()),
-            hit.channels.join("+"),
-            hit.matched.len(),
-            hit.total_terms,
-        );
-        println!("   {}", location(&repo, &hit.node.file, line));
-        if let Some(doc) = &hit.node.doc
-            && let Some(first) = doc.lines().next()
-        {
-            println!("   /// {first}");
-        }
-        if !hit.node.signature.is_empty() {
-            println!("   {}", ellipsize(&hit.node.signature, 100));
-        }
-        let (contains, used_by, extends) = adjacency_counts(&store, &hit.node)?;
-        let mut facts = Vec::new();
-        if contains > 0 {
-            facts.push(format!("contains {contains}"));
-        }
-        if used_by > 0 {
-            facts.push(format!("used by {used_by} files"));
-        }
-        if !extends.is_empty() {
-            facts.push(format!("extends {}", extends.join(", ")));
-        }
-        if !facts.is_empty() {
-            println!("   {}", facts.join(" · "));
-        }
-        println!();
+        print_hit(&repo, &store, rank, hit)?;
     }
     if hits.len() > limit {
         println!(

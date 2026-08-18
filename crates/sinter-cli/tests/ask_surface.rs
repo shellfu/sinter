@@ -949,3 +949,89 @@ fn ask_verbose_question_drops_scaffolding_and_flags_weak_match() {
         assert!(out.contains("weak match"), "{out}");
     }
 }
+
+/// Multi-topic questions split into clauses (on `,`/`;`/" or ") and each
+/// clause is answered under its own heading; single-topic output is
+/// untouched, and multi-clause output is deterministic.
+#[test]
+fn ask_multi_topic_groups_hits_per_clause() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    controller_fixture(repo);
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+
+    let question = "where is the character controller, or the ledge grab?";
+    let (ok, out) = sinter(repo, &["ask", question]);
+    assert!(ok, "{out}");
+    assert!(out.contains("Best matches (2 topics):"), "{out}");
+    let controller_at = out.find("## character controller").expect(&out);
+    let ledge_at = out.find("## ledge grab").expect(&out);
+    assert!(
+        controller_at < ledge_at,
+        "clause order not preserved:\n{out}"
+    );
+    // Each topic's hit lands in its own section.
+    let controller_section = &out[controller_at..ledge_at];
+    let ledge_section = &out[ledge_at..];
+    assert!(controller_section.contains("PlayerCharacterV2"), "{out}");
+    assert!(ledge_section.contains("LedgeComponentV2"), "{out}");
+    // Per-clause coverage, not diluted whole-question coverage.
+    assert!(controller_section.contains("2/2 terms"), "{out}");
+
+    // Determinism: byte-identical across runs.
+    let (_, again) = sinter(repo, &["ask", question]);
+    assert_eq!(out, again, "multi-clause output not deterministic");
+
+    // Single-topic output has no clause scaffolding.
+    let (ok, single) = sinter(repo, &["ask", "where is the character controller?"]);
+    assert!(ok, "{single}");
+    assert!(!single.contains("## "), "{single}");
+    assert!(single.contains("Best matches (2 terms"), "{single}");
+
+    // --json multi-clause: flat array, each hit tagged with its topic.
+    let (ok, js) = sinter(repo, &["ask", question, "--json"]);
+    assert!(ok, "{js}");
+    let parsed: serde_json::Value = serde_json::from_str(&js).expect("valid json");
+    let hits = parsed.as_array().expect("array");
+    assert!(!hits.is_empty(), "{js}");
+    assert!(hits.iter().all(|h| h["topic"].is_string()), "{js}");
+    assert!(
+        hits.iter()
+            .any(|h| h["topic"] == "character controller" && h["name"] == "PlayerCharacterV2"),
+        "{js}"
+    );
+    assert!(hits.iter().any(|h| h["topic"] == "ledge grab"), "{js}");
+}
+
+/// The Codex field-report question: five topics in one sentence. Each
+/// clause gets its own heading, scaffolding words (documentation,
+/// describe, comparisons) never become topic labels, and topics the graph
+/// cannot answer say "no match" instead of surfacing filler hits.
+#[test]
+fn ask_codex_shaped_question_splits_sanely() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    controller_fixture(repo);
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+
+    let (ok, out) = sinter(
+        repo,
+        &[
+            "ask",
+            "What product decisions or documentation describe dashboard usability, \
+             operator experience, terminal layout, keyboard controls, or comparisons to k9s?",
+        ],
+    );
+    assert!(ok, "{out}");
+    assert!(out.contains("topics):"), "did not split: {out}");
+    // Soft scaffolding stripped from clause labels.
+    assert!(out.contains("## dashboard usability"), "{out}");
+    assert!(out.contains("## keyboard controls"), "{out}");
+    for filler in ["## documentation", "describe", "comparisons"] {
+        assert!(!out.contains(filler), "{filler} leaked into topics: {out}");
+    }
+    // The controller fixture has none of these topics: honesty required.
+    assert!(out.contains("no match"), "{out}");
+}
