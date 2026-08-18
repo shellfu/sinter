@@ -526,6 +526,18 @@ pub fn print_report(report: &BuildReport) {
             both,
         );
     }
+    // Recall against the compiler: scip binds only corpus-internal defs,
+    // so every scip-only bind is a ref internal evidence could have found
+    // and didn't. Precision (above) without this number flatters.
+    let compiler_bound = both + report.stats.scip;
+    if compiler_bound > 0 && report.stats.scip > 0 {
+        println!(
+            "  internal recall vs compiler: {:.1}% ({} of {} compiler-bound refs found without scip)",
+            both as f64 / compiler_bound as f64 * 100.0,
+            both,
+            compiler_bound,
+        );
+    }
     println!(
         "  totals: {} nodes, {} edges, {} unresolved refs",
         report.total_nodes, report.total_edges, report.total_unresolved,

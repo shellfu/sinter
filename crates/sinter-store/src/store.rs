@@ -447,10 +447,10 @@ impl Store {
 /// Does a written reference name (`acme_common::connect_grpc_channel`,
 /// `pkg.Func`) end at exactly this name?
 fn name_tail_matches(written: &str, name: &str) -> bool {
-    written == name
-        || (written.ends_with(name)
-            && written[..written.len() - name.len()]
-                .chars()
-                .next_back()
-                .is_some_and(|c| !c.is_alphanumeric() && c != '_'))
+    // Exact final-segment equality across every language's separators —
+    // boundary substring matching over-counted short common names
+    // (`run`, `install`) into the honest-empty note.
+    let tail = written.rsplit("::").next().unwrap_or(written);
+    let tail = tail.rsplit(['/', '.']).next().unwrap_or(tail);
+    tail == name
 }
