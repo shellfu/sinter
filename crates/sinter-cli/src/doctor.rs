@@ -117,7 +117,7 @@ pub fn run(repo: &Path) -> Result<bool> {
     } else {
         r.warn(
             "enforcement hooks missing or stale (agents may grep instead of querying)",
-            "run `sinter install --for enforce` (or --global)",
+            "run `sinter install enforce` (or --global)",
         );
     }
     let db = pipeline::db_path(&repo);
@@ -209,7 +209,7 @@ pub fn run(repo: &Path) -> Result<bool> {
                 let _ = content;
                 r.warn(
                     &format!("{label} is stale (differs from this binary's embedded card)"),
-                    "rerun `sinter install --for cursor,agents`",
+                    "rerun `sinter install cursor agents`",
                 );
             }
             _ => {}

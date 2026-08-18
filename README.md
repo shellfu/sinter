@@ -111,7 +111,7 @@ is auditable, in the same spirit as the edges.
 | `sinter overlap <range>...` | Map open PRs onto the graph; rank pairwise merge risk (direct/radius/file) |
 | `sinter workspace <manifest>` | Build all members of a cross-repo workspace + refresh boundary links |
 | `sinter init --workspace` | Write a starter workspace manifest (never overwrites) |
-| `sinter install --for <targets>` | Write agent cards (claude, cursor, agents/AGENTS.md, enforce, all); `--mcp` registers the server for Claude Code, Cursor, and Codex |
+| `sinter install [targets]` | Write agent cards (claude, cursor, agents/AGENTS.md, enforce, all); `--mcp` registers the server for Claude Code, Cursor, and Codex |
 | `sinter scip [repo]` | Run every matching compiler indexer, merge into `.sinter/index.scip`, rebuild |
 | `sinter doctor [repo]` | Diagnose installation + graph (including an MCP handshake and lock-held reporting); every finding names its fix |
 | `sinter completion <shell>` | Shell completions |

@@ -102,9 +102,18 @@ enum Command {
     Install {
         /// Targets: claude (global skill), cursor (.cursor/rules),
         /// agents (AGENTS.md managed block: Codex/Gemini/etc),
-        /// enforce (Claude Code hooks: sinter-first routing), all
-        #[arg(long = "for", value_delimiter = ',', default_value = "claude")]
+        /// enforce (Claude Code hooks: sinter-first routing), all —
+        /// e.g. `sinter install enforce`
+        #[arg(value_delimiter = ',', default_value = "claude")]
         targets: Vec<String>,
+        /// Deprecated alias for the positional targets
+        #[arg(
+            long = "for",
+            value_delimiter = ',',
+            hide = true,
+            conflicts_with = "targets"
+        )]
+        for_targets: Option<Vec<String>>,
         /// Claude skill directory override (default: ~/.claude/skills/sinter)
         #[arg(long)]
         dir: Option<PathBuf>,
@@ -303,11 +312,12 @@ fn main() -> ExitCode {
         }
         Command::Install {
             targets,
+            for_targets,
             dir,
             mcp,
             repo,
             global,
-        } => install::run_targets(&targets, dir, mcp, &repo, global),
+        } => install::run_targets(&for_targets.unwrap_or(targets), dir, mcp, &repo, global),
         Command::Hooks {
             action: HooksAction::Install { repo },
         } => hooks::install(&repo),
