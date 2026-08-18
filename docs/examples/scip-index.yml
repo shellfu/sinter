@@ -1,0 +1,53 @@
+# EXAMPLE — not an active workflow. Copy to .github/workflows/scip-index.yml
+# and adapt the indexer install step to your language(s).
+#
+# Builds the SCIP compiler index once per merge and publishes it. Teammates
+# download the artifact to .sinter/index.scip; the next `sinter build` (or any
+# query) ingests it automatically via the index fingerprint. See docs/team.md.
+name: scip-index
+on:
+  push:
+    branches: [main]
+
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install sinter
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/shellfu/sinter/main/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Install the SCIP indexer for YOUR language. One line each; `sinter
+      # scip` prints the right command for anything it finds uninstalled.
+      #   rust:       rustup component add rust-analyzer
+      #   go:         go install github.com/sourcegraph/scip-go/cmd/scip-go@latest
+      #   ts/js:      npm install -g @sourcegraph/scip-typescript
+      #   python:     npm install -g @sourcegraph/scip-python
+      #   java:       coursier install scip-java
+      #   csharp:     dotnet tool install --global scip-dotnet
+      - name: Install indexer
+        run: rustup component add rust-analyzer
+
+      # Key by lockfile + toolchain: the expensive part of indexing is
+      # typechecking dependencies. For an exact (but per-merge) key, use
+      # hashFiles('**/*.rs') instead — tradeoff discussed in docs/team.md.
+      - name: Restore index
+        uses: actions/cache@v4
+        with:
+          path: .sinter/index.scip
+          key: scip-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      # No-op (one directory walk) when the restored index is still fresh;
+      # full index + rebuild otherwise. This is what keeps the job cheap.
+      - name: Build index if stale
+        run: sinter scip --if-stale
+
+      # The artifact teammates fetch (see docs/team.md for the gh one-liner).
+      - name: Publish index
+        uses: actions/upload-artifact@v4
+        with:
+          name: scip-index
+          path: .sinter/index.scip
