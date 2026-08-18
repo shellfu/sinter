@@ -11,6 +11,18 @@ pub const SKILL: &str = include_str!("../skill/SKILL.md");
 /// Claude Code enforcement hook script, embedded so it can never drift
 /// from the modes the settings entries invoke.
 pub const ENFORCE_HOOK: &str = include_str!("../skill/sinter-first.sh");
+/// PowerShell variant of the enforcement hook, installed on Windows where
+/// implicit bash execution is not available.
+pub const ENFORCE_HOOK_PS1: &str = include_str!("../skill/sinter-first.ps1");
+
+/// Enforcement hook the LOCAL platform installs: (file name, embedded
+/// content). Windows gets the PowerShell port; everything else the
+/// original bash script.
+pub const PLATFORM_HOOK: (&str, &str) = if cfg!(windows) {
+    ("sinter-first.ps1", ENFORCE_HOOK_PS1)
+} else {
+    ("sinter-first.sh", ENFORCE_HOOK)
+};
 
 /// Card body without the Claude-specific YAML frontmatter — the single
 /// source every assistant adapter wraps. One content, many writers:
@@ -221,8 +233,9 @@ pub fn enforce(repo: Option<&Path>) -> Result<()> {
     };
     let hooks_dir = claude.join("hooks");
     std::fs::create_dir_all(&hooks_dir)?;
-    let script = hooks_dir.join("sinter-first.sh");
-    std::fs::write(&script, ENFORCE_HOOK)?;
+    let (hook_file, hook_body) = PLATFORM_HOOK;
+    let script = hooks_dir.join(hook_file);
+    std::fs::write(&script, hook_body)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -237,11 +250,20 @@ pub fn enforce(repo: Option<&Path>) -> Result<()> {
         Err(_) => json!({}),
     };
     let script_str = match repo {
-        Some(_) => ".claude/hooks/sinter-first.sh".to_string(),
+        Some(_) => format!(".claude/hooks/{hook_file}"),
         None => script.display().to_string(),
     };
-    let entry =
-        |mode: &str| json!({"type": "command", "command": format!("bash {script_str} {mode}")});
+    // Windows entries carry "shell": "powershell" so Claude Code runs the
+    // script with PowerShell instead of implicit bash; the `&` call
+    // operator tolerates spaces in the (quoted) global-scope path.
+    let entry = |mode: &str| {
+        if cfg!(windows) {
+            json!({"type": "command", "shell": "powershell",
+                   "command": format!("& '{script_str}' {mode}")})
+        } else {
+            json!({"type": "command", "command": format!("bash {script_str} {mode}")})
+        }
+    };
     let hooks = root
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("{} top level is not an object", settings_path.display()))?
@@ -279,13 +301,14 @@ pub fn enforce(repo: Option<&Path>) -> Result<()> {
             .and_then(|g| g.get_mut("hooks"))
             .and_then(Value::as_array_mut)
             .ok_or_else(|| anyhow::anyhow!("settings hooks.{event} group has no hooks array"))?;
-        let marker = format!("sinter-first.sh {mode}");
-        // Idempotent: refresh a stale entry in place, append when absent.
-        match list.iter_mut().find(|h| {
-            h.get("command")
-                .and_then(Value::as_str)
-                .is_some_and(|c| c.contains(&marker))
-        }) {
+        // Idempotent: refresh a stale entry in place (either platform's
+        // variant — a repo settings.json may have been written on the
+        // other OS), append when absent.
+        let ours = |c: &str| c.contains("sinter-first.") && c.ends_with(&format!(" {mode}"));
+        match list
+            .iter_mut()
+            .find(|h| h.get("command").and_then(Value::as_str).is_some_and(&ours))
+        {
             Some(existing) => *existing = entry(mode),
             None => list.push(entry(mode)),
         }

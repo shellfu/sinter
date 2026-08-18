@@ -40,6 +40,13 @@ checksum, installs to `~/.local/bin`):
 curl -fsSL https://raw.githubusercontent.com/shellfu/sinter/main/install.sh | sh
 ```
 
+Windows, in PowerShell (new and less battle-tested; verifies the release
+checksum, installs to `%LOCALAPPDATA%\sinter\bin`):
+
+```
+irm https://raw.githubusercontent.com/shellfu/sinter/main/install.ps1 | iex
+```
+
 Or build from source (requires a Rust toolchain):
 
 ```
@@ -139,6 +146,14 @@ scip-python, scip-clang for C/C++, scip-java, scip-dotnet), merges the
 results into `.sinter/index.scip`, and rebuilds; a missing indexer
 prints its install command and is skipped. Bash, proto, and SQL have no
 SCIP indexers.
+
+## Teams
+
+Graphs are per-machine and rebuild in seconds; the SCIP index is the
+expensive shared artifact. Build it once in CI (`sinter scip --if-stale`),
+distribute the file, and each teammate's next build ingests it
+automatically. Recipe, cache-key guidance, and a copy-paste workflow:
+[`docs/team.md`](docs/team.md).
 
 ## Accuracy and performance are measured, not asserted
 

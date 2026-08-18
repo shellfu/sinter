@@ -95,17 +95,18 @@ pub fn run(repo: &Path) -> Result<bool> {
     // Enforcement hooks: script current with this binary and the three
     // settings entries present (per-prompt router, Bash + Grep nudges),
     // satisfied by either the repo's .claude or the global ~/.claude.
+    // Only the variant THIS platform installs is demanded (sh on unix,
+    // ps1 on Windows) — the other's absence is not a finding.
+    let (hook_file, hook_body) = install::PLATFORM_HOOK;
     let enforced_at = |claude: &Path| {
-        std::fs::read_to_string(claude.join("hooks/sinter-first.sh"))
-            .is_ok_and(|s| s == install::ENFORCE_HOOK)
+        std::fs::read_to_string(claude.join("hooks").join(hook_file)).is_ok_and(|s| s == hook_body)
             && std::fs::read_to_string(claude.join("settings.json")).is_ok_and(|s| {
-                [
-                    "sinter-first.sh prompt",
-                    "sinter-first.sh grep\"",
-                    "sinter-first.sh greptool",
-                ]
-                .iter()
-                .all(|m| s.contains(m))
+                // Commands end with their mode in both variants; the
+                // closing JSON quote anchors "grep" against "greptool".
+                s.contains(hook_file)
+                    && [" prompt\"", " grep\"", " greptool\""]
+                        .iter()
+                        .all(|m| s.contains(m))
             })
     };
     let global_claude =
