@@ -119,7 +119,7 @@ is auditable, in the same spirit as the edges.
 | `sinter workspace <manifest>` | Build all members of a cross-repo workspace + refresh boundary links |
 | `sinter init --workspace` | Write a starter workspace manifest (never overwrites) |
 | `sinter install [targets]` | Write agent cards (claude, cursor, agents/AGENTS.md, enforce, all); `--mcp` registers the server for Claude Code, Cursor, and Codex |
-| `sinter scip [repo]` | Run every matching compiler indexer, merge into `.sinter/index.scip`, rebuild |
+| `sinter scip [repo]` | Run every matching compiler indexer, merge into `.sinter/index.scip`, rebuild; no-op when fresh (`--force` reindexes); `scip check` is the CI freshness guard |
 | `sinter doctor [repo]` | Diagnose installation + graph (including an MCP handshake and lock-held reporting); every finding names its fix |
 | `sinter completion <shell>` | Shell completions |
 | `sinter version` | Version, graph schema, language packs |
@@ -150,7 +150,7 @@ SCIP indexers.
 ## Teams
 
 Graphs are per-machine and rebuild in seconds; the SCIP index is the
-expensive shared artifact. Build it once in CI (`sinter scip --if-stale`),
+expensive shared artifact. Build it once in CI (`sinter scip`),
 distribute the file, and each teammate's next build ingests it
 automatically. Recipe, cache-key guidance, and a copy-paste workflow:
 [`docs/team.md`](docs/team.md).

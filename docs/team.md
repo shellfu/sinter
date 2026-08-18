@@ -18,15 +18,16 @@ triggers — notices a changed fingerprint and re-resolves the corpus
 against it. So distribution is literally "put the file at
 `.sinter/index.scip`"; no import command exists because none is needed.
 
-## The two flags
+## The commands
 
-- `sinter scip --check` — exit 0 and print `index fresh` when
+- `sinter scip` — index and rebuild, but only when the index is missing
+  or stale; a fresh index is a one-line no-op (`--force` reindexes
+  anyway). Idempotent by design: the CI job just runs it, and a cache
+  hit costs one directory walk.
+- `sinter scip check` — exit 0 and print `index fresh` when
   `.sinter/index.scip` exists and no source file is newer than it (the
   doctor's staleness notion); exit 1 with the count of newer files when
   stale or missing. Runs no indexer. This is the CI guard.
-- `sinter scip --if-stale` — run the full index + rebuild only when
-  `--check` would fail; one-line no-op otherwise. Makes the CI job
-  idempotent: a cache hit costs one directory walk.
 
 ## The recipe
 
@@ -35,7 +36,7 @@ it. The worked example is
 [`docs/examples/scip-index.yml`](examples/scip-index.yml) — copy it into
 `.github/workflows/`, swap in your language's indexer install step, done.
 The job is: checkout, install sinter, install the indexer, restore
-`.sinter/index.scip` from cache, `sinter scip --if-stale`, save cache and
+`.sinter/index.scip` from cache, `sinter scip`, save cache and
 upload the index as an artifact.
 
 Adopting a downloaded index locally is one copy:
@@ -64,7 +65,7 @@ Pick the key by what actually moves your index:
 - **Lockfile hash + toolchain version**
   (`hashFiles('Cargo.lock') + rustc -V`) — right for dep-heavy indexes.
   The expensive part of indexing is typechecking dependencies; your own
-  source changes are cheap to re-index on a miss, and `--if-stale` makes
+  source changes are cheap to re-index on a miss, and idempotence makes
   a stale-but-restored index a fast rebuild rather than a cold one.
 - **Content hash of the source tree** (`hashFiles('**/*.rs')`) — exact:
   every merge that touches source misses and rebuilds. Costs an index
@@ -74,7 +75,7 @@ The honest tradeoff: the lockfile key serves slightly stale indexes
 between dep bumps (newer files fall back to import/scope evidence —
 sinter degrades, it doesn't break); the content key pays full price for
 freshness. Most teams want the lockfile key plus the per-merge
-`--if-stale` run in the example, which rebuilds on real staleness anyway.
+`sinter scip` run in the example, which rebuilds on real staleness anyway.
 
 ## What is NOT shared
 

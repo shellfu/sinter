@@ -213,22 +213,31 @@ enum Command {
         #[arg(long, conflicts_with = "repo")]
         workspace: Option<PathBuf>,
     },
-    /// Run the repo's SCIP indexer and rebuild with compiler-grade evidence
+    /// Run the repo's SCIP indexer and rebuild with compiler-grade
+    /// evidence. Idempotent: a fresh index is a one-line no-op.
     Scip {
+        #[command(subcommand)]
+        action: Option<ScipAction>,
         #[arg(default_value = ".")]
         repo: PathBuf,
-        /// Exit 0 iff .sinter/index.scip exists and no source file is
-        /// newer (CI guard; runs no indexer)
-        #[arg(long, conflicts_with = "if_stale")]
-        check: bool,
-        /// Index only when --check would fail; no-op when fresh
+        /// Reindex even when the index is fresh
         #[arg(long)]
-        if_stale: bool,
+        force: bool,
     },
     /// Print version, graph schema, and language packs (for bug reports)
     Version,
     /// Shell completions: `source <(sinter completion bash)`
     Completion { shell: clap_complete::Shell },
+}
+
+#[derive(Subcommand)]
+enum ScipAction {
+    /// Exit 0 iff the index exists and no source file is newer
+    /// (CI guard; runs no indexer)
+    Check {
+        #[arg(default_value = ".")]
+        repo: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -383,18 +392,14 @@ fn main() -> ExitCode {
             None => serve::run(&repo),
         },
         Command::Scip {
+            action,
             repo,
-            check,
-            if_stale,
-        } => {
-            if check {
-                scip::check(&repo)
-            } else if if_stale {
-                scip::run_if_stale(&repo)
-            } else {
-                scip::run(&repo)
-            }
-        }
+            force,
+        } => match action {
+            Some(ScipAction::Check { repo }) => scip::check(&repo),
+            None if force => scip::run(&repo),
+            None => scip::run_if_stale(&repo),
+        },
         Command::Completion { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "sinter", &mut std::io::stdout());
             Ok(())
