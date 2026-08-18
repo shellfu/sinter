@@ -37,6 +37,14 @@ integration, ending with a doctor report:
 
 (`sinter build <repo>` alone refreshes an existing graph.)
 
+`sinter install enforce --strict` opts into strict enforcement: the first
+raw recursive search (grep/rg or the Grep tool) of a Claude Code session
+is blocked with a redirect to `sinter ask/show/affected/path/impact`;
+running the same search again passes with an advisory nudge, as does
+every later one — sinter-first, grep-second, never grep-never. Strict mode only
+ever denies (it never auto-approves anything); default installs remain
+advisory context injection only.
+
 ## Routing
 
 | Question shape | Command |

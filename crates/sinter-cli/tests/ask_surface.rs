@@ -1035,3 +1035,161 @@ fn ask_codex_shaped_question_splits_sanely() {
     // The controller fixture has none of these topics: honesty required.
     assert!(out.contains("no match"), "{out}");
 }
+
+/// Strict-mode hook behavior, pipe-tested against the real bash script:
+/// first matching search of a session is denied with a sinter redirect,
+/// the retry (and every later search) gets the advisory nudge, a new
+/// session is denied again, and a missing session_id never denies.
+#[cfg(unix)]
+#[test]
+fn strict_hook_denies_first_search_then_nudges() {
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/skill/sinter-first.sh");
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(repo.path().join(".sinter")).unwrap();
+    std::fs::write(repo.path().join(".sinter/graph.redb"), "").unwrap();
+    let tmp = tempfile::tempdir().unwrap(); // marker files live here
+
+    let run = |mode: &str, stdin: &str| -> String {
+        use std::io::Write;
+        let mut child = Command::new("bash")
+            .args([script, mode])
+            .current_dir(repo.path())
+            .env("TMPDIR", tmp.path())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn hook");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(stdin.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().expect("run hook");
+        assert!(out.status.success());
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let input = |sid: Option<&str>| match sid {
+        Some(sid) => format!(r#"{{"session_id":"{sid}","tool_input":{{"command":"rg foo"}}}}"#),
+        None => r#"{"tool_input":{"command":"rg foo"}}"#.to_string(),
+    };
+
+    // First search of session X: a valid deny, and never an allow.
+    let first = run("grep-strict", &input(Some("sess-x")));
+    let json: serde_json::Value = serde_json::from_str(&first).expect("deny must be valid JSON");
+    assert_eq!(
+        json["hookSpecificOutput"]["permissionDecision"], "deny",
+        "{first}"
+    );
+    // "allowed" may appear in prose; the JSON value "allow" never may.
+    assert!(!first.contains("\"allow\""), "{first}");
+    assert!(
+        first.contains("sinter ask")
+            && first.contains("affected")
+            && first.contains("path")
+            && first.contains("impact"),
+        "deny reason must name the sinter commands: {first}"
+    );
+
+    // Retry in the same session: nudge, no deny.
+    let second = run("grep-strict", &input(Some("sess-x")));
+    assert!(second.contains("additionalContext"), "{second}");
+    assert!(!second.contains("deny"), "{second}");
+
+    // A different session gets its own first-search deny.
+    let other = run("grep-strict", &input(Some("sess-y")));
+    assert!(other.contains("\"permissionDecision\":\"deny\""), "{other}");
+
+    // No session_id to scope a marker: never deny, nudge only.
+    let anon = run("grep-strict", &input(None));
+    assert!(anon.contains("additionalContext"), "{anon}");
+    assert!(!anon.contains("deny"), "{anon}");
+
+    // Git archaeology stays advisory even in strict mode.
+    let git = run(
+        "grep-strict",
+        r#"{"session_id":"sess-git","tool_input":{"command":"git log --oneline"}}"#,
+    );
+    assert!(git.contains("additionalContext"), "{git}");
+    assert!(!git.contains("deny"), "{git}");
+
+    // greptool-strict follows the same lifecycle.
+    let gt_first = run("greptool-strict", r#"{"session_id":"sess-gt"}"#);
+    assert!(
+        gt_first.contains("\"permissionDecision\":\"deny\""),
+        "{gt_first}"
+    );
+    let gt_second = run("greptool-strict", r#"{"session_id":"sess-gt"}"#);
+    assert!(gt_second.contains("additionalContext"), "{gt_second}");
+    assert!(!gt_second.contains("deny"), "{gt_second}");
+}
+
+/// SECURITY INVARIANT regression guard: neither hook script may ever
+/// contain the JSON for permissionDecision "allow" — that would
+/// auto-approve an entire Bash command, destructive parts included.
+#[test]
+fn hook_scripts_never_emit_allow() {
+    for script in ["/skill/sinter-first.sh", "/skill/sinter-first.ps1"] {
+        let body =
+            std::fs::read_to_string(format!("{}{script}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        assert!(
+            !body.contains("permissionDecision\":\"allow"),
+            "{script} must never emit an allow decision"
+        );
+    }
+}
+
+/// `install enforce --strict` writes the -strict grep entries; rerunning
+/// without --strict switches the same slots back (no duplicates either
+/// way), and doctor accepts both variants as current.
+#[test]
+fn install_enforce_strict_switches_slots() {
+    let home = tempfile::tempdir().unwrap();
+    // Doctor exits nonzero here (no graph in the temp home) — only the
+    // enforcement finding matters, so success is asserted per call site.
+    let run = |args: &[&str], must_succeed: bool| {
+        let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
+            .args(args)
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .current_dir(home.path())
+            .output()
+            .expect("run sinter");
+        if must_succeed {
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let settings = || std::fs::read_to_string(home.path().join(".claude/settings.json")).unwrap();
+
+    run(&["install", "enforce", "--global", "--strict"], true);
+    let text = settings();
+    for marker in [" grep-strict\"", " greptool-strict\""] {
+        assert_eq!(text.matches(marker).count(), 1, "{marker}: {text}");
+    }
+    assert!(!text.contains(" grep\""), "non-strict entry left: {text}");
+
+    // Doctor accepts the strict variant as installed and current.
+    let doctor = run(&["doctor"], false);
+    assert!(
+        doctor.contains("enforcement hooks installed and current"),
+        "{doctor}"
+    );
+
+    // Rerunning without --strict replaces the same slots back.
+    run(&["install", "enforce", "--global"], true);
+    let text = settings();
+    assert!(!text.contains("-strict"), "strict entry left: {text}");
+    for marker in [" grep\"", " greptool\""] {
+        assert_eq!(text.matches(marker).count(), 1, "{marker}: {text}");
+    }
+    let doctor = run(&["doctor"], false);
+    assert!(
+        doctor.contains("enforcement hooks installed and current"),
+        "{doctor}"
+    );
+}
