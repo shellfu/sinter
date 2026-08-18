@@ -123,8 +123,9 @@ evidence tiers.
 
 ## Languages
 
-Rust, Go, Python, TypeScript, Bash, C++ (including Unreal Engine macro
-conventions). A language is pure data — a tree-sitter grammar, one `.scm`
+Rust, Go, Python, TypeScript, JavaScript (ESM, CJS, JSX), Java, C#, C,
+C++ (including Unreal Engine macro conventions), SQL (DDL/DML), Bash,
+and Protobuf. A language is pure data — a tree-sitter grammar, one `.scm`
 capture query, and a spec row — consumed by a single engine that never
 branches on language. Adding a language requires no engine code; if it
 ever does, the capture contract is wrong, not the language
@@ -133,14 +134,15 @@ ever does, the capture contract is wrong, not the language
 If a compiler-produced SCIP index (`index.scip`) is present at the repo
 root or at `.sinter/index.scip`, sinter ingests it as the highest
 evidence tier. `sinter scip` runs the matching indexer for every language
-present (rust-analyzer, scip-go, scip-typescript, scip-python,
-scip-clang), merges the results into `.sinter/index.scip`, and rebuilds;
-a missing indexer prints its install command and is skipped. Bash and
-proto have no SCIP indexers.
+present (rust-analyzer, scip-go, scip-typescript for TS and JS,
+scip-python, scip-clang for C/C++, scip-java, scip-dotnet), merges the
+results into `.sinter/index.scip`, and rebuilds; a missing indexer
+prints its install command and is skipped. Bash, proto, and SQL have no
+SCIP indexers.
 
 ## Accuracy and performance are measured, not asserted
 
-- **Golden corpus**: 50 hand-verified fixtures across all six languages,
+- **Golden corpus**: 69 hand-verified fixtures across all twelve languages,
   mined from real-world extraction idioms. Extraction and resolution both
   gate CI at precision/recall 1.0; any change that moves the metric fails
   with the exact missing/extra tuples printed. Expectations derive from

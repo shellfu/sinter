@@ -38,6 +38,23 @@ const INDEXERS: &[(&str, &[&str], &str)] = &[
         &["scip-clang", "--compdb-path=compile_commands.json"],
         "download a release from https://github.com/sourcegraph/scip-clang",
     ),
+    (
+        "javascript",
+        &["scip-typescript", "index", "--infer-tsconfig"],
+        "npm install -g @sourcegraph/scip-typescript",
+    ),
+    (
+        "java",
+        &["scip-java", "index"],
+        "https://sourcegraph.github.io/scip-java/ (coursier install scip-java)",
+    ),
+    (
+        "csharp",
+        &["scip-dotnet", "index"],
+        "dotnet tool install --global scip-dotnet",
+    ),
+    // c: scip-clang covers C via compile_commands.json under the cpp row.
+    // sql/bash/proto: no SCIP indexers exist.
 ];
 
 pub fn run(repo: &Path) -> Result<()> {
