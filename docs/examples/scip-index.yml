@@ -17,7 +17,7 @@ jobs:
 
       - name: Install sinter
         run: |
-          curl -fsSL https://raw.githubusercontent.com/shellfu/sinter/main/install.sh | sh
+          curl -fsSL https://raw.githubusercontent.com/shellfu/sinter/main/scripts/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # Install the SCIP indexer for YOUR language. One line each; `sinter

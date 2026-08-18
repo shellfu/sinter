@@ -1,6 +1,6 @@
 //! `sinter ask "<question>"`: a vague question gives a ranked, grouped,
 //! content-bearing starting point. Keyword scoring only — no NLP, no LLM;
-//! the doc comment is the prose. Design: docs/design-human-query.md.
+//! the doc comment is the prose.
 
 use std::collections::HashSet;
 use std::path::Path;

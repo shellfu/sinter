@@ -1,4 +1,4 @@
-//! Acceptance for `sinter ask` / `sinter show` (docs/design-human-query.md §6).
+//! Acceptance for `sinter ask` / `sinter show`.
 //! The controller fixture models the reference failure case: component
 //! classes, constructor-like functions named after the base concept, and a
 //! documented controller class that must rank #1.
