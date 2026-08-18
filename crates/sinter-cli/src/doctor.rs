@@ -115,6 +115,26 @@ pub fn run(repo: &Path, fix: bool) -> Result<bool> {
     let names: Vec<&str> = LANGUAGES.iter().map(|l| l.name).collect();
     r.ok(&format!("languages: {}", names.join(", ")));
 
+    // Release check: one HEAD request, TTY-only, 24h-cached, opt-out via
+    // SINTER_NO_UPDATE_CHECK=1. Not auto-fixable — replacing the running
+    // binary is the installer's job, not doctor's.
+    {
+        use std::io::IsTerminal;
+        if std::io::stderr().is_terminal() {
+            crate::update::refresh_cache();
+        }
+        match crate::update::cached_newer() {
+            Some(latest) => r.warn(
+                &format!(
+                    "{latest} is available (running {})",
+                    env!("CARGO_PKG_VERSION")
+                ),
+                "rerun the install one-liner (or your package manager)",
+            ),
+            None => r.ok("this is the latest known release"),
+        }
+    }
+
     // Skill card: installed and current with this binary.
     match install::default_dir() {
         Some(dir) => match std::fs::read_to_string(dir.join("SKILL.md")) {

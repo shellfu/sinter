@@ -16,6 +16,7 @@ mod scip;
 mod serve;
 mod show;
 mod uninit;
+mod update;
 mod watch;
 mod workspace;
 
@@ -274,6 +275,13 @@ fn main() -> ExitCode {
     {
         for warning in install::stale_artifacts(&pipeline::discover_root(&cwd)) {
             eprintln!("sinter: {warning}");
+        }
+        // Cache read only — the network check lives in `doctor`.
+        if let Some(latest) = update::cached_newer() {
+            eprintln!(
+                "sinter: {latest} is available (running {}) — rerun the install one-liner",
+                env!("CARGO_PKG_VERSION")
+            );
         }
     }
     let result = match cli.command {
