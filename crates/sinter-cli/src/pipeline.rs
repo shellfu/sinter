@@ -339,10 +339,33 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
                 } else if let Some(dst) = internal_dst.get(&binding.reference) {
                     // Both tiers bound this ref: score internal evidence
                     // against the compiler's answer.
-                    if *dst == binding.edge.dst {
+                    // `crate::module` refs: internal binds the `mod x;`
+                    // declaration node, SCIP binds the file node — the
+                    // same module under two identities, not a conflict.
+                    let internal_name = dst
+                        .as_str()
+                        .split_once('#')
+                        .and_then(|(_, rest)| rest.split('@').next());
+                    let scip_file_stem = (!binding.edge.dst.as_str().contains('#'))
+                        .then(|| binding.edge.dst.as_str())
+                        .and_then(|p| p.rsplit('/').next())
+                        .and_then(|f| f.split('.').next());
+                    if *dst == binding.edge.dst
+                        || (internal_name.is_some() && internal_name == scip_file_stem)
+                    {
                         stats.scip_agree += 1;
                     } else {
                         stats.scip_disagree += 1;
+                        // Each disagreement is a defect with an unknown
+                        // owner (resolver or cross-check); dump enough to
+                        // classify it.
+                        if std::env::var_os("SINTER_SCIP_DIFF").is_some() {
+                            let r = &refs[binding.reference];
+                            eprintln!(
+                                "SCIP-DIFF {}:{}..{} `{}` internal={} scip={}",
+                                r.file, r.span.start, r.span.end, r.name, dst, binding.edge.dst,
+                            );
+                        }
                     }
                 }
             }

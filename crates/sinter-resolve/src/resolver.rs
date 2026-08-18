@@ -512,6 +512,26 @@ impl<'a> Index<'a> {
     /// Resolve absolute segments to a definition or module file node,
     /// following re-export chains up to a small depth.
     fn resolve_path(&self, segments: &[String], depth: usize) -> Option<&'a Node> {
+        self.resolve_path_defs(segments, depth).or_else(|| {
+            // Module/package: bind to its file node.
+            // ponytail: single-file packages only; multi-file packages stay
+            // unresolved here — bind-to-all-files when a consumer needs it.
+            let files = self
+                .by_module_tail
+                .get(segments.last()?.as_str())
+                .into_iter()
+                .flatten()
+                .filter_map(|(key, node)| Some((suffix_len(key, segments)?, *node)));
+            unique_best(files)
+        })
+    }
+
+    /// Like [`resolve_path`] but definitions only — a qualified call or
+    /// use must never bind to an unrelated module *file* through the
+    /// loose tail fallback (a Rust `hooks::install()` once bound to a
+    /// bash `install.sh` this way); the file fallback is import-context
+    /// evidence.
+    fn resolve_path_defs(&self, segments: &[String], depth: usize) -> Option<&'a Node> {
         if segments.is_empty() || depth == 0 {
             return None;
         }
@@ -553,16 +573,7 @@ impl<'a> Index<'a> {
                 }
             }
         }
-        // Module/package: bind to its file node.
-        // ponytail: single-file packages only; multi-file packages stay
-        // unresolved here — bind-to-all-files when a consumer needs it.
-        let files = self
-            .by_module_tail
-            .get(segments.last()?.as_str())
-            .into_iter()
-            .flatten()
-            .filter_map(|(key, node)| Some((suffix_len(key, segments)?, *node)));
-        unique_best(files)
+        None
     }
 }
 
@@ -735,7 +746,7 @@ fn resolve_one<'a>(
         {
             return (Some(node), Evidence::Scope, true);
         }
-        if let Some(node) = index.resolve_path(&segments, 4) {
+        if let Some(node) = index.resolve_path_defs(&segments, 4) {
             return (Some(node), Evidence::Import, true);
         }
         // Associated item through a path: the second-to-last segment is a
@@ -745,7 +756,7 @@ fn resolve_one<'a>(
         // shape, not language shape: active for every language.
         if let Some((leaf, type_path)) = segments.split_last()
             && type_path.len() >= 2
-            && let Some(ty) = index.resolve_path(type_path, 4)
+            && let Some(ty) = index.resolve_path_defs(type_path, 4)
             && let Some(node) = index.member_of(ty, leaf, 4)
         {
             return (Some(node), Evidence::Import, true);
