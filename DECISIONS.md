@@ -372,3 +372,27 @@ prefix or every build would tear them down. The recall metric excludes
 dep binds from its denominator — internal evidence can never find a
 symbol that has no in-corpus definition, and counting those would fake
 a regression. The build report gains a dependency-surface line instead.
+
+## D30 — Typed-local chaining deferred until wild-repo data exists
+
+Internal recall (74.6% on this repo) counts what sinter's own tiers bind
+of what the compiler binds; the missing quarter is mostly method calls
+through expressions with unknown types — return values, chains, field
+projections. The fix is return-type propagation (incremental type
+inference), and it is deliberately deferred, not planned:
+
+- The gap is already covered on the primary path. Where an index exists
+  the scip tier binds exactly these refs with certainty; the metric
+  measures the no-index fallback, not the product.
+- The costs are asymmetric. A recall miss is honest ("unresolved") and
+  the agent greps; a wrong inferred edge is a silent lie. Hand-rolled
+  inference across twelve languages meets generics, overloads, and
+  trait objects, and whatever survives lands at Inferred confidence —
+  which `--certain` excludes anyway.
+- The population it serves is real but narrow: languages with no SCIP
+  indexer (sql, bash, proto), C without compile_commands.json, and the
+  pre-consent window before `sinter scip` runs.
+
+Revisit only after wild-repo validation of the young language packs
+produces data on which chain shapes actually dominate the misses.
+Precision defense outranks recall extension while a fallback exists.
