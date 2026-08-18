@@ -107,9 +107,9 @@ pub fn run(repo: &Path, cursor: bool, scip: Option<bool>, global: bool) -> Resul
     // Enforcement is per-repo by default (committable, teammates inherit
     // it); --global additionally wires ~/.claude so every repo on this
     // machine gets the hooks.
-    install::run_targets(&targets, None, true, &repo, false)?;
+    install::run_targets(&targets, None, true, &repo, false, false)?;
     if global {
-        install::enforce(None)?;
+        install::enforce(None, false)?;
     }
 
     // Agent integration writes indexable files into the repo (AGENTS.md is

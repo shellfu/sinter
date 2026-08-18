@@ -170,10 +170,13 @@ pub fn run(repo: &Path, fix: bool) -> Result<bool> {
             && std::fs::read_to_string(claude.join("settings.json")).is_ok_and(|s| {
                 // Commands end with their mode in both variants; the
                 // closing JSON quote anchors "grep" against "greptool".
+                // Strict installs use the -strict grep modes; both
+                // variants are current.
                 s.contains(hook_file)
-                    && [" prompt\"", " grep\"", " greptool\"", " task\""]
-                        .iter()
-                        .all(|m| s.contains(m))
+                    && s.contains(" prompt\"")
+                    && s.contains(" task\"")
+                    && (s.contains(" grep\"") || s.contains(" grep-strict\""))
+                    && (s.contains(" greptool\"") || s.contains(" greptool-strict\""))
             })
     };
     let global_claude =
@@ -194,11 +197,18 @@ pub fn run(repo: &Path, fix: bool) -> Result<bool> {
                 "enforcement hooks stale (agents may grep instead of querying)",
                 "run `sinter install enforce` (or --global)",
                 || {
+                    // Preserve whichever strictness is installed per
+                    // scope — a fix refreshes, it never changes modes.
+                    let is_strict = |claude: &Path| {
+                        std::fs::read_to_string(claude.join("settings.json"))
+                            .is_ok_and(|s| s.contains(" grep-strict\""))
+                    };
                     if repo_scope {
-                        install::enforce(Some(&repo))?;
+                        install::enforce(Some(&repo), is_strict(&repo.join(".claude")))?;
                     }
                     if global_scope {
-                        install::enforce(None)?;
+                        let strict = global_claude.as_deref().is_some_and(is_strict);
+                        install::enforce(None, strict)?;
                     }
                     Ok(())
                 },

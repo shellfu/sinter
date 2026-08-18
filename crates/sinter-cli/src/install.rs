@@ -271,7 +271,13 @@ pub(crate) fn claude_home() -> Option<PathBuf> {
 /// `repo` Some = project scope: <repo>/.claude with a relative command,
 /// so the settings file is committable and works for every teammate and
 /// checkout path. None = global scope: ~/.claude, absolute command.
-pub fn enforce(repo: Option<&Path>) -> Result<()> {
+///
+/// `strict` opts the two grep entries into the script's `-strict` modes
+/// (first search of a session is denied with a sinter redirect; later
+/// ones get the nudge). Switching strictness is idempotent: the same
+/// settings slot is replaced either way. Strict uses only
+/// permissionDecision "deny" — the hooks never emit "allow".
+pub fn enforce(repo: Option<&Path>, strict: bool) -> Result<()> {
     let claude = match repo {
         Some(repo) => repo.canonicalize()?.join(".claude"),
         None => claude_home().ok_or_else(|| anyhow::anyhow!("cannot locate home directory"))?,
@@ -314,10 +320,16 @@ pub fn enforce(repo: Option<&Path>) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("{} top level is not an object", settings_path.display()))?
         .entry("hooks")
         .or_insert(json!({}));
-    // (event, matcher, mode): matcher None = event-level hook (no matcher key).
+    // (event, matcher, base mode): matcher None = event-level hook (no
+    // matcher key). Only the two grep modes have strict variants.
+    let (grep_mode, greptool_mode) = if strict {
+        ("grep-strict", "greptool-strict")
+    } else {
+        ("grep", "greptool")
+    };
     for (event, matcher, mode) in [
-        ("PreToolUse", Some("Bash"), "grep"),
-        ("PreToolUse", Some("Grep"), "greptool"),
+        ("PreToolUse", Some("Bash"), grep_mode),
+        ("PreToolUse", Some("Grep"), greptool_mode),
         // Subagent spawn (the tool is Task in stable Claude Code, Agent in
         // newer builds): the orchestrator writes the subagent's prompt at
         // this moment — the one point where grep-steering can be caught.
@@ -352,8 +364,14 @@ pub fn enforce(repo: Option<&Path>) -> Result<()> {
             .ok_or_else(|| anyhow::anyhow!("settings hooks.{event} group has no hooks array"))?;
         // Idempotent: refresh a stale entry in place (either platform's
         // variant — a repo settings.json may have been written on the
-        // other OS), append when absent.
-        let ours = |c: &str| c.contains("sinter-first.") && c.ends_with(&format!(" {mode}"));
+        // other OS — and either strictness: strict and non-strict share
+        // one slot, so switching modes replaces rather than duplicates),
+        // append when absent.
+        let base = mode.strip_suffix("-strict").unwrap_or(mode);
+        let ours = |c: &str| {
+            c.contains("sinter-first.")
+                && (c.ends_with(&format!(" {base}")) || c.ends_with(&format!(" {base}-strict")))
+        };
         match list
             .iter_mut()
             .find(|h| h.get("command").and_then(Value::as_str).is_some_and(&ours))
@@ -380,6 +398,7 @@ pub fn run_targets(
     mcp_flag: bool,
     repo: &Path,
     global: bool,
+    strict: bool,
 ) -> Result<()> {
     let expanded: Vec<&str> = if targets.iter().any(|t| t == "all") {
         vec!["claude", "cursor", "agents", "enforce"]
@@ -397,7 +416,7 @@ pub fn run_targets(
                 let path = agents(&repo.canonicalize()?)?;
                 println!("merged managed sinter block into {}", path.display());
             }
-            "enforce" => enforce((!global).then_some(repo))?,
+            "enforce" => enforce((!global).then_some(repo), strict)?,
             other => {
                 bail!("unknown install target `{other}` (claude, cursor, agents, enforce, all)")
             }
