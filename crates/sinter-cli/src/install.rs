@@ -210,6 +210,48 @@ required = true
     Ok(())
 }
 
+/// Installed-but-stale artifacts: each entry is one warning line naming
+/// the artifact and its fix. Only artifacts that exist and differ from
+/// this binary's embedded copies count — a user who never installed one
+/// is never nagged about it. Missing files and unreadable paths are not
+/// findings here; `sinter doctor` owns the full diagnosis.
+pub fn stale_artifacts(repo: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(dir) = default_dir()
+        && let Ok(card) = std::fs::read_to_string(dir.join("SKILL.md"))
+        && card != SKILL
+    {
+        out.push("skill card is stale — run `sinter install`".to_string());
+    }
+    let (hook_file, hook_body) = PLATFORM_HOOK;
+    for (claude, fix) in [
+        (Some(repo.join(".claude")), "run `sinter install enforce`"),
+        (claude_home(), "run `sinter install enforce -g`"),
+    ] {
+        if let Some(claude) = claude
+            && let Ok(script) = std::fs::read_to_string(claude.join("hooks").join(hook_file))
+            && script != hook_body
+        {
+            out.push(format!(
+                "enforcement hook {} is stale — {fix}",
+                claude.join("hooks").join(hook_file).display()
+            ));
+        }
+    }
+    if let Ok(agents) = std::fs::read_to_string(repo.join("AGENTS.md"))
+        && agents.contains(AGENTS_BEGIN)
+        && !block_current(&agents)
+    {
+        out.push("AGENTS.md sinter block is stale — run `sinter install agents`".to_string());
+    }
+    if let Ok(rule) = std::fs::read_to_string(repo.join(".cursor/rules/sinter.mdc"))
+        && !block_current(&rule)
+    {
+        out.push("Cursor rule is stale — run `sinter install cursor`".to_string());
+    }
+    out
+}
+
 /// Claude Code home (`~/.claude`), shared with the skill install.
 pub(crate) fn claude_home() -> Option<PathBuf> {
     std::env::var_os("HOME")

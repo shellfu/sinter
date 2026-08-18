@@ -256,6 +256,22 @@ fn main() -> ExitCode {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
     let cli = Cli::parse();
+    // Stale-artifact nudge on every human-facing command: one stderr line
+    // per installed artifact that differs from this binary's embedded
+    // copy. Skipped where stdout/stderr is machine-consumed or the
+    // command is itself the fix.
+    if !matches!(
+        cli.command,
+        Command::Completion { .. }
+            | Command::Serve { .. }
+            | Command::Install { .. }
+            | Command::Doctor { .. }
+    ) && let Ok(cwd) = std::env::current_dir()
+    {
+        for warning in install::stale_artifacts(&pipeline::discover_root(&cwd)) {
+            eprintln!("sinter: {warning}");
+        }
+    }
     let result = match cli.command {
         Command::Workspace { manifest } => workspace::run(&manifest),
         Command::Uninit { repo, global } => uninit::run(&repo, global).map(|_| ()),

@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 fn sinter(repo: &std::path::Path, args: &[&str]) -> String {
     let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
         .args(args)
+        .env("HOME", repo)
+        .env("USERPROFILE", repo)
         .arg(repo)
         .output()
         .expect("run sinter");
