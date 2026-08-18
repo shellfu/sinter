@@ -23,6 +23,10 @@ pub struct Extractor {
     spec: &'static LanguageSpec,
     parser: Parser,
     query: Query,
+    /// Secondary inline grammar (spec.inline): parses designated
+    /// container-node ranges of the primary tree; captures merge into
+    /// the same facts through the same contract.
+    inline: Option<(Parser, Query)>,
 }
 
 /// A definition or scope-only entry, pre-qualification.
@@ -88,10 +92,30 @@ impl Extractor {
             language: spec.name,
             message: e.to_string(),
         })?;
+        let inline = spec
+            .inline
+            .map(|i| {
+                let language = (i.grammar)();
+                let mut parser = Parser::new();
+                parser
+                    .set_language(&language)
+                    .map_err(|e| (spec.name, e.to_string()))?;
+                let query = Query::new(&language, i.query_source)
+                    .map_err(|e| (spec.name, e.to_string()))?;
+                Ok((parser, query))
+            })
+            .transpose()
+            .map_err(
+                |(language, message): (&'static str, String)| ExtractError::Query {
+                    language,
+                    message,
+                },
+            )?;
         Ok(Self {
             spec,
             parser,
             query,
+            inline,
         })
     }
 
@@ -103,7 +127,35 @@ impl Extractor {
             .ok_or_else(|| ExtractError::Parse(file.to_string()))?;
         let root = tree.root_node();
 
-        let (mut entries, collected) = self.collect(root, source);
+        let mut entries = Vec::new();
+        let mut collected = Collected::default();
+        collect(
+            &self.query,
+            self.spec,
+            root,
+            source,
+            &mut entries,
+            &mut collected,
+        );
+        // Secondary inline grammar (spec.inline): parse the container
+        // nodes' ranges of the same source, so capture spans are already
+        // file-absolute, and merge through the identical contract.
+        if let (Some((parser, query)), Some(ispec)) = (&mut self.inline, self.spec.inline) {
+            let ranges = container_ranges(root, ispec.container_kinds);
+            if !ranges.is_empty()
+                && parser.set_included_ranges(&ranges).is_ok()
+                && let Some(inline_tree) = parser.parse(source, None)
+            {
+                collect(
+                    query,
+                    self.spec,
+                    inline_tree.root_node(),
+                    source,
+                    &mut entries,
+                    &mut collected,
+                );
+            }
+        }
         entries.sort_by_key(|e| (e.start, usize::MAX - e.end));
         // Explicit @doc captures override sibling-comment docs on the
         // smallest definition containing them (Python docstrings).
@@ -292,13 +344,40 @@ impl Extractor {
             trait_impls,
         })
     }
+}
 
-    /// Run the query; group captures per match by the universal contract.
-    fn collect(&mut self, root: TsNode<'_>, source: &str) -> (Vec<RawEntry>, Collected) {
-        let mut entries = Vec::new();
-        let mut out = Collected::default();
+/// Byte ranges of every node of the given kinds, in document order —
+/// the included-range input for a secondary inline parse. Matched nodes
+/// are not descended into, so ranges never overlap.
+fn container_ranges(root: TsNode<'_>, kinds: &[&str]) -> Vec<tree_sitter::Range> {
+    let mut out = Vec::new();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if kinds.contains(&node.kind()) {
+            out.push(node.range());
+        } else {
+            for i in (0..node.child_count()).rev() {
+                stack.extend(node.child(i));
+            }
+        }
+    }
+    out.sort_by_key(|r| r.start_byte);
+    out
+}
+
+/// Run one query over one tree; group captures per match by the universal
+/// contract, appending to `entries`/`out` (called once per grammar).
+fn collect(
+    query: &Query,
+    spec: &LanguageSpec,
+    root: TsNode<'_>,
+    source: &str,
+    entries: &mut Vec<RawEntry>,
+    out: &mut Collected,
+) {
+    {
         let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&self.query, root, source.as_bytes());
+        let mut matches = cursor.matches(query, root, source.as_bytes());
         while let Some(m) = matches.next() {
             let mut def: Option<(TsNode, SymbolKind)> = None;
             let mut scope: Option<TsNode> = None;
@@ -316,7 +395,7 @@ impl Extractor {
             let mut trait_name: Option<TsNode> = None;
             let mut trait_impl: Option<TsNode> = None;
             for cap in m.captures {
-                let cap_name = &self.query.capture_names()[cap.index as usize];
+                let cap_name = &query.capture_names()[cap.index as usize];
                 if let Some(kind_str) = cap_name.strip_prefix("def.") {
                     if let Some(kind) = SymbolKind::from_str_opt(kind_str) {
                         def = Some((cap.node, kind));
@@ -356,7 +435,7 @@ impl Extractor {
                     }
                 }
             }
-            let sep = self.spec.path_separators.first().copied().unwrap_or(".");
+            let sep = spec.path_separators.first().copied().unwrap_or(".");
             if let (Some(t), Some(block)) = (trait_name, trait_impl) {
                 out.trait_impls.push((
                     block.start_byte(),
@@ -433,16 +512,10 @@ impl Extractor {
                     kind: def.map(|(_, k)| k),
                     qualifier: qualifier.map(|q| text(q, source).to_string()),
                     signature: signature(container, source),
-                    doc: doc_comment(
-                        container,
-                        source,
-                        self.spec.comment_kinds,
-                        self.spec.doc_skip_kinds,
-                    ),
+                    doc: doc_comment(container, source, spec.comment_kinds, spec.doc_skip_kinds),
                 });
             }
         }
-        (entries, out)
     }
 }
 

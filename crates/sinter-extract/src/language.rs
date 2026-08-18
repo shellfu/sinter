@@ -88,6 +88,19 @@ pub fn manifest_root(rel_path: &str, content: &str) -> Option<ModuleRoot> {
     })
 }
 
+/// A secondary grammar for languages whose spec splits container and
+/// content parses (tree-sitter markdown's block/inline split). The engine
+/// re-parses the byte ranges of the named container nodes with this
+/// grammar and runs its query through the same capture contract; spans
+/// stay file-absolute via included-range parsing. Pure data.
+pub struct InlineSpec {
+    pub grammar: fn() -> Language,
+    pub query_source: &'static str,
+    /// Node kinds in the primary tree whose ranges the inline grammar
+    /// parses.
+    pub container_kinds: &'static [&'static str],
+}
+
 pub struct LanguageSpec {
     pub name: &'static str,
     pub extensions: &'static [&'static str],
@@ -114,6 +127,17 @@ pub struct LanguageSpec {
     /// Package manifest shape, when the language has one that names
     /// module roots (see ManifestSpec).
     pub manifest: Option<&'static ManifestSpec>,
+    /// Secondary inline grammar applied to designated container-node
+    /// ranges, whose captures merge into the file's facts (markdown's
+    /// block/inline split).
+    pub inline: Option<&'static InlineSpec>,
+    /// References in this language are document paths naming corpus
+    /// files (`[text](docs/guide.md#setup)`), not symbol paths: the
+    /// resolver binds them by exact file path — with or without the
+    /// language's extensions, `#fragment` to the target file's unique
+    /// def whose name slugifies to the fragment — and never through the
+    /// symbol tiers. Evidence or nothing: a dead link stays unresolved.
+    pub file_refs: bool,
 }
 
 fn rust_normalize(name: &str) -> String {
@@ -426,6 +450,47 @@ fn markdown_grammar() -> Language {
     tree_sitter_md::LANGUAGE.into()
 }
 
+fn markdown_inline_grammar() -> Language {
+    tree_sitter_md::INLINE_LANGUAGE.into()
+}
+
+/// Inline content (`[text](target)`) is a second grammar in tree-sitter's
+/// markdown split; the engine parses the block tree's `inline` ranges
+/// with it (see InlineSpec).
+static MARKDOWN_INLINE: InlineSpec = InlineSpec {
+    grammar: markdown_inline_grammar,
+    query_source: include_str!("../queries/markdown-inline.scm"),
+    container_kinds: &["inline"],
+};
+
+/// Link destinations resolve against the linking file's directory —
+/// `./x`, `../x`, and bare `x` alike (doc-link convention); the `.md`
+/// extension is not a module segment.
+fn markdown_absolutize(path: &str, file: &str) -> Vec<String> {
+    let mut base = dirname_segments(file);
+    let mut rest = path;
+    loop {
+        if let Some(r) = rest.strip_prefix("./") {
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("../") {
+            base.pop();
+            rest = r;
+        } else {
+            break;
+        }
+    }
+    let rest = rest
+        .strip_suffix(".md")
+        .or_else(|| rest.strip_suffix(".markdown"))
+        .unwrap_or(rest);
+    base.extend(
+        rest.split('/')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+    );
+    base
+}
+
 /// A document is its path: `docs/team.md` -> ["docs", "team"].
 fn markdown_module_path(file: &str) -> Vec<String> {
     let trimmed = file
@@ -528,6 +593,8 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         receivers: &["self", "Self"],
         doc_skip_kinds: &[],
         manifest: Some(&RUST_MANIFEST),
+        inline: None,
+        file_refs: false,
     },
     LanguageSpec {
         name: "go",
@@ -541,6 +608,8 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         receivers: &[],
         doc_skip_kinds: &[],
         manifest: None,
+        inline: None,
+        file_refs: false,
     },
     LanguageSpec {
         name: "python",
@@ -554,6 +623,8 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         receivers: &["self", "cls"],
         doc_skip_kinds: &[],
         manifest: None,
+        inline: None,
+        file_refs: false,
     },
     LanguageSpec {
         name: "typescript",
@@ -567,6 +638,8 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         receivers: &["this"],
         doc_skip_kinds: &[],
         manifest: None,
+        inline: None,
+        file_refs: false,
     },
     LanguageSpec {
         name: "bash",
@@ -580,6 +653,8 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         receivers: &[],
         doc_skip_kinds: &[],
         manifest: None,
+        inline: None,
+        file_refs: false,
     },
     LanguageSpec {
         name: "proto",
@@ -593,6 +668,8 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         receivers: &[],
         doc_skip_kinds: &[],
         manifest: None,
+        inline: None,
+        file_refs: false,
     },
     LanguageSpec {
         name: "cpp",
@@ -606,6 +683,8 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         receivers: &["this"],
         doc_skip_kinds: &["expression_statement"],
         manifest: None,
+        inline: None,
+        file_refs: false,
     },
     LanguageSpec {
         name: "javascript",
@@ -619,6 +698,8 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         receivers: &["this"],
         doc_skip_kinds: &[],
         manifest: None,
+        inline: None,
+        file_refs: false,
     },
     LanguageSpec {
         name: "c",
@@ -632,6 +713,8 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         receivers: &[],
         doc_skip_kinds: &[],
         manifest: None,
+        inline: None,
+        file_refs: false,
     },
     LanguageSpec {
         name: "java",
@@ -645,6 +728,8 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         receivers: &["this"],
         doc_skip_kinds: &[],
         manifest: None,
+        inline: None,
+        file_refs: false,
     },
     LanguageSpec {
         name: "csharp",
@@ -658,6 +743,8 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         receivers: &["this", "base"],
         doc_skip_kinds: &[],
         manifest: None,
+        inline: None,
+        file_refs: false,
     },
     LanguageSpec {
         name: "sql",
@@ -671,6 +758,8 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         receivers: &[],
         doc_skip_kinds: &[],
         manifest: None,
+        inline: None,
+        file_refs: false,
     },
     LanguageSpec {
         name: "markdown",
@@ -680,12 +769,12 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         comment_kinds: &[],
         module_path: markdown_module_path,
         path_separators: &["/"],
-        // Inert today (the pack emits no references — see markdown.scm);
-        // `./`-relative resolution matches how doc links are written.
-        absolutize: typescript_absolutize,
+        absolutize: markdown_absolutize,
         receivers: &[],
         doc_skip_kinds: &[],
         manifest: None,
+        inline: Some(&MARKDOWN_INLINE),
+        file_refs: true,
     },
 ];
 

@@ -573,3 +573,10 @@ fn golden_csharp_inheritance() {
 fn golden_markdown_headings() {
     check("markdown-headings");
 }
+
+/// Inline links (secondary inline grammar): destinations become `uses`
+/// references; external URLs produce nothing at all.
+#[test]
+fn golden_markdown_links() {
+    check("markdown-links");
+}
