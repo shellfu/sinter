@@ -1,0 +1,23 @@
+{
+  "nodes": [
+    ["file", "docs/guide.md", "docs/guide.md"],
+    ["section", "Guide", "docs/guide.md", "Everything you need to operate the widget."],
+    ["section", "Guide::Setup", "docs/guide.md", "Install the toolchain before anything else."],
+    ["section", "Guide::Setup::Requirements", "docs/guide.md", "A compiler and ten minutes."],
+    ["section", "Guide::Usage", "docs/guide.md", ""],
+    ["section", "Guide::FAQ", "docs/guide.md", ""],
+    ["file", "README.md", "README.md"],
+    ["section", "Widget", "README.md", "The widget project."]
+  ],
+  "contains": [
+    ["docs/guide.md", "Guide"],
+    ["Guide", "Guide::Setup"],
+    ["Guide::Setup", "Guide::Setup::Requirements"],
+    ["Guide", "Guide::Usage"],
+    ["Guide", "Guide::FAQ"],
+    ["README.md", "Widget"]
+  ],
+  "references": [],
+  "resolved": [],
+  "unresolved_count": 0
+}

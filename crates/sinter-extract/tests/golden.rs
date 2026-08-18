@@ -568,3 +568,8 @@ fn golden_java_inheritance() {
 fn golden_csharp_inheritance() {
     check("csharp-inheritance");
 }
+
+#[test]
+fn golden_markdown_headings() {
+    check("markdown-headings");
+}
