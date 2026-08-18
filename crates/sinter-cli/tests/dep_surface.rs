@@ -11,6 +11,8 @@ use scip::types::{Document, Index, Occurrence};
 fn sinter(repo: &std::path::Path, args: &[&str]) -> (bool, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
         .args(args)
+        .env("HOME", repo)
+        .env("USERPROFILE", repo)
         .current_dir(repo)
         .output()
         .expect("run sinter");

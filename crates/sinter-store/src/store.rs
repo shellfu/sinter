@@ -148,6 +148,17 @@ impl Store {
                 Err(redb::TableError::TableDoesNotExist(_)) => None,
                 Err(e) => return Err(e.into()),
             };
+            // Older schema: wipe and rebuild forward from source. Newer:
+            // refuse — an outdated binary must never destroy a graph it
+            // cannot rebuild equivalently.
+            if let Some(v) = stored
+                && v > SCHEMA_VERSION
+            {
+                return Err(StoreError::NewerSchema {
+                    stored: v,
+                    supported: SCHEMA_VERSION,
+                });
+            }
             if stored != Some(SCHEMA_VERSION) {
                 drop(txn);
                 drop(db);

@@ -9,6 +9,8 @@ use std::time::{Duration, SystemTime};
 fn sinter(repo: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_sinter"))
         .args(args)
+        .env("HOME", repo)
+        .env("USERPROFILE", repo)
         .current_dir(repo)
         .stdin(std::process::Stdio::null())
         .output()

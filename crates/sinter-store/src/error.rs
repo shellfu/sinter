@@ -18,6 +18,10 @@ pub enum StoreError {
     Invariant(#[from] GraphError),
     #[error("cannot reset outdated database: {0}")]
     Reset(std::io::Error),
+    #[error(
+        "graph was built by a newer sinter (schema v{stored}, this binary writes v{supported}) — upgrade sinter, or delete .sinter/graph.redb to rebuild at v{supported}"
+    )]
+    NewerSchema { stored: u32, supported: u32 },
     #[error("facts compression error: {0}")]
     Compress(std::io::Error),
     #[error("compaction error: {0}")]

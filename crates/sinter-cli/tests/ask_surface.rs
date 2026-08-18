@@ -11,6 +11,10 @@ fn sinter(repo: &Path, args: &[&str]) -> (bool, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
         .args(args)
         .current_dir(repo)
+        // Hermetic HOME: the developer's real ~/.claude must not leak
+        // stale-artifact nudges into captured output.
+        .env("HOME", repo)
+        .env("USERPROFILE", repo)
         .output()
         .expect("run sinter");
     (

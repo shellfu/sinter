@@ -8,6 +8,8 @@ use std::process::Command;
 fn sinter(cwd: &Path, args: &[&str]) -> (bool, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
         .args(args)
+        .env("HOME", cwd)
+        .env("USERPROFILE", cwd)
         .current_dir(cwd)
         .output()
         .expect("run sinter");
