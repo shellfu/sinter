@@ -10,10 +10,54 @@ use crate::{doctor, hooks, install, pipeline};
 
 /// `sinter init --workspace`: write a starter manifest. Never clobbers —
 /// members and runtime links are facts only the operator knows.
-pub fn run_workspace(path: &Path, name: &str) -> Result<bool> {
+pub fn run_workspace(path: &Path, name: &str, members: &[String]) -> Result<bool> {
     if path.exists() {
         anyhow::bail!("{} already exists — refusing to overwrite", path.display());
     }
+    // `-m [name=]path` entries become real [members] rows; every path is
+    // validated up front so the manifest is runnable the moment it lands.
+    let mut rows = String::new();
+    let mut width = 0usize;
+    let mut parsed: Vec<(String, String)> = Vec::new();
+    for member in members {
+        let (mname, mpath) = match member.split_once('=') {
+            Some((n, p)) => (n.trim().to_string(), p.trim().to_string()),
+            None => {
+                let p = member.trim();
+                let n = Path::new(p)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .ok_or_else(|| anyhow::anyhow!("cannot derive a member name from {p:?}"))?;
+                (n, p.to_string())
+            }
+        };
+        anyhow::ensure!(!mname.is_empty(), "empty member name in {member:?}");
+        let expanded = if let Some(rest) = mpath.strip_prefix("~/") {
+            std::env::var_os("HOME")
+                .map(|h| Path::new(&h).join(rest))
+                .ok_or_else(|| anyhow::anyhow!("cannot expand ~ in {mpath:?}"))?
+        } else {
+            Path::new(&mpath).to_path_buf()
+        };
+        anyhow::ensure!(
+            expanded.is_dir(),
+            "member {mname}: {mpath} is not a directory"
+        );
+        anyhow::ensure!(
+            parsed.iter().all(|(n, _)| n != &mname),
+            "duplicate member name {mname:?}"
+        );
+        width = width.max(mname.len());
+        parsed.push((mname, mpath));
+    }
+    for (n, p) in &parsed {
+        rows.push_str(&format!("{n:width$} = \"{p}\"\n"));
+    }
+    let members_block = if rows.is_empty() {
+        "# auth    = \"~/src/auth\"\n# billing = \"~/src/billing\"".to_string()
+    } else {
+        rows.trim_end().to_string()
+    };
     let template = format!(
         r#"# sinter workspace manifest — see `sinter workspace --help`
 [workspace]
@@ -22,8 +66,7 @@ name = "{name}"
 # Repos forming the system. Key = member name (used as the symbol
 # prefix, e.g. `auth:Login`), value = repo path (~ expands).
 [members]
-# auth    = "~/src/auth"
-# billing = "~/src/billing"
+{members_block}
 
 # Optional: runtime coupling no parser can see (queue topics, RPC by
 # config). Each entry becomes an edge with `declared` evidence; a
@@ -38,10 +81,14 @@ name = "{name}"
     );
     std::fs::write(path, template)?;
     println!("wrote {}", path.display());
-    println!(
-        "next: fill in [members], then run `sinter workspace {}`",
-        path.display()
-    );
+    if members.is_empty() {
+        println!(
+            "next: fill in [members], then run `sinter workspace {}`",
+            path.display()
+        );
+    } else {
+        println!("next: sinter workspace {}", path.display());
+    }
     Ok(true)
 }
 
