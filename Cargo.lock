@@ -910,7 +910,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "sinter-cli"
-version = "0.36.0"
+version = "0.37.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -936,7 +936,7 @@ dependencies = [
 
 [[package]]
 name = "sinter-core"
-version = "0.36.0"
+version = "0.37.0"
 dependencies = [
  "proptest",
  "serde",
@@ -945,7 +945,7 @@ dependencies = [
 
 [[package]]
 name = "sinter-extract"
-version = "0.36.0"
+version = "0.37.0"
 dependencies = [
  "blake3",
  "serde",
@@ -970,7 +970,7 @@ dependencies = [
 
 [[package]]
 name = "sinter-resolve"
-version = "0.36.0"
+version = "0.37.0"
 dependencies = [
  "protobuf",
  "rayon",
@@ -985,7 +985,7 @@ dependencies = [
 
 [[package]]
 name = "sinter-store"
-version = "0.36.0"
+version = "0.37.0"
 dependencies = [
  "postcard",
  "proptest",
