@@ -1,0 +1,40 @@
+{
+  "nodes": [
+    ["file", "Program.cs", "Program.cs"],
+    ["class", "Program", "Program.cs", "<summary>Application entry point.</summary>"],
+    ["method", "Program::Run", "Program.cs", "<summary>Runs the demo.</summary>"],
+    ["file", "Greeter.cs", "Greeter.cs"],
+    ["class", "Greeter", "Greeter.cs", "<summary>Builds greetings.</summary>"],
+    ["method", "Greeter::Greet", "Greeter.cs", "<summary>Returns a greeting.</summary>"],
+    ["file", "Models.cs", "Models.cs"],
+    ["interface", "ISpeaker", "Models.cs", "<summary>Anything that can speak.</summary>"],
+    ["method", "ISpeaker::Speak", "Models.cs"],
+    ["struct", "Point", "Models.cs", "<summary>A 2D point.</summary>"],
+    ["field", "Point::X", "Models.cs"],
+    ["class", "Note", "Models.cs", "<summary>An immutable note.</summary>"],
+    ["field", "Note::Body", "Models.cs"],
+    ["enum", "Tone", "Models.cs"]
+  ],
+  "contains": [
+    ["Program.cs", "Program"],
+    ["Program", "Program::Run"],
+    ["Greeter.cs", "Greeter"],
+    ["Greeter", "Greeter::Greet"],
+    ["Models.cs", "ISpeaker"],
+    ["ISpeaker", "ISpeaker::Speak"],
+    ["Models.cs", "Point"],
+    ["Point", "Point::X"],
+    ["Models.cs", "Note"],
+    ["Note", "Note::Body"],
+    ["Models.cs", "Tone"]
+  ],
+  "references": [
+    ["imports", "System.*"],
+    ["calls", "Greet"],
+    ["calls", "WriteLine"]
+  ],
+  "resolved": [
+    ["scope", "calls", "Program::Run", "Greeter::Greet"]
+  ],
+  "unresolved_count": 2
+}

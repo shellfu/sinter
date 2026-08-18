@@ -1,0 +1,37 @@
+{
+  "nodes": [
+    ["file", "foo.c", "foo.c"],
+    ["macro", "MAX_RETRIES", "foo.c"],
+    ["macro", "SQUARE", "foo.c"],
+    ["struct", "Point", "foo.c"],
+    ["enum", "Color", "foo.c"],
+    ["struct", "Value", "foo.c"],
+    ["typealias", "Coord", "foo.c"],
+    ["function", "foo_run", "foo.c"],
+    ["file", "bar.c", "bar.c"],
+    ["function", "bar_greet", "bar.c"],
+    ["file", "bar.h", "bar.h"]
+  ],
+  "contains": [
+    ["foo.c", "MAX_RETRIES"],
+    ["foo.c", "SQUARE"],
+    ["foo.c", "Point"],
+    ["foo.c", "Color"],
+    ["foo.c", "Value"],
+    ["foo.c", "Coord"],
+    ["foo.c", "foo_run"],
+    ["bar.c", "bar_greet"]
+  ],
+  "references": [
+    ["imports", "bar.h"],
+    ["imports", "<stdio.h>"],
+    ["calls", "printf"],
+    ["calls", "bar_greet"]
+  ],
+  "resolved": [
+    ["import", "imports", "foo.c", "bar.h", "foo.c", "bar.h"],
+    ["import", "imports", "bar.c", "bar.h", "bar.c", "bar.h"],
+    ["import", "calls", "foo_run", "bar_greet", "foo.c", "bar.c"]
+  ],
+  "unresolved_count": 2
+}

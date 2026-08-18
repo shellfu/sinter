@@ -1,0 +1,25 @@
+{
+  "nodes": [
+    ["file", "com/acme/app/Main.java", "com/acme/app/Main.java"],
+    ["class", "Main", "com/acme/app/Main.java", "Uses the shared text helpers."],
+    ["method", "Main::run", "com/acme/app/Main.java", "Runs the app."],
+    ["file", "com/acme/util/Text.java", "com/acme/util/Text.java"],
+    ["class", "Text", "com/acme/util/Text.java", "Shared string helpers."],
+    ["method", "Text::trim", "com/acme/util/Text.java", "Trims surrounding whitespace."]
+  ],
+  "contains": [
+    ["com/acme/app/Main.java", "Main"],
+    ["Main", "Main::run"],
+    ["com/acme/util/Text.java", "Text"],
+    ["Text", "Text::trim"]
+  ],
+  "references": [
+    ["imports", "com.acme.util.Text"],
+    ["calls", "trim"]
+  ],
+  "resolved": [
+    ["import", "imports", "com/acme/app/Main.java", "Text", "com/acme/app/Main.java", "com/acme/util/Text.java"],
+    ["import", "calls", "Main::run", "Text::trim", "com/acme/app/Main.java", "com/acme/util/Text.java"]
+  ],
+  "unresolved_count": 0
+}

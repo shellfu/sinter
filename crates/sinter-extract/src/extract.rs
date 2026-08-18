@@ -485,7 +485,7 @@ fn doc_comment(
     for c in comments {
         for line in text(c, source).lines() {
             let mut l = line.trim();
-            for marker in ["///", "//!", "//", "/**", "/*", "*/"] {
+            for marker in ["///", "//!", "//", "/**", "/*", "*/", "--"] {
                 if let Some(stripped) = l.strip_prefix(marker) {
                     l = stripped;
                     break;

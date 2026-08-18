@@ -1,0 +1,21 @@
+{
+  "nodes": [
+    ["file", "button.jsx", "button.jsx"],
+    ["function", "Button", "button.jsx", "A clickable button."],
+    ["file", "app.jsx", "app.jsx"],
+    ["function", "App", "app.jsx", "Renders the app."]
+  ],
+  "contains": [
+    ["button.jsx", "Button"],
+    ["app.jsx", "App"]
+  ],
+  "references": [
+    ["imports", "./button/Button"],
+    ["uses", "Button"]
+  ],
+  "resolved": [
+    ["import", "imports", "app.jsx", "Button"],
+    ["import", "uses", "App", "Button"]
+  ],
+  "unresolved_count": 0
+}
