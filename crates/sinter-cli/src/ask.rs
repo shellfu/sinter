@@ -58,8 +58,38 @@ const STOPWORDS: &[&str] = &[
 /// asking for a symbol literally named `work` still works.
 /// (fixture: ask_drops_weak_verbs_when_real_terms_remain)
 const SOFT_STOPWORDS: &[&str] = &[
-    "code", "going", "happen", "happens", "stuff", "thing", "things", "use", "used", "uses",
-    "using", "work", "working", "works",
+    "code",
+    "going",
+    "happen",
+    "happens",
+    "stuff",
+    "thing",
+    "things",
+    "use",
+    "used",
+    "uses",
+    "using",
+    "work",
+    "working",
+    "works",
+    // Question scaffolding: nouns/verbs that describe the act of asking,
+    // not the thing asked about. Verbose agent questions ("what
+    // documentation describes X, Y, or comparisons to Z") otherwise
+    // dilute coverage and let filler-word name hits outrank real ones.
+    "compared",
+    "comparison",
+    "comparisons",
+    "describe",
+    "described",
+    "describes",
+    "docs",
+    "documentation",
+    "documented",
+    "explain",
+    "explained",
+    "explains",
+    "overview",
+    "related",
 ];
 
 /// Question -> distinct lowercase terms, stopworded (design §1a).
@@ -426,6 +456,18 @@ pub fn run(repo: &Path, question: &str, limit: usize, json: bool) -> Result<()> 
         terms.len(),
         terms.join(", ")
     );
+    // Verbose multi-topic questions dilute term coverage; a top hit
+    // matching almost nothing is noise wearing a ranking. Say so instead
+    // of letting it pass as an answer.
+    if terms.len() >= 4 && hits[0].matched.len() * 3 <= terms.len() {
+        println!(
+            "weak match: best hit covers {}/{} terms — this graph indexes code \
+             symbols, not prose docs. Ask one topic at a time with the terms \
+             you expect in an identifier or doc comment.\n",
+            hits[0].matched.len(),
+            terms.len()
+        );
+    }
     for (rank, hit) in hits.iter().take(limit).enumerate() {
         let line = line_of(&repo, &hit.node.file, hit.node.span.start);
         println!(
