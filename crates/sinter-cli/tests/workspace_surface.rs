@@ -323,9 +323,15 @@ fn serve_workspace_answers_across_members() {
 
     let affected: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
     let body = affected["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(body.contains("\"member\": \"common\""), "{body}");
+    let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert_eq!(parsed["symbol"]["member"], "common", "{body}");
+    assert!(parsed["total"].as_u64().unwrap() >= 1, "{body}");
+    let deps = parsed["dependents"].as_array().unwrap();
     assert!(
-        body.contains("auth") || body.contains("billing"),
-        "dependents must cross into other members: {body}"
+        deps.iter().any(|d| {
+            let s = d["s"].as_str().unwrap();
+            s.starts_with("auth:") || s.starts_with("billing:")
+        }),
+        "terse dependents must cross into other members: {body}"
     );
 }
