@@ -23,8 +23,9 @@ agent reading files cannot:
   boundaries (`--workspace`, `docs/design-workspace.md`).
 
 The design rule underneath everything: **evidence or nothing.** An edge
-exists only when import, scope, receiver, typed-local, or compiler (SCIP)
-evidence binds a reference to a definition. Ambiguity resolves to nothing —
+exists only when structural, scope, import, or compiler (SCIP) evidence
+binds a reference to a definition (workspace manifests may add
+operator-declared cross-repo links). Ambiguity resolves to nothing —
 "unresolved" is a first-class, counted outcome, never a guess. Every edge
 carries its evidence kind, and every query can filter on it.
 
@@ -57,15 +58,23 @@ On a terminal, init asks before running compiler indexers (`sinter scip`)
 because those toolchains execute repository build scripts; pass `--scip`
 or `--no-scip` to answer up front (non-interactive init skips them).
 
-After that, every query self-syncs — an incremental hash-diff that is a
-fast no-op when nothing changed — and the git hooks refresh eagerly on
-commit; `sinter build` stays available for CI and scripting. The build report ends with the honesty line — how much of the graph is
+After that, every query self-syncs at the query boundary — when nothing
+changed, the sync is a stat-only walk (no file reads, no write
+transactions) — and the git hooks refresh eagerly on commit;
+`sinter build` stays available for CI and scripting. Commands also work
+from any subdirectory, discovering the graph root the way git does. The
+build report ends with the honesty line — how much of the graph is
 evidence-bound, and how much would need a dependency index:
 
 ```
 resolution (this pass): ... resolved (scip 0, import 118, scope 189), ... unresolved (105 internal, 3193 external)
 accuracy gauge: 3.1% internal-unresolved (external refs need dependency indexes, not resolver fixes)
 ```
+
+When a SCIP index is present, the report also prints the compiler
+cross-check (what share of internally-bound refs agree with the
+compiler) and internal recall vs the compiler (how many compiler-bound
+refs sinter found without SCIP).
 
 Ask a question against the graph (output shown for this repository):
 
@@ -85,7 +94,8 @@ is auditable, in the same spirit as the edges.
 
 | Command | Purpose |
 |---|---|
-| `sinter init [repo]` | Onboard a repo: build + hooks + agent integration + doctor |
+| `sinter init [repo]` | Onboard a repo: build + hooks + agent integration + doctor (`--scip`/`--no-scip` answer the indexer consent up front; `-g` also installs enforcement hooks globally) |
+| `sinter uninit [repo]` | Offboard completely: remove the graph and every sinter-managed artifact (`-g` also removes global skill + hooks) |
 | `sinter build [repo]` | Build or incrementally refresh the graph |
 | `sinter watch [repo]` | Keep the graph fresh from filesystem events |
 | `sinter hooks install` | Git hooks that refresh after commit/checkout/merge |
@@ -95,12 +105,14 @@ is auditable, in the same spirit as the edges.
 | `sinter affected <symbol>` | Reverse blast radius, evidence-filterable |
 | `sinter path <from> <to>` | Shortest dependency path with per-step evidence |
 | `sinter impact <rev-range>` | Changed symbols → blast radius → affected tests |
-| `sinter serve` | MCP server over stdio for agent use |
+| `sinter serve` | MCP server over stdio (`--repo` for one repo, `--workspace <manifest>` for a cross-repo scope) |
 | `sinter overlap <range>...` | Map open PRs onto the graph; rank pairwise merge risk (direct/radius/file) |
 | `sinter workspace <manifest>` | Build all members of a cross-repo workspace + refresh boundary links |
 | `sinter init --workspace` | Write a starter workspace manifest (never overwrites) |
-| `sinter install --for <targets>` | Write agent cards (claude, cursor, agents/AGENTS.md); `--mcp` registers the server |
-| `sinter doctor [repo]` | Diagnose installation + graph; every finding names its fix |
+| `sinter install --for <targets>` | Write agent cards (claude, cursor, agents/AGENTS.md, enforce, all); `--mcp` registers the server for Claude Code, Cursor, and Codex |
+| `sinter scip [repo]` | Run every matching compiler indexer, merge into `.sinter/index.scip`, rebuild |
+| `sinter doctor [repo]` | Diagnose installation + graph (including an MCP handshake and lock-held reporting); every finding names its fix |
+| `sinter completion <shell>` | Shell completions |
 | `sinter version` | Version, graph schema, language packs |
 
 `affected`, `path`, and every MCP tool accept `--evidence
@@ -139,10 +151,13 @@ proto have no SCIP indexers.
   and never invoked it on content questions (0/6) — measured on Haiku,
   the floor model, on a machine with the enforcement hooks installed
   (the `sinter init` default). One repo, n=16; script checked in.
-- **Budgets** (measured on a ~2M-LOC Go repository, 271k nodes): full
-  build 18s, no-op rebuild 73ms, one-file edit under 1s typical, cold
-  point query under 100ms, `ask` 66ms end-to-end. Enforced by tests in
-  `harness/perf/` and the CI suites.
+- **Budgets** (measured on a ~2M-LOC Go repository, 271k nodes, before
+  the stat-gated scan landed): full build 18s, one-file edit under 1s
+  typical, cold point query under 100ms, `ask` 66ms end-to-end. A clean
+  sync is now a stat-only walk — no file reads, no write transactions —
+  measured 46→16ms on this repository and 55→10ms on an 80MB/400-file
+  synthetic corpus; the old 73ms 2M-LOC no-op figure predates the stat
+  gate. Enforced by tests in `harness/perf/` and the CI suites.
 
 ## Workspace layout
 
