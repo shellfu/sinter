@@ -22,7 +22,6 @@ tree-sitter-c-sharp = "0.23"
 tree-sitter-sequel = "0.3"
 # Block grammar only (no "parser" feature: its tree-sitter dep is newer than
 # the workspace's; LanguageFn converts version-independently). The split
-# inline grammar — where links live — is unused: see queries/markdown.scm.
 tree-sitter-md = { version = "0.5", default-features = false }
 streaming-iterator = "0.1"
 blake3 = "1"

@@ -228,6 +228,12 @@ fn typescript_absolutize(path: &str, file: &str) -> Vec<String> {
     }
     let mut base = dirname_segments(file);
     let mut rest = path;
+    // Leading `/` is the repo-root convention (GitHub-style), not a
+    // relative segment: resolve against the root, not the linking file.
+    if let Some(r) = rest.strip_prefix('/') {
+        base.clear();
+        rest = r;
+    }
     loop {
         if let Some(r) = rest.strip_prefix("./") {
             rest = r;
@@ -469,6 +475,12 @@ static MARKDOWN_INLINE: InlineSpec = InlineSpec {
 fn markdown_absolutize(path: &str, file: &str) -> Vec<String> {
     let mut base = dirname_segments(file);
     let mut rest = path;
+    // Leading `/` is the repo-root convention (GitHub-style), not a
+    // relative segment: resolve against the root, not the linking file.
+    if let Some(r) = rest.strip_prefix('/') {
+        base.clear();
+        rest = r;
+    }
     loop {
         if let Some(r) = rest.strip_prefix("./") {
             rest = r;

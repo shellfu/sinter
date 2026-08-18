@@ -328,7 +328,7 @@ fn multi_hits(
     clauses: &[(String, Vec<String>)],
     limit: usize,
 ) -> Result<Vec<(String, Vec<Hit>)>> {
-    let per = limit.div_ceil(clauses.len()).clamp(2, 3);
+    let per = limit.div_ceil(clauses.len()).max(2);
     let mut groups: Vec<(String, Vec<Hit>)> = Vec::with_capacity(clauses.len());
     for (label, terms) in clauses {
         groups.push((label.clone(), score_candidates(store, terms)?));

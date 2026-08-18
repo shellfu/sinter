@@ -73,6 +73,15 @@ enum Command {
         /// Workspace name for --workspace (defaults to manifest's parent dir name)
         #[arg(long, requires = "workspace")]
         name: Option<String>,
+        /// Member repos for --workspace: `[name=]path`, repeatable
+        /// (name defaults to the repo's directory name)
+        #[arg(
+            short = 'm',
+            long = "member",
+            requires = "workspace",
+            value_name = "[NAME=]PATH"
+        )]
+        members: Vec<String>,
     },
     /// Offboard a repo: remove the graph and every sinter-managed artifact
     Uninit {
@@ -324,6 +333,7 @@ fn main() -> ExitCode {
             global,
             workspace,
             name,
+            members,
         } => {
             if let Some(manifest) = workspace {
                 let path = manifest.unwrap_or_else(|| PathBuf::from("ws.toml"));
@@ -342,7 +352,7 @@ fn main() -> ExitCode {
                         })
                         .unwrap_or_else(|| "workspace".to_string())
                 });
-                return match init::run_workspace(&path, &ws_name) {
+                return match init::run_workspace(&path, &ws_name, &members) {
                     Ok(true) => ExitCode::SUCCESS,
                     Ok(false) => ExitCode::FAILURE,
                     Err(e) => {

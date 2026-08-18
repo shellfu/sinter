@@ -142,10 +142,18 @@ impl Extractor {
         // file-absolute, and merge through the identical contract.
         if let (Some((parser, query)), Some(ispec)) = (&mut self.inline, self.spec.inline) {
             let ranges = container_ranges(root, ispec.container_kinds);
-            if !ranges.is_empty()
-                && parser.set_included_ranges(&ranges).is_ok()
-                && let Some(inline_tree) = parser.parse(source, None)
-            {
+            if !ranges.is_empty() {
+                // Both failure modes are broken invariants (container_ranges
+                // yields sorted non-overlapping ranges; the primary parse
+                // already succeeded) — swallowing them would silently drop
+                // this file's inline refs and let the graph assert "no
+                // links" without evidence. Fail loudly like the primary.
+                parser.set_included_ranges(&ranges).map_err(|e| {
+                    ExtractError::Parse(format!("{} (inline ranges: {e})", self.spec.name))
+                })?;
+                let inline_tree = parser
+                    .parse(source, None)
+                    .ok_or_else(|| ExtractError::Parse(format!("{} (inline)", self.spec.name)))?;
                 collect(
                     query,
                     self.spec,

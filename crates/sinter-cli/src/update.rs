@@ -1,7 +1,9 @@
-//! Release-availability check. Network policy: exactly one HEAD request
-//! to github.com, made only by `sinter doctor`, only on a terminal, at
-//! most once per 24h, disabled by SINTER_NO_UPDATE_CHECK=1. Every other
-//! command reads the cached answer and never touches the network.
+//! Release awareness and self-update. Two network behaviors, both to
+//! github.com only: the availability CHECK is one HEAD request, made
+//! only by `sinter doctor`, TTY-only, 24h-cached, disabled by
+//! SINTER_NO_UPDATE_CHECK=1 — every other command reads the cache and
+//! never touches the network. `sinter update` is the explicit
+//! exception: it downloads the release archive + checksum on request.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -74,11 +76,11 @@ pub fn nudge_due() -> bool {
     let Some(stamp) = cache_file().map(|p| p.with_file_name("nudge-stamp")) else {
         return true;
     };
-    !std::fs::metadata(&stamp)
+    std::fs::metadata(&stamp)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.elapsed().ok())
-        .is_some_and(|age| age.as_secs() < 3600)
+        .is_none_or(|age| age.as_secs() >= 3600)
 }
 
 pub fn mark_nudged() {
@@ -279,8 +281,28 @@ pub fn run(dry_run: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let tmp = std::env::temp_dir().join(format!("sinter-update-{}", std::process::id()));
-    std::fs::create_dir_all(&tmp)?;
+    // Staging must be user-owned and freshly created: a world-shared
+    // temp dir with a predictable name lets another local user pre-create
+    // it and swap the binary between checksum verification and install.
+    // create_dir (not _all) errors if the path already exists.
+    let tmp = cache_file()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+        .context("cannot locate a user cache directory for staging")?
+        .join(format!("update-{}", std::process::id()));
+    if let Some(parent) = tmp.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::create_dir(&tmp).with_context(|| {
+        format!(
+            "staging dir {} already exists — remove it and retry",
+            tmp.display()
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700))?;
+    }
     let result = (|| -> anyhow::Result<()> {
         let archive = tmp.join(&asset);
         println!("downloading {asset} ...");
