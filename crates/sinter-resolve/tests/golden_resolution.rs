@@ -582,3 +582,8 @@ fn resolution_java_inheritance() {
 fn resolution_csharp_inheritance() {
     check("csharp-inheritance");
 }
+
+#[test]
+fn resolution_markdown_headings() {
+    check("markdown-headings");
+}

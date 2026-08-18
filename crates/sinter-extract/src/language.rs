@@ -422,6 +422,23 @@ fn csharp_module_path(file: &str) -> Vec<String> {
     segments
 }
 
+fn markdown_grammar() -> Language {
+    tree_sitter_md::LANGUAGE.into()
+}
+
+/// A document is its path: `docs/team.md` -> ["docs", "team"].
+fn markdown_module_path(file: &str) -> Vec<String> {
+    let trimmed = file
+        .strip_suffix(".md")
+        .or_else(|| file.strip_suffix(".markdown"))
+        .unwrap_or(file);
+    trimmed
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 fn sql_grammar() -> Language {
     tree_sitter_sequel::LANGUAGE.into()
 }
@@ -651,6 +668,21 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         module_path: sql_module_path,
         path_separators: &["."],
         absolutize: dotted_absolutize,
+        receivers: &[],
+        doc_skip_kinds: &[],
+        manifest: None,
+    },
+    LanguageSpec {
+        name: "markdown",
+        extensions: &["md", "markdown"],
+        grammar: markdown_grammar,
+        query_source: include_str!("../queries/markdown.scm"),
+        comment_kinds: &[],
+        module_path: markdown_module_path,
+        path_separators: &["/"],
+        // Inert today (the pack emits no references — see markdown.scm);
+        // `./`-relative resolution matches how doc links are written.
+        absolutize: typescript_absolutize,
         receivers: &[],
         doc_skip_kinds: &[],
         manifest: None,

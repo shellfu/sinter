@@ -112,6 +112,10 @@ pub fn run(repo: &Path, cursor: bool, scip: Option<bool>, global: bool) -> Resul
         install::enforce(None)?;
     }
 
+    // Agent integration writes indexable files into the repo (AGENTS.md is
+    // markdown); refresh incrementally so doctor verifies a current graph.
+    pipeline::build(&repo, None)?;
+
     println!("\n== doctor ==");
     doctor::run(&repo, false)
 }

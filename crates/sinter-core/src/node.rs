@@ -49,6 +49,9 @@ pub enum SymbolKind {
     Module,
     Macro,
     File,
+    /// A prose document section (markdown heading); appended for postcard
+    /// wire compatibility — never reorder.
+    Section,
 }
 
 impl SymbolKind {
@@ -70,6 +73,7 @@ impl SymbolKind {
             Self::Module => "module",
             Self::Macro => "macro",
             Self::File => "file",
+            Self::Section => "section",
         }
     }
 
@@ -93,6 +97,7 @@ impl SymbolKind {
             "module" => Self::Module,
             "macro" => Self::Macro,
             "file" => Self::File,
+            "section" => Self::Section,
             _ => return None,
         })
     }

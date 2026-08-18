@@ -54,7 +54,7 @@ const INDEXERS: &[(&str, &[&str], &str)] = &[
         "dotnet tool install --global scip-dotnet",
     ),
     // c: scip-clang covers C via compile_commands.json under the cpp row.
-    // sql/bash/proto: no SCIP indexers exist.
+    // sql/bash/proto/markdown: no SCIP indexers exist.
 ];
 
 enum Staleness {

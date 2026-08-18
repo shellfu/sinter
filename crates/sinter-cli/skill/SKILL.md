@@ -84,8 +84,9 @@ are filterable like any other.
 
 ## Boundaries
 
-Symbol-level structure only. Not for doc/prose ingestion, summarization,
-or content questions inside a single function body — read the file for
-those. For agent clients that cannot run shell commands, `sinter serve`
+Symbol-level structure only — plus markdown structure: headings index as
+section nodes (13 languages total), so `ask` finds where something is
+documented with file:line. Not for summarization or content questions
+inside a single function body — read the file for those. For agent clients that cannot run shell commands, `sinter serve`
 exposes the same graph over MCP stdio (`--workspace <manifest>` serves a
 cross-repo scope with the same tool names).
