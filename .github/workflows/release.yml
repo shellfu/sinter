@@ -23,6 +23,10 @@ jobs:
             os: macos-13
           - target: aarch64-apple-darwin
             os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -31,6 +35,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: cargo build --release --target ${{ matrix.target }} -p sinter-cli
       - name: package
+        if: runner.os != 'Windows'
         run: |
           bin=target/${{ matrix.target }}/release/sinter
           strip "$bin" || true
@@ -40,10 +45,20 @@ jobs:
           else
             shasum -a 256 sinter-${{ matrix.target }}.tar.gz > sinter-${{ matrix.target }}.tar.gz.sha256
           fi
+      - name: package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = "target/${{ matrix.target }}/release/sinter.exe"
+          Compress-Archive -Path $bin -DestinationPath "sinter-${{ matrix.target }}.zip"
+          $hash = (Get-FileHash "sinter-${{ matrix.target }}.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  sinter-${{ matrix.target }}.zip" | Out-File -Encoding ascii "sinter-${{ matrix.target }}.zip.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: sinter-*.tar.gz*
+          path: |
+            sinter-*.tar.gz*
+            sinter-*.zip*
 
   publish:
     needs: build
@@ -56,7 +71,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" sinter-*.tar.gz* \
+          gh release create "$GITHUB_REF_NAME" sinter-*.tar.gz* sinter-*.zip* \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes
