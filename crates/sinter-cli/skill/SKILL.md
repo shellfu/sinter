@@ -50,6 +50,9 @@ integration, ending with a doctor report:
 | Where do open PRs collide / merge risk | `sinter overlap <base...prA> <base...prB> ... --repo <repo>` |
 | Cross-repo (distributed system) versions of the above | add `--workspace <manifest.toml>`; symbols may be `member:Symbol` |
 
+Ask one topic per `ask` call, phrased with the words you expect in an
+identifier or doc comment — a multi-topic question ("what documentation
+describes X, Y, or Z?") dilutes ranking and earns a weak-match warning.
 Add `--json` to `ask` for structured output. `affected`/`path` accept
 `--evidence scip,import,scope,dynamic` and `--certain` to restrict to stronger
 evidence tiers.

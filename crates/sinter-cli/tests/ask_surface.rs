@@ -912,3 +912,40 @@ fn uninit_reverses_init_and_preserves_user_content() {
     assert!(mcp.contains("other"), "{mcp}");
     assert!(!mcp.contains("sinter"), "{mcp}");
 }
+
+/// Codex field report: verbose multi-topic questions ("what documentation
+/// describes X, Y, or comparisons to Z") diluted term coverage and let a
+/// filler-word name hit rank #1. Scaffolding terms are soft-dropped and a
+/// weak top hit is called out instead of passing as an answer.
+#[test]
+fn ask_verbose_question_drops_scaffolding_and_flags_weak_match() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    controller_fixture(repo);
+    std::fs::write(
+        repo.join("player/describe.ts"),
+        "// Describe helper.\nexport function describeThing(): number {\n  return 1;\n}\n",
+    )
+    .unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+
+    let (ok, out) = sinter(
+        repo,
+        &[
+            "ask",
+            "What documentation describes dashboard usability, operator experience, or comparisons to k9s?",
+        ],
+    );
+    assert!(ok, "{out}");
+    // Scaffolding terms are gone from the term list...
+    let header = out.lines().next().unwrap_or_default();
+    for filler in ["documentation", "describes", "comparisons"] {
+        assert!(!header.contains(filler), "{filler} survived: {out}");
+    }
+    // ...so the filler-named function cannot ride them to the top, and a
+    // barely-covering top hit is flagged rather than presented as an answer.
+    if out.contains("1. ") {
+        assert!(out.contains("weak match"), "{out}");
+    }
+}
