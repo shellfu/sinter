@@ -572,3 +572,13 @@ fn resolution_java_cross_package() {
 fn resolution_java_interface_impl() {
     check("java-interface-impl");
 }
+
+#[test]
+fn resolution_java_inheritance() {
+    check("java-inheritance");
+}
+
+#[test]
+fn resolution_csharp_inheritance() {
+    check("csharp-inheritance");
+}

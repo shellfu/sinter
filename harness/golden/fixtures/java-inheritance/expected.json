@@ -1,0 +1,25 @@
+{
+  "nodes": [
+    ["file", "com/acme/Base.java", "com/acme/Base.java"],
+    ["class", "Base", "com/acme/Base.java"],
+    ["method", "Base::ping", "com/acme/Base.java"],
+    ["file", "com/acme/Sub.java", "com/acme/Sub.java"],
+    ["class", "Sub", "com/acme/Sub.java"],
+    ["method", "Sub::run", "com/acme/Sub.java"]
+  ],
+  "contains": [
+    ["com/acme/Base.java", "Base"],
+    ["Base", "Base::ping"],
+    ["com/acme/Sub.java", "Sub"],
+    ["Sub", "Sub::run"]
+  ],
+  "references": [
+    ["uses", "Base"],
+    ["calls", "ping"]
+  ],
+  "resolved": [
+    ["scope", "uses", "Sub", "Base", "com/acme/Sub.java", "com/acme/Base.java"],
+    ["scope", "calls", "Sub::run", "Base::ping", "com/acme/Sub.java", "com/acme/Base.java"]
+  ],
+  "unresolved_count": 0
+}

@@ -17,6 +17,27 @@
 ; properties are members of their type
 (property_declaration name: (identifier) @name) @def.field
 
+; base types (class or interface — the syntax cannot tell them apart):
+; reference + inherited-member promotion (@embed, Go-style) + dispatch
+; pairing (@trait/@trait.impl) so virtual/interface calls fan out with
+; dynamic evidence, mirroring Rust traits and Java implements.
+((class_declaration
+  (base_list [
+    (identifier) @ref.use @embed @trait
+    (qualified_name name: (identifier) @ref.use @embed @trait)
+    (generic_name (identifier) @ref.use @embed @trait)
+  ])) @trait.impl)
+(struct_declaration
+  (base_list [
+    (identifier) @ref.use @embed
+    (qualified_name name: (identifier) @ref.use @embed)
+  ]))
+(interface_declaration
+  (base_list [
+    (identifier) @ref.use @embed
+    (qualified_name name: (identifier) @ref.use @embed)
+  ]))
+
 ; `using Ns;` imports a namespace, not a type: every type in it binds (glob).
 (using_directive !name [(identifier) (qualified_name)] @import.module @import.star)
 ; `using F = Acme.Util.Foo;` binds the alias to the full path.

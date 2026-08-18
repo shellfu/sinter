@@ -558,3 +558,13 @@ fn golden_java_cross_package() {
 fn golden_java_interface_impl() {
     check("java-interface-impl");
 }
+
+#[test]
+fn golden_java_inheritance() {
+    check("java-inheritance");
+}
+
+#[test]
+fn golden_csharp_inheritance() {
+    check("csharp-inheritance");
+}

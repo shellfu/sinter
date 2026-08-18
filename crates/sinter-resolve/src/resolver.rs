@@ -889,7 +889,15 @@ pub fn dynamic_edges(
             by_file.entry(n.file.as_str()).or_default().push(n);
         }
     }
-    let is_trait = |n: &Node| matches!(n.kind, SymbolKind::Trait | SymbolKind::Interface);
+    // Class included: C# captures base classes as @trait because its
+    // virtual dispatch flows through them; Rust/Java only ever emit
+    // @trait on real traits/interfaces, so they are unaffected.
+    let is_trait = |n: &Node| {
+        matches!(
+            n.kind,
+            SymbolKind::Trait | SymbolKind::Interface | SymbolKind::Class
+        )
+    };
     let mut edges = Vec::new();
     for ti in trait_impls {
         let Some(spec) = spec_for_path(&ti.file) else {
