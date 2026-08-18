@@ -120,9 +120,11 @@ fn ask_ranks_documented_controller_first() {
     if let (Some(c), Some(k)) = (ctor_rank, class_rank) {
         assert!(k < c, "constructor outranked controller:\n{out}");
     }
-    // Perf gate (v1 scale) — includes process spawn, generous headroom.
+    // Perf gate (v1 scale) — includes process spawn. Nominal is ~66ms;
+    // 1500ms still catches any real regression while riding out cold
+    // shared CI runners (500ms flaked once under runner load).
     assert!(
-        elapsed < Duration::from_millis(500),
+        elapsed < Duration::from_millis(1500),
         "ask took {elapsed:?} end to end"
     );
 
