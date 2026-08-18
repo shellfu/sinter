@@ -353,3 +353,22 @@ resolves uniquely across members. tools/list describes the surface the
 scope actually has, never a superset. Freshness matches repo mode: every
 tools/call syncs each member first (scan-floor no-op per member; ceiling
 is member count, acceptable for manifest-sized workspaces).
+
+## D29 — Dependency surface from compiler monikers
+
+"What breaks if I bump this dependency" was unanswerable past the repo
+boundary, yet every SCIP occurrence already names its external symbol as
+a moniker (package, version, descriptor) that ingestion discarded. V1
+of dependency awareness synthesizes surface nodes from those monikers:
+refs whose definition is not in the corpus bind to a node
+`dep:<package>@<version>` / qualified path, scip evidence, certain.
+No dependency source is downloaded or indexed — the compiler already
+did the resolution; we stop throwing its answer away.
+
+Dep nodes live as facts of a pseudo-file per package
+(`dep:<package>@<version>`), so the existing per-file replace machinery
+owns their lifecycle; the scan's removal logic must exempt the `dep:`
+prefix or every build would tear them down. The recall metric excludes
+dep binds from its denominator — internal evidence can never find a
+symbol that has no in-corpus definition, and counting those would fake
+a regression. The build report gains a dependency-surface line instead.
