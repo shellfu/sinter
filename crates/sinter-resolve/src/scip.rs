@@ -3,9 +3,28 @@ use std::path::Path;
 
 use protobuf::Message;
 use scip::types::Index;
-use sinter_core::{Edge, Node, NodeId, Reference, Span};
+use sinter_core::{Edge, Node, NodeId, Reference, Span, SymbolKind};
 
 use crate::resolver::Binding;
+
+/// Everything one index pass yields: binds to in-corpus definitions plus
+/// the synthesized dependency surface (D29) for references whose symbol
+/// has no definition occurrence anywhere in the corpus.
+pub struct ScipResolution {
+    /// References bound to in-corpus definition nodes.
+    pub bindings: Vec<Binding>,
+    /// References bound to synthesized dep nodes (edge dst is a node in
+    /// `external_nodes`). The caller decides which survive — a ref already
+    /// bound by internal evidence keeps its internal edge.
+    pub external: Vec<Binding>,
+    /// Distinct synthesized dependency-surface nodes, keyed by id via
+    /// `external` edges; unreferenced ones must not be installed.
+    pub external_nodes: Vec<Node>,
+    /// Distinct external symbols that overlapped a reference but did not
+    /// parse as a `<scheme> <manager> <package> <version> <descriptors>`
+    /// moniker (skipped silently, counted here).
+    pub external_skipped: usize,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScipError {
@@ -63,7 +82,7 @@ pub fn resolve_with_index(
     nodes: &[Node],
     references: &[Reference],
     mut read_source: impl FnMut(&str) -> Option<String>,
-) -> Vec<Binding> {
+) -> ScipResolution {
     let mut line_starts: HashMap<String, Vec<u64>> = HashMap::new();
     for document in &index.documents {
         if let Some(source) = read_source(&document.relative_path) {
@@ -149,7 +168,13 @@ pub fn resolve_with_index(
     // Per reference keep the rightmost contained occurrence: a span like
     // `util::helper` overlaps both the module and the item occurrence, and
     // the reference's meaning is the item — the last path segment.
+    // Internal (def in corpus) and external (dep surface, D29) occurrences
+    // track separately; the caller prefers internal.
     let mut best: HashMap<usize, (u64, Edge)> = HashMap::new();
+    let mut best_ext: HashMap<usize, (u64, Edge)> = HashMap::new();
+    // symbol -> parsed dep node (None: unparseable, skip and count once).
+    let mut dep_cache: HashMap<String, Option<Node>> = HashMap::new();
+    let mut skipped: std::collections::HashSet<String> = std::collections::HashSet::new();
     for document in &index.documents {
         let Some(file_refs) = refs_by_file.get(document.relative_path.as_str()) else {
             continue;
@@ -165,9 +190,6 @@ pub fn resolve_with_index(
             } else {
                 def_of_symbol.get(occ.symbol.as_str())
             };
-            let Some(target) = target else {
-                continue;
-            };
             let Some(pos) = occ
                 .range
                 .first()
@@ -181,30 +203,167 @@ pub fn resolve_with_index(
                     continue;
                 }
                 let distance = pos - r.span.start;
-                if best.get(i).is_none_or(|(d, _)| distance > *d) {
-                    best.insert(
-                        *i,
-                        (
-                            distance,
-                            Edge {
-                                src: r
-                                    .enclosing
-                                    .clone()
-                                    .unwrap_or_else(|| NodeId::new(r.file.clone())),
-                                dst: target.id.clone(),
-                                relation: r.relation,
-                                evidence: sinter_core::Evidence::Scip,
-                                confidence: sinter_core::Evidence::Scip.confidence(),
-                            },
-                        ),
-                    );
+                let make_edge = |dst: NodeId| Edge {
+                    src: r
+                        .enclosing
+                        .clone()
+                        .unwrap_or_else(|| NodeId::new(r.file.clone())),
+                    dst,
+                    relation: r.relation,
+                    evidence: sinter_core::Evidence::Scip,
+                    confidence: sinter_core::Evidence::Scip.confidence(),
+                };
+                match target {
+                    Some(target) => {
+                        if best.get(i).is_none_or(|(d, _)| distance > *d) {
+                            best.insert(*i, (distance, make_edge(target.id.clone())));
+                        }
+                    }
+                    // No in-corpus definition anywhere: the compiler
+                    // resolved this into a dependency — synthesize the
+                    // dep-surface node instead of discarding its answer.
+                    None => {
+                        let node = dep_cache
+                            .entry(occ.symbol.clone())
+                            .or_insert_with(|| dep_node(&occ.symbol));
+                        match node {
+                            Some(node) => {
+                                if best_ext.get(i).is_none_or(|(d, _)| distance > *d) {
+                                    best_ext.insert(*i, (distance, make_edge(node.id.clone())));
+                                }
+                            }
+                            None => {
+                                skipped.insert(occ.symbol.clone());
+                            }
+                        }
+                    }
                 }
             }
         }
     }
-    best.into_iter()
-        .map(|(reference, (_, edge))| Binding { edge, reference })
-        .collect()
+    let mut external_nodes: HashMap<String, Node> = HashMap::new();
+    for node in dep_cache.into_values().flatten() {
+        external_nodes.insert(node.id.as_str().to_string(), node);
+    }
+    ScipResolution {
+        bindings: best
+            .into_iter()
+            .map(|(reference, (_, edge))| Binding { edge, reference })
+            .collect(),
+        external: best_ext
+            .into_iter()
+            .map(|(reference, (_, edge))| Binding { edge, reference })
+            .collect(),
+        external_nodes: external_nodes.into_values().collect(),
+        external_skipped: skipped.len(),
+    }
+}
+
+/// Parse an external SCIP moniker into a dependency-surface node (D29):
+/// `<scheme> <manager> <package> <version> <descriptors...>` (`.` fields
+/// mean absent — no package identity, no node). Descriptors join into a
+/// `::` qualified path rooted at the package name (dashes normalized to
+/// underscores, matching language path heads); the final descriptor marker
+/// picks the kind:
+///   `().` -> Function (Method when the previous segment is a type `#`)
+///   `#`   -> Struct (honest default for SCIP "type"; the moniker cannot
+///            distinguish struct/enum/trait)
+///   `!`   -> Macro
+///   `/`   -> Module
+///   `.`   -> Constant (SCIP "term": consts, statics, fields)
+/// Node id follows the `{file}#{qualified}@{offset}` convention at offset
+/// 0 with span 0..0 — dep pseudo-files have no source.
+fn dep_node(symbol: &str) -> Option<Node> {
+    let mut parts = symbol.splitn(5, ' ');
+    let _scheme = parts.next()?;
+    let manager = parts.next()?;
+    let package = parts.next()?;
+    let version = parts.next()?;
+    let descriptors = parts.next()?;
+    if manager == "."
+        || package == "."
+        || package.is_empty()
+        || version == "."
+        || version.is_empty()
+    {
+        return None;
+    }
+    let (path, kind) = parse_descriptors(descriptors)?;
+    let file = format!("dep:{package}@{version}");
+    let head = package.replace('-', "_");
+    let name = path.last().cloned().unwrap_or_else(|| head.clone());
+    let qualified = std::iter::once(head)
+        .chain(path)
+        .collect::<Vec<_>>()
+        .join("::");
+    Some(Node {
+        id: NodeId::new(format!("{file}#{qualified}@0")),
+        kind,
+        name,
+        file,
+        span: Span { start: 0, end: 0 },
+        signature: String::new(),
+        doc: None,
+    })
+}
+
+/// Split a SCIP descriptor chain into path segments plus the kind its
+/// final marker implies. Backtick-escaped names unescape; parameter
+/// descriptors `(x)`, type parameters `[x]`, and malformed shapes yield
+/// None (the caller counts them skipped).
+fn parse_descriptors(desc: &str) -> Option<(Vec<String>, SymbolKind)> {
+    // (segment, marker): marker is the descriptor suffix, with 'm' for
+    // the method shape `name().`.
+    let mut segs: Vec<(String, char)> = Vec::new();
+    let mut cur = String::new();
+    let mut chars = desc.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '`' => loop {
+                match chars.next()? {
+                    '`' => break,
+                    escaped => cur.push(escaped),
+                }
+            },
+            '/' | '#' | '.' | '!' | ':' => {
+                if cur.is_empty() {
+                    return None;
+                }
+                segs.push((std::mem::take(&mut cur), c));
+            }
+            '(' => {
+                if cur.is_empty() {
+                    // `(param)` parameter descriptor — not a surface item.
+                    return None;
+                }
+                loop {
+                    if chars.next()? == ')' {
+                        break;
+                    }
+                }
+                if chars.next() != Some('.') {
+                    return None;
+                }
+                segs.push((std::mem::take(&mut cur), 'm'));
+            }
+            '[' => return None,
+            _ => cur.push(c),
+        }
+    }
+    if !cur.is_empty() || segs.is_empty() {
+        return None;
+    }
+    let kind = match segs.last()?.1 {
+        'm' if segs.len() >= 2 && segs[segs.len() - 2].1 == '#' => SymbolKind::Method,
+        'm' => SymbolKind::Function,
+        '#' => SymbolKind::Struct,
+        '/' => SymbolKind::Module,
+        '!' => SymbolKind::Macro,
+        '.' => SymbolKind::Constant,
+        // meta descriptor tail — nothing an agent asks "what breaks" about.
+        _ => return None,
+    };
+    Some((segs.into_iter().map(|(s, _)| s).collect(), kind))
 }
 
 fn span_contains(span: Span, pos: u64) -> bool {

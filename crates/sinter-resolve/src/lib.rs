@@ -4,4 +4,4 @@ mod scip;
 pub use resolver::{
     Binding, ResolutionStats, dynamic_edges, qualified_of, resolve, resolve_boundary,
 };
-pub use scip::{ScipError, load_index, merge_index_files, resolve_with_index};
+pub use scip::{ScipError, ScipResolution, load_index, merge_index_files, resolve_with_index};
