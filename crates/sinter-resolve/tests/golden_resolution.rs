@@ -465,3 +465,8 @@ fn resolution_rust_crate_assoc_items() {
 fn resolution_rust_crate_reexport() {
     check("rust-crate-reexport");
 }
+
+#[test]
+fn resolution_rust_mod_sibling_call() {
+    check("rust-mod-sibling-call");
+}

@@ -89,7 +89,15 @@ pub fn resolve_with_index(
             .or_default()
             .push(node);
     }
+    // Indexers can emit the SAME moniker for distinct definitions (e.g.
+    // rust-analyzer gives every test binary's `fn sinter()` helper one
+    // symbol string). Binding through such a moniker cross-file attaches
+    // refs to the wrong file's definition, so track ambiguity and keep a
+    // per-file map: an ambiguous symbol may only bind within the file
+    // that defines it.
     let mut def_of_symbol: HashMap<&str, &Node> = HashMap::new();
+    let mut ambiguous: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut same_file_def: HashMap<(&str, &str), &Node> = HashMap::new();
     for document in &index.documents {
         for occ in &document.occurrences {
             if occ.symbol_roles & scip::types::SymbolRole::Definition as i32 == 0 {
@@ -115,7 +123,17 @@ pub fn resolve_with_index(
                 .filter(|n| span_contains(n.span, pos))
                 .min_by_key(|n| n.span.end - n.span.start);
             if let Some(node) = target {
-                def_of_symbol.entry(&occ.symbol).or_insert(node);
+                same_file_def.insert((&occ.symbol, &document.relative_path), node);
+                match def_of_symbol.entry(&occ.symbol) {
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(node);
+                    }
+                    std::collections::hash_map::Entry::Occupied(e) => {
+                        if e.get().file != node.file {
+                            ambiguous.insert(&occ.symbol);
+                        }
+                    }
+                }
             }
         }
     }
@@ -142,7 +160,12 @@ pub fn resolve_with_index(
             {
                 continue;
             }
-            let Some(target) = def_of_symbol.get(occ.symbol.as_str()) else {
+            let target = if ambiguous.contains(occ.symbol.as_str()) {
+                same_file_def.get(&(occ.symbol.as_str(), document.relative_path.as_str()))
+            } else {
+                def_of_symbol.get(occ.symbol.as_str())
+            };
+            let Some(target) = target else {
                 continue;
             };
             let Some(pos) = occ
