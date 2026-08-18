@@ -506,7 +506,7 @@ fn install_for_cursor_and_agents() {
     let skills = dir.path().join("skills");
     let run = || {
         Command::new(env!("CARGO_BIN_EXE_sinter"))
-            .args(["install", "--for", "all", "--dir"])
+            .args(["install", "all", "--dir"])
             .arg(&skills)
             .args(["--repo"])
             .arg(repo)
@@ -726,7 +726,7 @@ fn init_runs_indexers_only_with_consent() {
     assert!(marker.exists(), "--scip must run the indexer");
 }
 
-/// `install --for enforce` writes the hook script and merges the three
+/// `install enforce` writes the hook script and merges the three
 /// settings entries idempotently, preserving unrelated settings and hooks.
 #[test]
 fn install_enforce_is_idempotent_and_preserving() {
@@ -740,7 +740,7 @@ fn install_enforce_is_idempotent_and_preserving() {
 
     let run = || {
         let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
-            .args(["install", "--for", "enforce", "--global"])
+            .args(["install", "enforce", "--global"])
             .env("HOME", home.path())
             .env("USERPROFILE", home.path())
             .output()
@@ -787,7 +787,7 @@ fn install_enforce_defaults_to_repo_scope() {
     let repo = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
-        .args(["install", "--for", "enforce"])
+        .args(["install", "enforce"])
         .current_dir(repo.path())
         .env("HOME", home.path())
         .env("USERPROFILE", home.path())

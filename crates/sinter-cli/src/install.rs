@@ -301,7 +301,7 @@ pub fn enforce(repo: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-/// Dispatch `--for` targets. Unknown names fail loudly with the list.
+/// Dispatch install targets. Unknown names fail loudly with the list.
 pub fn run_targets(
     targets: &[String],
     dir: Option<PathBuf>,
