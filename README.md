@@ -25,9 +25,11 @@ agent reading files cannot:
 The design rule underneath everything: **evidence or nothing.** An edge
 exists only when structural, scope, import, or compiler (SCIP) evidence
 binds a reference to a definition (workspace manifests may add
-operator-declared cross-repo links). Ambiguity resolves to nothing —
-"unresolved" is a first-class, counted outcome, never a guess. Every edge
-carries its evidence kind, and every query can filter on it.
+operator-declared cross-repo links, and Rust trait impls add labeled
+`dynamic` dispatch fan-out so blast radius survives `dyn Trait`).
+Ambiguity resolves to nothing — "unresolved" is a first-class, counted
+outcome, never a guess. Every edge carries its evidence kind, and every
+query can filter on it.
 
 ## Install
 
@@ -116,7 +118,7 @@ is auditable, in the same spirit as the edges.
 | `sinter version` | Version, graph schema, language packs |
 
 `affected`, `path`, and every MCP tool accept `--evidence
-scip,import,scope` and `--certain` to restrict traversal to stronger
+scip,import,scope,dynamic` and `--certain` to restrict traversal to stronger
 evidence tiers.
 
 ## Languages
