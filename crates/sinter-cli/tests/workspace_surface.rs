@@ -1,4 +1,4 @@
-//! Workspaces acceptance (docs/design-workspace.md): federation across
+//! Workspaces acceptance: federation across
 //! member repos, boundary links by import evidence only, declared links
 //! carrying their own evidence kind, deterministic output.
 

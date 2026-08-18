@@ -25,7 +25,7 @@ Runners:
 
 Rule: `expected.json` is derived from language semantics, never from engine
 output. Correcting an expectation requires a written semantics argument
-recorded in `DECISIONS.md` (see D14) — a failing test is never by itself a
+recorded in the git design history — a failing test is never by itself a
 reason to edit a fixture.
 
 Current corpus: 49 fixtures across six languages (basics plus idiom

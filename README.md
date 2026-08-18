@@ -20,7 +20,7 @@ agent reading files cannot:
   starting point in milliseconds (`sinter ask`, `sinter show`).
 - **Cross-repo workspaces** — federated graphs over many repos for
   distributed systems: blast radius, paths, and PR impact across service
-  boundaries (`--workspace`, `docs/design-workspace.md`).
+  boundaries (`--workspace`).
 
 The design rule underneath everything: **evidence or nothing.** An edge
 exists only when structural, scope, import, or compiler (SCIP) evidence
@@ -37,14 +37,14 @@ One line, no dependencies (Linux and macOS; verifies the release
 checksum, installs to `~/.local/bin`):
 
 ```
-curl -fsSL https://raw.githubusercontent.com/shellfu/sinter/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/shellfu/sinter/main/scripts/install.sh | sh
 ```
 
 Windows, in PowerShell (new and less battle-tested; verifies the release
 checksum, installs to `%LOCALAPPDATA%\sinter\bin`):
 
 ```
-irm https://raw.githubusercontent.com/shellfu/sinter/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/shellfu/sinter/main/scripts/install.ps1 | iex
 ```
 
 Or build from source (requires a Rust toolchain):
@@ -135,8 +135,7 @@ C++ (including Unreal Engine macro conventions), SQL (DDL/DML), Bash,
 and Protobuf. A language is pure data — a tree-sitter grammar, one `.scm`
 capture query, and a spec row — consumed by a single engine that never
 branches on language. Adding a language requires no engine code; if it
-ever does, the capture contract is wrong, not the language
-(`DECISIONS.md`, D13).
+ever does, the capture contract is wrong, not the language.
 
 If a compiler-produced SCIP index (`index.scip`) is present at the repo
 root or at `.sinter/index.scip`, sinter ingests it as the highest
@@ -157,19 +156,11 @@ automatically. Recipe, cache-key guidance, and a copy-paste workflow:
 
 ## Accuracy and performance are measured, not asserted
 
-- **Golden corpus**: 69 hand-verified fixtures across all twelve languages,
+- **Golden corpus**: 71 hand-verified fixtures across all twelve languages,
   mined from real-world extraction idioms. Extraction and resolution both
   gate CI at precision/recall 1.0; any change that moves the metric fails
   with the exact missing/extra tuples printed. Expectations derive from
   language semantics, never from engine output (`harness/golden/`).
-- **Agent token benchmark** (`docs/bench-agent-tokens.md`): blast-radius
-  questions cost an agent ~4× fewer tokens and 5× fewer turns than
-  grepping; simple lookups are parity. Measured, honest, N=1 per cell.
-- **Agent routing benchmark** (`docs/bench-routing.md`): unprompted
-  Claude Code sessions chose sinter first on 10/10 structure questions
-  and never invoked it on content questions (0/6) — measured on Haiku,
-  the floor model, on a machine with the enforcement hooks installed
-  (the `sinter init` default). One repo, n=16; script checked in.
 - **Budgets** (measured on a ~2M-LOC Go repository, 271k nodes, before
   the stat-gated scan landed): full build 18s, one-file edit under 1s
   typical, cold point query under 100ms, `ask` 66ms end-to-end. A clean
@@ -187,7 +178,3 @@ automatically. Recipe, cache-key guidance, and a copy-paste workflow:
 | `sinter-extract` | Language-agnostic tree-sitter extraction; languages as data |
 | `sinter-resolve` | Evidence-based reference resolution + SCIP ingest |
 | `sinter-cli` | The `sinter` binary: pipeline, verbs, MCP server |
-
-Design history lives in `DECISIONS.md` (one paragraph per decision,
-alternatives named). The human-query layer's full design is
-`docs/design-human-query.md`.

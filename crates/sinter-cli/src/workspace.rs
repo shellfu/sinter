@@ -1,4 +1,4 @@
-//! Cross-repo workspaces: federation, not merger (docs/design-workspace.md).
+//! Cross-repo workspaces: federation, not merger.
 //! Each member repo keeps its own `.sinter/` store; a small link store next
 //! to the manifest holds ONLY boundary edges. Boundary resolution consumes
 //! each member's already-persisted unresolved references and binds them
