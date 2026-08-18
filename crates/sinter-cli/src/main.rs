@@ -291,17 +291,26 @@ fn main() -> ExitCode {
             | Command::Serve { .. }
             | Command::Install { .. }
             | Command::Doctor { .. }
+            | Command::Update { .. }
+            | Command::Uninit { .. }
     ) && let Ok(cwd) = std::env::current_dir()
+        && update::nudge_due()
     {
+        let mut nudged = false;
         for warning in install::stale_artifacts(&pipeline::discover_root(&cwd)) {
             eprintln!("sinter: {warning}");
+            nudged = true;
         }
         // Cache read only — the network check lives in `doctor`.
         if let Some(latest) = update::cached_newer() {
             eprintln!(
-                "sinter: {latest} is available (running {}) — rerun the install one-liner",
+                "sinter: {latest} is available (running {}) — run `sinter update`",
                 env!("CARGO_PKG_VERSION")
             );
+            nudged = true;
+        }
+        if nudged {
+            update::mark_nudged();
         }
     }
     let result = match cli.command {

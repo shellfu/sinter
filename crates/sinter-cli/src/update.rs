@@ -67,6 +67,30 @@ fn write_cache(tag: &str) {
     let _ = std::fs::write(&path, format!("{tag}\n"));
 }
 
+/// Nudge throttle: sinter is agent-first, and an agent fans out dozens
+/// of calls per session — repeating stale-artifact lines on every one is
+/// context pollution. At most one nudge burst per hour per machine.
+pub fn nudge_due() -> bool {
+    let Some(stamp) = cache_file().map(|p| p.with_file_name("nudge-stamp")) else {
+        return true;
+    };
+    !std::fs::metadata(&stamp)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age.as_secs() < 3600)
+}
+
+pub fn mark_nudged() {
+    let Some(stamp) = cache_file().map(|p| p.with_file_name("nudge-stamp")) else {
+        return;
+    };
+    if let Some(dir) = stamp.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&stamp, b"");
+}
+
 /// Refresh the cache when it is older than 24h.
 /// Silent on any failure — an update check must never break a command.
 pub fn refresh_cache() {
