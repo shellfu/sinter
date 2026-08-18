@@ -236,8 +236,16 @@ impl Store {
     }
 
     /// Drop non-structural (resolution) edges whose src node lives in one of
-    /// these files, ahead of re-resolution.
-    pub fn remove_resolution_edges(&self, files: &BTreeSet<String>) -> Result<(), StoreError> {
+    /// these files, ahead of re-resolution. Returns the dst files of removed
+    /// Dynamic edges: those files' trait-impl facts must join the
+    /// re-resolution set or their fan-out edges would be silently lost
+    /// (dynamic edges are src-owned like every resolution edge, but derived
+    /// from dst-file facts).
+    pub fn remove_resolution_edges(
+        &self,
+        files: &BTreeSet<String>,
+    ) -> Result<BTreeSet<String>, StoreError> {
+        let mut dynamic_dst_files = BTreeSet::new();
         let txn = self.db.begin_write()?;
         {
             let facts_table = txn.open_table(FILE_FACTS)?;
@@ -258,13 +266,16 @@ impl Store {
                         if edge.evidence != Evidence::Structural {
                             out.remove(node.id.as_str(), bytes.as_slice())?;
                             inn.remove(edge.dst.as_str(), bytes.as_slice())?;
+                            if edge.evidence == Evidence::Dynamic {
+                                dynamic_dst_files.insert(file_of_id(edge.dst.as_str()).to_string());
+                            }
                         }
                     }
                 }
             }
         }
         txn.commit()?;
-        Ok(())
+        Ok(dynamic_dst_files)
     }
 
     /// Insert resolution edges (both directions).

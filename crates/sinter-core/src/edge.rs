@@ -41,6 +41,11 @@ pub enum Evidence {
     /// coupling like queue topics/HTTP routes that no static analysis can
     /// see). Auditable in the manifest; never inferred.
     Declared,
+    /// Dynamic-dispatch fan-out: a trait/interface method is assumed to
+    /// reach every implementation in the corpus. Conservative
+    /// over-approximation, deliberately excludable (`--certain`,
+    /// `--evidence` without "dynamic").
+    Dynamic,
 }
 
 impl Evidence {
@@ -51,6 +56,7 @@ impl Evidence {
             Self::Import => "import",
             Self::Scip => "scip",
             Self::Declared => "declared",
+            Self::Dynamic => "dynamic",
         }
     }
 
@@ -59,7 +65,7 @@ impl Evidence {
     pub fn confidence(self) -> Confidence {
         match self {
             Self::Structural | Self::Scip | Self::Declared => Confidence::Certain,
-            Self::Scope | Self::Import => Confidence::Inferred,
+            Self::Scope | Self::Import | Self::Dynamic => Confidence::Inferred,
         }
     }
 }

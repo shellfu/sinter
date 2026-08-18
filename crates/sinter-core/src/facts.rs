@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::edge::Edge;
 use crate::node::Node;
-use crate::reference::{Embed, LocalBinding, Reference};
+use crate::reference::{Embed, LocalBinding, Reference, TraitImpl};
 
 /// Everything extraction produces for one file. Content-addressed: the hash
 /// is the incrementality key — same bytes, same facts. The persisted set of
@@ -25,4 +25,6 @@ pub struct FileFacts {
     pub locals: Vec<LocalBinding>,
     /// Type embeddings (promoted members). Resolution lookup input.
     pub embeds: Vec<Embed>,
+    /// Trait-impl blocks. Dynamic-dispatch edge input.
+    pub trait_impls: Vec<TraitImpl>,
 }

@@ -25,6 +25,8 @@ use tree_sitter::Language;
 ///   of the module binds.
 /// - `@local` (+ `@local.type`) — shadowing bindings, optionally typed.
 /// - `@embed`          embedded/promoted type members (Go).
+/// - `@trait` + `@trait.impl` — an impl block (`@trait.impl`) naming the
+///   trait it implements (`@trait`): dynamic-dispatch pairing input.
 /// - `@doc`            a node whose text IS the definition's doc (Python
 ///   docstrings): attached to the smallest containing definition,
 ///   overriding any sibling-comment doc.

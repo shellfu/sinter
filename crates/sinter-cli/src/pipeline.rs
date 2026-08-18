@@ -356,17 +356,23 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
 
     let mut stats = sinter_resolve::ResolutionStats::default();
     if !affected.is_empty() {
-        store.remove_resolution_edges(&affected)?;
+        // Dynamic fan-out edges are re-derived from their dst files' facts;
+        // any such file losing edges here must join the set (its unchanged
+        // refs re-resolve to identical edges — a set-semantics no-op).
+        let dynamic_dst = store.remove_resolution_edges(&affected)?;
+        affected.extend(dynamic_dst);
         let nodes = store.all_nodes()?;
         let all_imports = store.all_imports()?;
         let mut refs: Vec<Reference> = Vec::new();
         let mut locals: Vec<sinter_core::LocalBinding> = Vec::new();
         let mut embeds: Vec<sinter_core::Embed> = Vec::new();
+        let mut trait_impls: Vec<sinter_core::TraitImpl> = Vec::new();
         for file in &affected {
             if let Some(facts) = store.facts(file)? {
                 refs.extend(facts.references);
                 locals.extend(facts.locals);
                 embeds.extend(facts.embeds);
+                trait_impls.extend(facts.trait_impls);
             }
         }
 
@@ -384,6 +390,12 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
             internal_dst.insert(binding.reference, binding.edge.dst.clone());
             edges.push(binding.edge);
         }
+        edges.extend(sinter_resolve::dynamic_edges(
+            &nodes,
+            &trait_impls,
+            &all_imports,
+            &module_roots,
+        ));
         if let Some(scip_path) = scip_index_path(&repo) {
             let index = sinter_resolve::load_index(&scip_path)?;
             for binding in sinter_resolve::resolve_with_index(&index, &nodes, &refs, |rel| {

@@ -363,7 +363,7 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
 fn tools_list() -> Value {
     let filters = json!({
         "evidence": {"type": "array", "items": {"type": "string",
-            "enum": ["structural", "scope", "import", "scip"]},
+            "enum": ["structural", "scope", "import", "scip", "dynamic"]},
             "description": "restrict to these evidence kinds"},
         "min_confidence": {"type": "string", "enum": ["certain", "inferred"],
             "description": "certain = compiler-grade edges only"},
@@ -538,7 +538,7 @@ fn ws_call_tool(manifest: &Path, name: &str, args: &Value) -> Result<Value> {
 fn ws_tools_list() -> Value {
     let filters = json!({
         "evidence": {"type": "array", "items": {"type": "string",
-            "enum": ["structural", "scope", "import", "scip"]},
+            "enum": ["structural", "scope", "import", "scip", "dynamic"]},
             "description": "restrict to these evidence kinds"},
         "min_confidence": {"type": "string", "enum": ["certain", "inferred"],
             "description": "certain = compiler-grade edges only"},

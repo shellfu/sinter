@@ -469,3 +469,10 @@ fn golden_rust_crate_reexport() {
 fn golden_rust_mod_sibling_call() {
     check("rust-mod-sibling-call");
 }
+
+/// Dynamic dispatch: a trait with two impls and a caller through the
+/// trait. Extraction records the trait-impl headers as `uses` references.
+#[test]
+fn golden_rust_dyn_dispatch() {
+    check("rust-dyn-dispatch");
+}
