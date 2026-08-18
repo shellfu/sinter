@@ -587,3 +587,12 @@ fn resolution_csharp_inheritance() {
 fn resolution_markdown_headings() {
     check("markdown-headings");
 }
+
+/// Link edges: section -> file (sibling, subdir, extensionless),
+/// section -> section (`#fragment`, same- and cross-file via heading
+/// slugs); a dead link is the one unresolved ref, an external URL is
+/// nothing at all.
+#[test]
+fn resolution_markdown_links() {
+    check("markdown-links");
+}

@@ -151,6 +151,8 @@ struct Index<'a> {
     by_file_qualified: HashMap<(&'a str, &'a str), &'a Node>,
     /// exact file path -> file node (includes naming a literal repo file).
     file_nodes: HashMap<&'a str, &'a Node>,
+    /// file -> its non-file defs, for fragment-slug lookup (file_refs).
+    defs_by_file: HashMap<&'a str, Vec<&'a Node>>,
     /// name -> (absolute module segments, def).
     by_name: HashMap<&'a str, Vec<(Vec<String>, &'a Node)>>,
     /// last module segment -> (module segments, file node).
@@ -243,6 +245,7 @@ fn build_index<'a>(
         by_file_name: HashMap::new(),
         by_file_qualified: HashMap::new(),
         file_nodes: HashMap::new(),
+        defs_by_file: HashMap::new(),
         by_name: HashMap::new(),
         by_module_tail: HashMap::new(),
         files_of_module: HashMap::new(),
@@ -308,6 +311,11 @@ fn build_index<'a>(
         index
             .by_file_qualified
             .insert((node.file.as_str(), qualified), node);
+        index
+            .defs_by_file
+            .entry(node.file.as_str())
+            .or_default()
+            .push(node);
         index
             .by_file_name
             .entry((node.file.as_str(), node.name.as_str()))
@@ -713,6 +721,11 @@ fn resolve_one<'a>(
     }
 
     if let Some(path) = &r.path {
+        // Document-path languages (spec.file_refs): the path names a
+        // corpus file, never a symbol — dedicated tier, no fallthrough.
+        if spec.file_refs {
+            return resolve_file_ref(index, spec, r, path);
+        }
         // Qualified reference: receiver, typed local, shadow, absolute
         // path, then imports — strongest local knowledge first.
         let segments = expand(
@@ -871,6 +884,72 @@ fn resolve_one<'a>(
         _ => (None, true), // ambiguous named imports
     };
     (target, Evidence::Import, internal)
+}
+
+/// Document-path reference (spec.file_refs, e.g. a markdown link): the
+/// path resolves to a corpus file — the same exact-file evidence imports
+/// carry — with the language's extensions optional and `#fragment`
+/// binding the target file's unique def whose name slugifies to the
+/// fragment (`#quality-gate` -> the "Quality Gate" section). A path that
+/// names no corpus file is a dead or external link and stays unresolved:
+/// evidence or nothing, never a guess.
+fn resolve_file_ref<'a>(
+    index: &Index<'a>,
+    spec: &LanguageSpec,
+    r: &Reference,
+    path: &str,
+) -> (Option<&'a Node>, Evidence, bool) {
+    let (head, frag) = match path.split_once('#') {
+        Some((h, f)) => (h, Some(f)),
+        None => (path, None),
+    };
+    let file = if head.is_empty() {
+        // `#fragment` alone: the linking file itself.
+        index.file_nodes.get(r.file.as_str()).copied()
+    } else {
+        let joined = (spec.absolutize)(head, &r.file).join("/");
+        index.file_nodes.get(joined.as_str()).copied().or_else(|| {
+            spec.extensions.iter().find_map(|ext| {
+                index
+                    .file_nodes
+                    .get(format!("{joined}.{ext}").as_str())
+                    .copied()
+            })
+        })
+    };
+    match (file, frag) {
+        (Some(file), None) => (Some(file), Evidence::Import, true),
+        (Some(file), Some(frag)) => {
+            let matching: Vec<&Node> = index
+                .defs_by_file
+                .get(file.file.as_str())
+                .into_iter()
+                .flatten()
+                .filter(|n| slugify(&n.name) == frag)
+                .copied()
+                .collect();
+            // The file is corpus evidence: a fragment miss (or a
+            // duplicate slug) is internal, and unique-or-nothing holds.
+            match matching.as_slice() {
+                [node] => (Some(node), Evidence::Import, true),
+                _ => (None, Evidence::Import, true),
+            }
+        }
+        (None, _) => (None, Evidence::Import, false),
+    }
+}
+
+/// GitHub-style heading slug: lowercase, spaces become dashes, `-`/`_`
+/// survive, other punctuation drops.
+fn slugify(name: &str) -> String {
+    name.chars()
+        .filter_map(|c| match c {
+            ' ' => Some('-'),
+            '-' | '_' => Some(c),
+            c if c.is_alphanumeric() => Some(c.to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Dynamic-dispatch fan-out edges: for every impl block naming a trait the

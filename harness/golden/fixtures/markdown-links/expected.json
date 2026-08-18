@@ -1,0 +1,36 @@
+{
+  "nodes": [
+    ["file", "README.md", "README.md"],
+    ["section", "Index", "README.md"],
+    ["file", "docs/guide.md", "docs/guide.md"],
+    ["section", "Guide", "docs/guide.md"],
+    ["section", "Guide::Setup", "docs/guide.md"],
+    ["section", "Guide::Usage", "docs/guide.md"],
+    ["file", "docs/notes.md", "docs/notes.md"],
+    ["section", "Notes", "docs/notes.md"],
+    ["section", "Notes::Deep Dive", "docs/notes.md"]
+  ],
+  "contains": [
+    ["README.md", "Index"],
+    ["docs/guide.md", "Guide"],
+    ["Guide", "Guide::Setup"],
+    ["Guide", "Guide::Usage"],
+    ["docs/notes.md", "Notes"],
+    ["Notes", "Notes::Deep Dive"]
+  ],
+  "references": [
+    ["uses", "docs/guide.md"],
+    ["uses", "docs/guide"],
+    ["uses", "docs/missing.md"],
+    ["uses", "notes.md"],
+    ["uses", "notes.md#deep-dive"],
+    ["uses", "#setup"]
+  ],
+  "resolved": [
+    ["import", "uses", "Index", "docs/guide.md", "README.md", "docs/guide.md"],
+    ["import", "uses", "Guide::Setup", "docs/notes.md", "docs/guide.md", "docs/notes.md"],
+    ["import", "uses", "Guide::Setup", "Notes::Deep Dive", "docs/guide.md", "docs/notes.md"],
+    ["import", "uses", "Guide::Usage", "Guide::Setup", "docs/guide.md", "docs/guide.md"]
+  ],
+  "unresolved_count": 1
+}
