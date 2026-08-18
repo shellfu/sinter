@@ -120,7 +120,7 @@ is auditable, in the same spirit as the edges.
 | `sinter init --workspace` | Write a starter workspace manifest (never overwrites) |
 | `sinter install [targets]` | Write agent cards (claude, cursor, agents/AGENTS.md, enforce, all); `--mcp` registers the server for Claude Code, Cursor, and Codex |
 | `sinter scip [repo]` | Run every matching compiler indexer, merge into `.sinter/index.scip`, rebuild; no-op when fresh (`--force` reindexes); `scip check` is the CI freshness guard |
-| `sinter doctor [repo]` | Diagnose installation + graph (including an MCP handshake and lock-held reporting); every finding names its fix |
+| `sinter doctor [repo]` | Diagnose installation + graph (including an MCP handshake and lock-held reporting); every finding names its fix; `--fix` applies the safe ones |
 | `sinter completion <shell>` | Shell completions |
 | `sinter version` | Version, graph schema, language packs |
 

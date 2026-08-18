@@ -113,5 +113,5 @@ pub fn run(repo: &Path, cursor: bool, scip: Option<bool>, global: bool) -> Resul
     }
 
     println!("\n== doctor ==");
-    doctor::run(&repo)
+    doctor::run(&repo, false)
 }
