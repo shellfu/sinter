@@ -7,6 +7,7 @@ mod impact;
 mod init;
 mod install;
 mod lookup;
+mod map;
 mod overlap;
 mod pathcmd;
 mod pipeline;
@@ -131,6 +132,11 @@ enum Command {
         /// Install enforcement hooks globally (~/.claude) instead of in the repo
         #[arg(short = 'g', long)]
         global: bool,
+        /// Strict enforcement (enforce target only): the first raw
+        /// recursive search of a session is blocked with a sinter
+        /// redirect; retries pass with a nudge
+        #[arg(long)]
+        strict: bool,
     },
     /// Install git hooks that refresh the graph after commits/checkouts
     Hooks {
@@ -228,6 +234,20 @@ enum Command {
         /// Reindex even when the index is fresh
         #[arg(long)]
         force: bool,
+    },
+    /// One-screen orientation for a repo: modules, hubs, doc entry points
+    Map {
+        #[arg(default_value = ".")]
+        repo: PathBuf,
+        /// Structured output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Download and install the latest release over this binary
+    Update {
+        /// Report what would happen without downloading anything
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Print version, graph schema, and language packs (for bug reports)
     Version,
@@ -365,7 +385,15 @@ fn main() -> ExitCode {
             mcp,
             repo,
             global,
-        } => install::run_targets(&for_targets.unwrap_or(targets), dir, mcp, &repo, global),
+            strict,
+        } => install::run_targets(
+            &for_targets.unwrap_or(targets),
+            dir,
+            mcp,
+            &repo,
+            global,
+            strict,
+        ),
         Command::Hooks {
             action: HooksAction::Install { repo },
         } => hooks::install(&repo),
@@ -432,6 +460,8 @@ fn main() -> ExitCode {
             None if force => scip::run(&repo),
             None => scip::run_if_stale(&repo),
         },
+        Command::Map { repo, json } => map::run(&repo, json),
+        Command::Update { dry_run } => update::run(dry_run),
         Command::Completion { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "sinter", &mut std::io::stdout());
             Ok(())
