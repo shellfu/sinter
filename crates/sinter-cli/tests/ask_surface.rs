@@ -726,6 +726,20 @@ fn init_runs_indexers_only_with_consent() {
     assert!(marker.exists(), "--scip must run the indexer");
 }
 
+/// Enforcement hook file this platform installs (bash on unix,
+/// PowerShell on Windows) — mirrors `install::PLATFORM_HOOK`.
+const HOOK_FILE: &str = if cfg!(windows) {
+    "sinter-first.ps1"
+} else {
+    "sinter-first.sh"
+};
+/// The variant the platform must NOT install.
+const OTHER_HOOK_FILE: &str = if cfg!(windows) {
+    "sinter-first.sh"
+} else {
+    "sinter-first.ps1"
+};
+
 /// `install enforce` writes the hook script and merges the three
 /// settings entries idempotently, preserving unrelated settings and hooks.
 #[test]
@@ -754,7 +768,15 @@ fn install_enforce_is_idempotent_and_preserving() {
     run();
     run();
 
-    assert!(home.path().join(".claude/hooks/sinter-first.sh").exists());
+    assert!(home.path().join(".claude/hooks").join(HOOK_FILE).exists());
+    assert!(
+        !home
+            .path()
+            .join(".claude/hooks")
+            .join(OTHER_HOOK_FILE)
+            .exists(),
+        "only the platform's hook variant is installed"
+    );
     let settings: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(home.path().join(".claude/settings.json")).unwrap(),
     )
@@ -762,12 +784,9 @@ fn install_enforce_is_idempotent_and_preserving() {
     assert_eq!(settings["model"], "opus", "unrelated settings preserved");
     let text = settings.to_string();
     assert!(text.contains("other-tool hook"), "existing hooks preserved");
+    assert!(text.contains(HOOK_FILE), "{text}");
     // Trailing quote anchors each mode ("grep" is a prefix of "greptool").
-    for marker in [
-        "sinter-first.sh prompt\"",
-        "sinter-first.sh grep\"",
-        "sinter-first.sh greptool\"",
-    ] {
+    for marker in [" prompt\"", " grep\"", " greptool\""] {
         assert_eq!(
             text.matches(marker).count(),
             1,
@@ -777,6 +796,20 @@ fn install_enforce_is_idempotent_and_preserving() {
     assert!(
         !text.contains("permissionDecision"),
         "enforcement must never carry a permission decision"
+    );
+
+    // Doctor accepts the platform's variant and never demands the other.
+    let doctor = Command::new(env!("CARGO_BIN_EXE_sinter"))
+        .args(["doctor"])
+        .current_dir(home.path())
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .output()
+        .expect("run doctor");
+    let out = String::from_utf8_lossy(&doctor.stdout);
+    assert!(
+        out.contains("enforcement hooks installed and current"),
+        "doctor must accept the {HOOK_FILE} enforcement install: {out}"
     );
 }
 
@@ -798,14 +831,19 @@ fn install_enforce_defaults_to_repo_scope() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(repo.path().join(".claude/hooks/sinter-first.sh").exists());
+    assert!(repo.path().join(".claude/hooks").join(HOOK_FILE).exists());
     let settings = std::fs::read_to_string(repo.path().join(".claude/settings.json")).unwrap();
+    let relative_cmd = if cfg!(windows) {
+        "& '.claude/hooks/sinter-first.ps1' prompt".to_string()
+    } else {
+        "bash .claude/hooks/sinter-first.sh prompt".to_string()
+    };
     assert!(
-        settings.contains("bash .claude/hooks/sinter-first.sh prompt"),
+        settings.contains(&relative_cmd),
         "repo scope must use a relative command: {settings}"
     );
     assert!(
-        !home.path().join(".claude/hooks/sinter-first.sh").exists(),
+        !home.path().join(".claude/hooks").join(HOOK_FILE).exists(),
         "repo scope must not touch the global home"
     );
 }
@@ -848,12 +886,13 @@ fn uninit_reverses_init_and_preserves_user_content() {
     };
     run(&["init"]);
     assert!(repo.join(".sinter/graph.redb").exists());
-    assert!(repo.join(".claude/hooks/sinter-first.sh").exists());
+    assert!(repo.join(".claude/hooks").join(HOOK_FILE).exists());
     run(&["uninit"]);
 
     for gone in [
         ".sinter",
         ".claude/hooks/sinter-first.sh",
+        ".claude/hooks/sinter-first.ps1",
         ".claude/settings.json",
         ".codex/config.toml",
         ".git/hooks/post-commit",

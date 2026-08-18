@@ -122,6 +122,7 @@ pub fn run(repo: &Path, global: bool) -> Result<bool> {
 /// that is not ours.
 fn remove_enforcement(claude: &Path) -> Result<()> {
     remove_file(&claude.join("hooks/sinter-first.sh"))?;
+    remove_file(&claude.join("hooks/sinter-first.ps1"))?;
     let settings_path = claude.join("settings.json");
     let Some(mut root) = read_json(&settings_path) else {
         return Ok(());
@@ -140,7 +141,7 @@ fn remove_enforcement(claude: &Path) -> Result<()> {
                 list.retain(|h| {
                     !h.get("command")
                         .and_then(Value::as_str)
-                        .is_some_and(|c| c.contains("sinter-first.sh"))
+                        .is_some_and(|c| c.contains("sinter-first."))
                 });
                 changed |= list.len() != before;
             }
