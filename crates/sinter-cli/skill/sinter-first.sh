@@ -6,7 +6,8 @@
 # Bash command, including anything destructive sharing a line with a grep.
 # Modes:
 #   prompt   — UserPromptSubmit: one always-on router line
-#   grep     — PreToolUse(Bash): nudge attached to recursive-search commands
+#   grep     — PreToolUse(Bash): nudge on recursive-search commands, plus a
+#              git-archaeology nudge on git show/diff/diff-tree/log
 #   greptool — PreToolUse(Grep): nudge for the dedicated Grep tool
 root=""
 d="$PWD"
