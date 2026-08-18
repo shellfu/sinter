@@ -92,8 +92,10 @@ fn handle(scope: &Scope, method: &str, params: &Value) -> Result<Value> {
                 Scope::Repo(repo) => call_tool(repo, name, &args)?,
                 Scope::Workspace(manifest) => ws_call_tool(manifest, name, &args)?,
             };
+            // Compact encoding: the consumer is an agent, not a human;
+            // pretty-printing is pure token waste.
             Ok(json!({
-                "content": [{"type": "text", "text": serde_json::to_string_pretty(&result)?}]
+                "content": [{"type": "text", "text": serde_json::to_string(&result)?}]
             }))
         }
         other => anyhow::bail!("unknown method {other}"),
@@ -129,6 +131,119 @@ fn node_json(node: &Node) -> Value {
         "signature": node.signature,
         "doc": node.doc,
     })
+}
+
+/// limit/detail knobs shared by both scopes' `affected`.
+fn affected_args(args: &Value) -> (usize, bool) {
+    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
+    let detail = args.get("detail").and_then(Value::as_bool).unwrap_or(false);
+    (limit, detail)
+}
+
+/// Descending per-file dependent counts, top 10 — the summary an agent
+/// reads instead of scrolling N entries.
+fn by_file(files: impl Iterator<Item = String>) -> Value {
+    let mut counts = std::collections::HashMap::<String, u64>::new();
+    for f in files {
+        *counts.entry(f).or_default() += 1;
+    }
+    let mut pairs: Vec<_> = counts.into_iter().collect();
+    pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    pairs.truncate(10);
+    json!(pairs)
+}
+
+/// Terse dependents keep responses bounded: no doc, signature, span, or id
+/// per entry — `show` exists for that. Adds "truncated" only when nonzero.
+fn affected_json(
+    symbol: Value,
+    unresolved: Value,
+    scip: Option<bool>,
+    entries: Vec<Value>,
+    files: Value,
+    total: usize,
+    limit: usize,
+) -> Value {
+    let mut out = json!({
+        "symbol": symbol,
+        "total": total,
+        "unresolved_refs_matching_name": unresolved,
+        "by_file": files,
+        "dependents": entries,
+    });
+    if let Some(scip) = scip {
+        out["scip_evidence_available"] = json!(scip);
+    }
+    if total > limit {
+        out["truncated"] = json!(total - limit);
+    }
+    out
+}
+
+/// One symbol's repo-scope blast radius, summary-first. The root keeps the
+/// full node (one doc is cheap and useful); dependents are terse.
+fn affected_one(
+    store: &sinter_store::Store,
+    repo: &Path,
+    sym: &str,
+    filter: &sinter_store::EdgeFilter,
+    depth: usize,
+    limit: usize,
+    detail: bool,
+) -> Result<Value> {
+    let node = match unique_symbol(store, sym) {
+        Ok(node) => node,
+        Err(e) => {
+            let sites = crate::lookup::external_sites(store, sym)?;
+            if sites.is_empty() {
+                return Err(e);
+            }
+            return Ok(json!({
+                "external": true,
+                "note": "symbol is not defined in this repo; sites reference it (dependency blast radius at the repo boundary)",
+                "sites": sites.iter().map(|s| json!({
+                    "enclosing": s.enclosing,
+                    "file": s.file,
+                    "refs": s.refs,
+                })).collect::<Vec<_>>(),
+            }));
+        }
+    };
+    let reached = store.dependents(&node.id, filter, depth)?;
+    // Honest-empty signal: unresolved refs sharing the name mean
+    // the dependents list may be incomplete, never authoritative.
+    let unresolved = store.unresolved_named(&node.name)?;
+    let entries: Vec<Value> = reached
+        .iter()
+        .take(limit)
+        .map(|r| {
+            if detail {
+                json!({
+                    "node": node_json(&r.node),
+                    "depth": r.depth,
+                    "relation": r.via.relation.as_str(),
+                    "evidence": r.via.evidence.as_str(),
+                })
+            } else {
+                json!({
+                    "s": qualified_of(r.node.id.as_str()),
+                    "k": r.node.kind.as_str(),
+                    "f": r.node.file,
+                    "e": format!("{}/{}", r.via.relation.as_str(), r.via.evidence.as_str()),
+                    "d": r.depth,
+                })
+            }
+        })
+        .collect();
+    Ok(affected_json(
+        node_json(&node),
+        json!(unresolved),
+        Some(crate::pipeline::scip_index_path(repo).is_some()),
+        entries,
+        by_file(reached.iter().map(|r| r.node.file.clone())),
+        reached.len(),
+        limit,
+    ))
 }
 
 fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
@@ -204,39 +319,26 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
             let (evidence, certain) = filter_args(args);
             let filter = edge_filter(&evidence, certain)?;
             let depth = args.get("max_depth").and_then(Value::as_u64).unwrap_or(10) as usize;
-            let node = match unique_symbol(store, &symbol("symbol")?) {
-                Ok(node) => node,
-                Err(e) => {
-                    let sites = crate::lookup::external_sites(store, &symbol("symbol")?)?;
-                    if sites.is_empty() {
-                        return Err(e);
-                    }
-                    return Ok(json!({
-                        "external": true,
-                        "note": "symbol is not defined in this repo; sites reference it (dependency blast radius at the repo boundary)",
-                        "sites": sites.iter().map(|s| json!({
-                            "enclosing": s.enclosing,
-                            "file": s.file,
-                            "refs": s.refs,
-                        })).collect::<Vec<_>>(),
-                    }));
-                }
+            let (limit, detail) = affected_args(args);
+            let one = |sym: &str| -> Result<Value> {
+                affected_one(store, repo, sym, &filter, depth, limit, detail)
             };
-            let reached = store.dependents(&node.id, &filter, depth)?;
-            // Honest-empty signal: unresolved refs sharing the name mean
-            // the dependents list may be incomplete, never authoritative.
-            let unresolved = store.unresolved_named(&node.name)?;
-            Ok(json!({
-                "symbol": node_json(&node),
-                "unresolved_refs_matching_name": unresolved,
-                "scip_evidence_available": crate::pipeline::scip_index_path(repo).is_some(),
-                "dependents": reached.iter().map(|r| json!({
-                    "node": node_json(&r.node),
-                    "depth": r.depth,
-                    "relation": r.via.relation.as_str(),
-                    "evidence": r.via.evidence.as_str(),
-                })).collect::<Vec<_>>(),
-            }))
+            // Batch: one call answers many symbols; a bad symbol becomes an
+            // error entry instead of failing the whole call.
+            if let Some(list) = args.get("symbols").and_then(Value::as_array) {
+                let results: Vec<Value> = list
+                    .iter()
+                    .map(|v| {
+                        let Some(sym) = v.as_str() else {
+                            return json!({"symbol": v, "error": "symbols entries must be strings"});
+                        };
+                        one(sym)
+                            .unwrap_or_else(|e| json!({"symbol": sym, "error": format!("{e:#}")}))
+                    })
+                    .collect();
+                return Ok(json!({"results": results}));
+            }
+            one(&symbol("symbol")?)
         }
         "path" => {
             let (evidence, certain) = filter_args(args);
@@ -292,13 +394,19 @@ fn tools_list() -> Value {
         },
         {
             "name": "affected",
-            "description": "Reverse blast radius: everything transitively depending on a symbol, cross-file. Each edge reports its evidence. unresolved_refs_matching_name > 0 means the list may be incomplete — refine, or run `sinter scip`.",
+            "description": "Reverse blast radius: everything transitively depending on a symbol, cross-file. Summary-first: total, by_file (top files by dependent count), then dependents capped at `limit` (default 50; `truncated` reports how many were omitted). Terse dependent keys: s=qualified symbol, k=kind, f=file, e=relation/evidence, d=depth. Pass detail:true for full nodes within the limit. Pass `symbols` (array) to batch many symbols in one call — response is {results:[...]}, per-symbol errors inline. unresolved_refs_matching_name > 0 means the list may be incomplete — refine, or run `sinter scip`.",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": {"type": "string"},
+                "symbols": {"type": "array", "items": {"type": "string"},
+                    "description": "batch: blast radius for each; overrides `symbol`"},
                 "max_depth": {"type": "integer"},
+                "limit": {"type": "integer",
+                    "description": "max dependents returned (default 50)"},
+                "detail": {"type": "boolean",
+                    "description": "full node objects instead of terse entries"},
                 "evidence": filters["evidence"],
                 "min_confidence": filters["min_confidence"],
-            }, "required": ["symbol"]},
+            }},
         },
         {
             "name": "path",
@@ -360,21 +468,43 @@ fn ws_call_tool(manifest: &Path, name: &str, args: &Value) -> Result<Value> {
             let (evidence, certain) = filter_args(args);
             let filter = edge_filter(&evidence, certain)?;
             let depth = args.get("max_depth").and_then(Value::as_u64).unwrap_or(10) as usize;
+            let (limit, detail) = affected_args(args);
             let (member, node) = crate::workspace::find_symbol(&ws, &symbol("symbol")?)?;
             let reached = crate::workspace::dependents(&ws, &member, &node.id, &filter, depth)?;
             // Honest-empty signal from the origin member's store.
             let store = sinter_store::Store::open(crate::pipeline::db_path(&ws.members[&member]))?;
             let unresolved = store.unresolved_named(&node.name)?;
-            Ok(json!({
-                "symbol": member_node(&node, &member),
-                "unresolved_refs_matching_name": unresolved,
-                "dependents": reached.iter().map(|r| json!({
-                    "node": member_node(&r.node, &r.member),
-                    "relation": r.relation.as_str(),
-                    "evidence": r.evidence.as_str(),
-                    "parent": format!("{}:{}", r.parent.0, qualified_of(&r.parent.1)),
-                })).collect::<Vec<_>>(),
-            }))
+            let entries: Vec<Value> = reached
+                .iter()
+                .take(limit)
+                .map(|r| {
+                    if detail {
+                        json!({
+                            "node": member_node(&r.node, &r.member),
+                            "relation": r.relation.as_str(),
+                            "evidence": r.evidence.as_str(),
+                            "parent": format!("{}:{}", r.parent.0, qualified_of(&r.parent.1)),
+                        })
+                    } else {
+                        json!({
+                            "s": format!("{}:{}", r.member, qualified_of(r.node.id.as_str())),
+                            "k": r.node.kind.as_str(),
+                            "f": r.node.file,
+                            "e": format!("{}/{}", r.relation.as_str(), r.evidence.as_str()),
+                            "p": format!("{}:{}", r.parent.0, qualified_of(&r.parent.1)),
+                        })
+                    }
+                })
+                .collect();
+            Ok(affected_json(
+                member_node(&node, &member),
+                json!(unresolved),
+                None,
+                entries,
+                by_file(reached.iter().map(|r| r.node.file.clone())),
+                reached.len(),
+                limit,
+            ))
         }
         "path" => {
             let (from_member, from) = crate::workspace::find_symbol(&ws, &symbol("from")?)?;
@@ -424,10 +554,14 @@ fn ws_tools_list() -> Value {
         },
         {
             "name": "affected",
-            "description": format!("Cross-repository blast radius: everything transitively depending on a symbol across all workspace members, boundary links included. Each edge reports its evidence; unresolved_refs_matching_name > 0 means the list may be incomplete. {addressing}"),
+            "description": format!("Cross-repository blast radius: everything transitively depending on a symbol across all workspace members, boundary links included. Summary-first: total, by_file, then dependents capped at `limit` (default 50; `truncated` reports omissions). Terse dependent keys: s=member:qualified symbol, k=kind, f=file, e=relation/evidence, p=parent. Pass detail:true for full nodes within the limit. unresolved_refs_matching_name > 0 means the list may be incomplete. {addressing}"),
             "inputSchema": {"type": "object", "properties": {
                 "symbol": {"type": "string"},
                 "max_depth": {"type": "integer"},
+                "limit": {"type": "integer",
+                    "description": "max dependents returned (default 50)"},
+                "detail": {"type": "boolean",
+                    "description": "full node objects instead of terse entries"},
                 "evidence": filters["evidence"],
                 "min_confidence": filters["min_confidence"],
             }, "required": ["symbol"]},
