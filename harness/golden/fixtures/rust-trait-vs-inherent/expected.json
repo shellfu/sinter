@@ -1,32 +1,124 @@
 {
   "nodes": [
-    ["file", "src/lib.rs", "src/lib.rs"],
-    ["module", "widget", "src/lib.rs"],
-    ["function", "main_run", "src/lib.rs"],
-    ["file", "src/widget.rs", "src/widget.rs"],
-    ["struct", "Widget", "src/widget.rs"],
-    ["trait", "Runner", "src/widget.rs"],
-    ["function", "Runner::run", "src/widget.rs"],
-    ["function", "Widget::new", "src/widget.rs"],
-    ["function", "Widget::run", "src/widget.rs"]
+    [
+      "file",
+      "src/lib.rs",
+      "src/lib.rs"
+    ],
+    [
+      "module",
+      "widget",
+      "src/lib.rs"
+    ],
+    [
+      "function",
+      "main_run",
+      "src/lib.rs"
+    ],
+    [
+      "file",
+      "src/widget.rs",
+      "src/widget.rs"
+    ],
+    [
+      "struct",
+      "Widget",
+      "src/widget.rs"
+    ],
+    [
+      "trait",
+      "Runner",
+      "src/widget.rs"
+    ],
+    [
+      "function",
+      "Runner::run",
+      "src/widget.rs"
+    ],
+    [
+      "function",
+      "Widget::new",
+      "src/widget.rs"
+    ],
+    [
+      "function",
+      "Widget::run",
+      "src/widget.rs"
+    ]
   ],
   "contains": [
-    ["src/lib.rs", "widget"],
-    ["src/lib.rs", "main_run"],
-    ["src/widget.rs", "Widget"],
-    ["src/widget.rs", "Runner"],
-    ["Runner", "Runner::run"],
-    ["src/widget.rs", "Widget::new"],
-    ["src/widget.rs", "Widget::run"]
+    [
+      "src/lib.rs",
+      "widget"
+    ],
+    [
+      "src/lib.rs",
+      "main_run"
+    ],
+    [
+      "src/widget.rs",
+      "Widget"
+    ],
+    [
+      "src/widget.rs",
+      "Runner"
+    ],
+    [
+      "Runner",
+      "Runner::run"
+    ],
+    [
+      "src/widget.rs",
+      "Widget::new"
+    ],
+    [
+      "src/widget.rs",
+      "Widget::run"
+    ]
   ],
   "references": [
-    ["imports", "crate::widget::Widget"],
-    ["calls", "new"],
-    ["calls", "run"]
+    [
+      "imports",
+      "crate::widget::Widget"
+    ],
+    [
+      "calls",
+      "new"
+    ],
+    [
+      "calls",
+      "run"
+    ],
+    [
+      "uses",
+      "Runner"
+    ]
   ],
   "resolved": [
-    ["import", "imports", "src/lib.rs", "Widget"],
-    ["import", "calls", "main_run", "Widget::new"]
+    [
+      "import",
+      "imports",
+      "src/lib.rs",
+      "Widget"
+    ],
+    [
+      "import",
+      "calls",
+      "main_run",
+      "Widget::new"
+    ],
+    [
+      "scope",
+      "uses",
+      "src/widget.rs",
+      "Runner"
+    ],
+    [
+      "dynamic",
+      "calls",
+      "Runner::run",
+      "Widget::run"
+    ]
   ],
   "unresolved_count": 1
 }

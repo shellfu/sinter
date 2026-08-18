@@ -5,9 +5,9 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use sinter_core::{Embed, LocalBinding, Node, Reference, Relation};
+use sinter_core::{Embed, LocalBinding, Node, Reference, Relation, TraitImpl};
 use sinter_extract::{Extractor, spec_for_path};
-use sinter_resolve::{qualified_of, resolve};
+use sinter_resolve::{dynamic_edges, qualified_of, resolve};
 
 type Tuple = Vec<String>;
 
@@ -28,11 +28,19 @@ fn source_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn extract_all(root: &Path) -> (Vec<Node>, Vec<Reference>, Vec<LocalBinding>, Vec<Embed>) {
+type Extracted = (
+    Vec<Node>,
+    Vec<Reference>,
+    Vec<LocalBinding>,
+    Vec<Embed>,
+    Vec<TraitImpl>,
+);
+
+fn extract_all(root: &Path) -> Extracted {
     let mut files = Vec::new();
     source_files(root, &mut files);
-    let (mut nodes, mut references, mut locals, mut embeds) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut nodes, mut references, mut locals, mut embeds, mut trait_impls) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for path in files {
         let rel = sinter_core::rel_display(path.strip_prefix(root).unwrap());
         assert!(!rel.contains('\\'), "path separator leaked into {rel}");
@@ -48,8 +56,9 @@ fn extract_all(root: &Path) -> (Vec<Node>, Vec<Reference>, Vec<LocalBinding>, Ve
         references.extend(facts.references);
         locals.extend(facts.locals);
         embeds.extend(facts.embeds);
+        trait_impls.extend(facts.trait_impls);
     }
-    (nodes, references, locals, embeds)
+    (nodes, references, locals, embeds, trait_impls)
 }
 
 /// Fixtures with known engine gaps. CI gates on everything else; a listed
@@ -96,7 +105,7 @@ fn check_inner(fixture: &str) {
     let expected: Expected =
         serde_json::from_str(&std::fs::read_to_string(root.join("expected.json")).unwrap())
             .unwrap();
-    let (nodes, references, locals, embeds) = extract_all(&root);
+    let (nodes, references, locals, embeds, trait_impls) = extract_all(&root);
     let all_imports: Vec<Reference> = references
         .iter()
         .filter(|r| r.relation == Relation::Imports)
@@ -104,6 +113,7 @@ fn check_inner(fixture: &str) {
         .collect();
     let roots: Vec<sinter_extract::ModuleRoot> = walk_manifests(&root);
     let (bindings, stats, _) = resolve(&nodes, &references, &locals, &all_imports, &embeds, &roots);
+    let dynamic = dynamic_edges(&nodes, &trait_impls, &all_imports, &roots);
 
     // Found tuples are fully qualified: [evidence, relation, src, dst,
     // src_file, dst_file]. Expected tuples may be the 4-element legacy form
@@ -112,14 +122,16 @@ fn check_inner(fixture: &str) {
     let file_of = |id: &str| id.split_once('#').map_or(id, |(f, _)| f).to_string();
     let found: BTreeSet<Tuple> = bindings
         .iter()
-        .map(|b| {
+        .map(|b| &b.edge)
+        .chain(dynamic.iter())
+        .map(|edge| {
             vec![
-                b.edge.evidence.as_str().to_string(),
-                b.edge.relation.as_str().to_string(),
-                qualified_of(b.edge.src.as_str()).to_string(),
-                qualified_of(b.edge.dst.as_str()).to_string(),
-                file_of(b.edge.src.as_str()),
-                file_of(b.edge.dst.as_str()),
+                edge.evidence.as_str().to_string(),
+                edge.relation.as_str().to_string(),
+                qualified_of(edge.src.as_str()).to_string(),
+                qualified_of(edge.dst.as_str()).to_string(),
+                file_of(edge.src.as_str()),
+                file_of(edge.dst.as_str()),
             ]
         })
         .collect();
@@ -469,4 +481,12 @@ fn resolution_rust_crate_reexport() {
 #[test]
 fn resolution_rust_mod_sibling_call() {
     check("rust-mod-sibling-call");
+}
+
+/// Dynamic dispatch: the call binds to the trait method, and dynamic
+/// fan-out edges `trait_method -> impl_method` carry `dynamic` evidence
+/// for every impl — the conservative blast-radius bridge.
+#[test]
+fn resolution_rust_dyn_dispatch() {
+    check("rust-dyn-dispatch");
 }

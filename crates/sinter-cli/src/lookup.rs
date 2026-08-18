@@ -146,6 +146,7 @@ pub fn edge_filter(evidence: &[String], certain: bool) -> Result<EdgeFilter> {
                 "scope" => Evidence::Scope,
                 "import" => Evidence::Import,
                 "scip" => Evidence::Scip,
+                "dynamic" => Evidence::Dynamic,
                 other => bail!("unknown evidence kind `{other}`"),
             });
         }

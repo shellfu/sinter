@@ -54,3 +54,15 @@ pub struct Embed {
     pub owner: NodeId,
     pub type_name: String,
 }
+
+/// An impl block naming the trait it implements (`impl Runner for Widget`).
+/// Pairing fact for dynamic-dispatch edges: methods defined inside `span`
+/// implement the same-named methods of the trait `trait_name` resolves to.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct TraitImpl {
+    pub file: String,
+    /// Trait name as written (leaf segment for qualified paths).
+    pub trait_name: String,
+    /// Span of the whole impl block.
+    pub span: Span,
+}

@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use sinter_core::{
-    Edge, Embed, Evidence, LocalBinding, Node, NodeId, Reference, Relation, SymbolKind,
+    Edge, Embed, Evidence, LocalBinding, Node, NodeId, Reference, Relation, SymbolKind, TraitImpl,
 };
 use sinter_extract::{LanguageSpec, ModuleRoot, spec_for_path};
 
@@ -864,6 +864,80 @@ fn resolve_one<'a>(
         _ => (None, true), // ambiguous named imports
     };
     (target, Evidence::Import, internal)
+}
+
+/// Dynamic-dispatch fan-out edges: for every impl block naming a trait the
+/// corpus defines, `trait_method -> impl_method` (Calls, Dynamic) for each
+/// method the impl defines under a same-named trait method. Conservative
+/// over-approximation — every impl is assumed reachable through the trait —
+/// which is exactly why the edges carry the distinct Dynamic evidence.
+/// Pairing rule: the impl block names the trait (same file/module, or a
+/// named import) and the method names match.
+pub fn dynamic_edges(
+    nodes: &[Node],
+    trait_impls: &[TraitImpl],
+    all_imports: &[Reference],
+    roots: &[ModuleRoot],
+) -> Vec<Edge> {
+    if trait_impls.is_empty() {
+        return Vec::new();
+    }
+    let index = build_index(nodes, all_imports, &[], &[], roots);
+    let mut by_file: HashMap<&str, Vec<&Node>> = HashMap::new();
+    for n in nodes {
+        if is_callable(n.kind) {
+            by_file.entry(n.file.as_str()).or_default().push(n);
+        }
+    }
+    let is_trait = |n: &Node| matches!(n.kind, SymbolKind::Trait | SymbolKind::Interface);
+    let mut edges = Vec::new();
+    for ti in trait_impls {
+        let Some(spec) = spec_for_path(&ti.file) else {
+            continue;
+        };
+        let file_module = key_of(spec, roots, &ti.file);
+        let trait_node = index
+            .type_def(&ti.file, &file_module, &ti.trait_name)
+            .filter(|n| is_trait(n))
+            .or_else(|| {
+                // Trait bound through a named import; unique or nothing.
+                let named: Vec<&Node> = index
+                    .imports
+                    .get(ti.file.as_str())
+                    .into_iter()
+                    .flatten()
+                    .filter(|imp| !imp.glob && imp.binding == ti.trait_name)
+                    .filter_map(|imp| index.resolve_path_defs(&imp.segments, 4))
+                    .filter(|n| is_trait(n))
+                    .collect();
+                match named.as_slice() {
+                    [node] => Some(node),
+                    _ => None,
+                }
+            });
+        let Some(trait_node) = trait_node else {
+            continue; // external trait: nothing in the corpus to fan into
+        };
+        for method in by_file.get(ti.file.as_str()).into_iter().flatten() {
+            if !(ti.span.start <= method.span.start && method.span.end <= ti.span.end) {
+                continue;
+            }
+            if let Some(trait_method) = index.member_of(trait_node, &method.name, 1)
+                && trait_method.id != method.id
+            {
+                edges.push(Edge {
+                    src: trait_method.id.clone(),
+                    dst: method.id.clone(),
+                    relation: Relation::Calls,
+                    evidence: Evidence::Dynamic,
+                    confidence: Evidence::Dynamic.confidence(),
+                });
+            }
+        }
+    }
+    edges.sort();
+    edges.dedup();
+    edges
 }
 
 /// Resolve references against FOREIGN definitions using import evidence

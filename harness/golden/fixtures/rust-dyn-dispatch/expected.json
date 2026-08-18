@@ -1,0 +1,32 @@
+{
+  "nodes": [
+    ["file", "src/lib.rs", "src/lib.rs"],
+    ["trait", "Speak", "src/lib.rs"],
+    ["function", "Speak::speak", "src/lib.rs"],
+    ["struct", "Dog", "src/lib.rs"],
+    ["struct", "Cat", "src/lib.rs"],
+    ["function", "Dog::speak", "src/lib.rs"],
+    ["function", "Cat::speak", "src/lib.rs"],
+    ["function", "announce", "src/lib.rs"]
+  ],
+  "contains": [
+    ["src/lib.rs", "Speak"],
+    ["Speak", "Speak::speak"],
+    ["src/lib.rs", "Dog"],
+    ["src/lib.rs", "Cat"],
+    ["src/lib.rs", "Dog::speak"],
+    ["src/lib.rs", "Cat::speak"],
+    ["src/lib.rs", "announce"]
+  ],
+  "references": [
+    ["uses", "Speak"],
+    ["calls", "speak"]
+  ],
+  "resolved": [
+    ["scope", "uses", "src/lib.rs", "Speak"],
+    ["scope", "calls", "announce", "Speak::speak"],
+    ["dynamic", "calls", "Speak::speak", "Dog::speak"],
+    ["dynamic", "calls", "Speak::speak", "Cat::speak"]
+  ],
+  "unresolved_count": 0
+}

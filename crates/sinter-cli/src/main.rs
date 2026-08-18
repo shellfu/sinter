@@ -34,7 +34,7 @@ struct Cli {
 
 #[derive(Args)]
 struct FilterArgs {
-    /// Restrict traversal to these evidence kinds (structural, scope, import, scip)
+    /// Restrict traversal to these evidence kinds (structural, scope, import, scip, dynamic)
     #[arg(long, value_delimiter = ',')]
     evidence: Vec<String>,
     /// Follow only compiler-grade (Certain) edges

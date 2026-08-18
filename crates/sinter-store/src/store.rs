@@ -58,7 +58,7 @@ pub(crate) const META: TableDefinition<&str, u32> = TableDefinition::new("meta")
 /// without re-extracting. Additive table — absent in older dbs, which
 /// makes the first build after upgrade re-resolve once.
 pub(crate) const RESOLVE_META: TableDefinition<&str, &str> = TableDefinition::new("resolve_meta");
-const SCHEMA_VERSION: u32 = 5;
+const SCHEMA_VERSION: u32 = 6;
 
 /// Per-file freshness record: content hash plus the stat identity
 /// (mtime, len) it was hashed at. A scan whose stat matches reuses the

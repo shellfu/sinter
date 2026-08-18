@@ -110,3 +110,78 @@ fn query_affected_path_impact() {
     assert!(out.contains("entry"), "{out}");
     assert!(out.contains("test_entry"), "{out}");
 }
+
+/// Dynamic dispatch is blast radius: `affected <ImplType::method>` must
+/// reach callers of the trait method through the `dynamic` fan-out edge,
+/// and evidence filtering without "dynamic" must exclude them.
+#[test]
+fn affected_through_dyn_dispatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(
+        repo.join("src/lib.rs"),
+        "mod cat;\nmod dog;\n\npub trait Speak {\n    fn speak(&self);\n}\n\npub fn announce(s: &dyn Speak) {\n    Speak::speak(s);\n}\n",
+    )
+    .unwrap();
+    let dog =
+        "use crate::Speak;\n\npub struct Dog;\n\nimpl Speak for Dog {\n    fn speak(&self) {}\n}\n";
+    std::fs::write(repo.join("src/dog.rs"), dog).unwrap();
+    std::fs::write(
+        repo.join("src/cat.rs"),
+        "use crate::Speak;\n\npub struct Cat;\n\nimpl Speak for Cat {\n    fn speak(&self) {}\n}\n",
+    )
+    .unwrap();
+
+    git(repo, &["init", "-q"]);
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "init"]);
+
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+
+    // Changing the impl must surface the caller of the trait method, with
+    // the dynamic evidence visible on the bridging edge.
+    let (ok, out) = sinter(repo, &["affected", "Dog::speak"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("announce"), "{out}");
+    assert!(out.contains("/dynamic"), "{out}");
+
+    // Incremental: touching one impl file re-resolves the trait's file and
+    // tears down its dynamic fan-out — the OTHER impl's edge must survive
+    // the rebuild (dst-file facts rejoin the resolution set).
+    std::fs::write(repo.join("src/dog.rs"), dog.replace("{}", "{ }")).unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+    let (ok, out) = sinter(repo, &["affected", "Cat::speak"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("announce"), "{out}");
+    assert!(out.contains("/dynamic"), "{out}");
+
+    // Incremental: touching the trait's own file re-derives the fan-out
+    // (impl files re-resolve through their `uses` reference on the trait).
+    std::fs::write(
+        repo.join("src/lib.rs"),
+        "mod cat;\nmod dog;\n\npub trait Speak {\n    fn speak(&self);\n}\n\npub fn announce(s: &dyn Speak) {\n    Speak::speak(s)\n}\n",
+    )
+    .unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+    let (ok, out) = sinter(repo, &["affected", "Dog::speak"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("announce"), "{out}");
+    assert!(out.contains("/dynamic"), "{out}");
+
+    // Honesty: excluding dynamic evidence excludes the fan-out.
+    let (ok, out) = sinter(
+        repo,
+        &["affected", "Dog::speak", "--evidence", "import,scope,scip"],
+    );
+    assert!(ok, "{out}");
+    assert!(!out.contains("announce"), "{out}");
+
+    // --certain also excludes it (Dynamic is Inferred by construction).
+    let (ok, out) = sinter(repo, &["affected", "Dog::speak", "--certain"]);
+    assert!(ok, "{out}");
+    assert!(!out.contains("announce"), "{out}");
+}

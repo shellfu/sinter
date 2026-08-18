@@ -15,6 +15,15 @@
 (impl_item type: (type_identifier) @name) @scope
 (impl_item type: (generic_type type: (type_identifier) @name)) @scope
 
+; trait impls: record which trait the block implements (dynamic-dispatch
+; pairing) and reference the trait (uses edge + incremental invalidation)
+(impl_item
+  trait: [
+    (type_identifier) @ref.use @trait
+    (scoped_type_identifier name: (type_identifier) @ref.use @trait)
+    (generic_type type: (type_identifier) @ref.use @trait)
+  ]) @trait.impl
+
 ; imports: plain paths, aliases, lists, globs (pub use re-exports included)
 (use_declaration argument: [(identifier) (scoped_identifier)] @import)
 (use_declaration

@@ -63,6 +63,8 @@ struct Collected {
     locals: Vec<RawLocal>,
     /// (span, embedded type name) — owner resolved after entries exist.
     embeds: Vec<(usize, usize, String)>,
+    /// (impl block span, trait name) — trait-impl pairing facts.
+    trait_impls: Vec<(usize, usize, String)>,
     /// Import-alias name spans: identical local captures are the import
     /// binding itself, not a shadow.
     alias_spans: Vec<(usize, usize)>,
@@ -266,6 +268,18 @@ impl Extractor {
             })
             .collect();
 
+        let trait_impls = collected
+            .trait_impls
+            .iter()
+            .map(|(start, end, trait_name)| sinter_core::TraitImpl {
+                file: file.to_string(),
+                trait_name: trait_name.clone(),
+                span: Span {
+                    start: *start as u64,
+                    end: *end as u64,
+                },
+            })
+            .collect();
         Ok(FileFacts {
             file: file.to_string(),
             content_hash: blake3::hash(source.as_bytes()).to_hex().to_string(),
@@ -275,6 +289,7 @@ impl Extractor {
             references,
             locals,
             embeds,
+            trait_impls,
         })
     }
 
@@ -298,6 +313,8 @@ impl Extractor {
             let mut import_star = false;
             let mut match_locals: Vec<TsNode> = Vec::new();
             let mut local_type: Option<TsNode> = None;
+            let mut trait_name: Option<TsNode> = None;
+            let mut trait_impl: Option<TsNode> = None;
             for cap in m.captures {
                 let cap_name = &self.query.capture_names()[cap.index as usize];
                 if let Some(kind_str) = cap_name.strip_prefix("def.") {
@@ -323,6 +340,8 @@ impl Extractor {
                         "import.star" => import_star = true,
                         "local" => match_locals.push(cap.node),
                         "local.type" => local_type = Some(cap.node),
+                        "trait" => trait_name = Some(cap.node),
+                        "trait.impl" => trait_impl = Some(cap.node),
                         "doc" => out.docs.push((
                             cap.node.start_byte(),
                             cap.node.end_byte(),
@@ -338,6 +357,13 @@ impl Extractor {
                 }
             }
             let sep = self.spec.path_separators.first().copied().unwrap_or(".");
+            if let (Some(t), Some(block)) = (trait_name, trait_impl) {
+                out.trait_impls.push((
+                    block.start_byte(),
+                    block.end_byte(),
+                    text(t, source).to_string(),
+                ));
+            }
             if let Some(a) = import_alias {
                 out.alias_spans.push((a.start_byte(), a.end_byte()));
             }
