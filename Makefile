@@ -113,6 +113,7 @@ endif
 		&& { echo "error: tag v$(VERSION) already exists"; exit 1; } || true
 	$(MAKE) gate
 	sed -i 's/^version = ".*"/version = "$(VERSION)"/' Cargo.toml
+	sed -i -E 's/^(sinter-[a-z]+ = \{ version = )"[^"]+"/\1"$(VERSION)"/' Cargo.toml
 	cargo update --workspace --quiet   # sync Cargo.lock to the new version
 	git add Cargo.toml Cargo.lock
 	git commit -m "chore: release $(VERSION)"

@@ -1,0 +1,60 @@
+# Build sinter wheels (maturin bin bindings) on release publish and upload
+# to PyPI via Trusted Publishing. INERT until one-time setup is done:
+# register the trusted publisher (repo shellfu/sinter, workflow pypi.yml,
+# environment pypi) in PyPI project settings and create the `pypi`
+# environment in GitHub — without that, the publish job fails cleanly at
+# the OIDC token exchange and nothing is uploaded. See docs/publishing.md.
+name: pypi
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            manylinux: musllinux_1_2
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            manylinux: musllinux_1_2
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release -b bin -m crates/sinter-cli/Cargo.toml -o dist
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux || 'auto' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target }}
+          path: dist
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

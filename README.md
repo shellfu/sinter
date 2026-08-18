@@ -47,6 +47,13 @@ checksum, installs to `%LOCALAPPDATA%\sinter\bin`):
 irm https://raw.githubusercontent.com/shellfu/sinter/main/scripts/install.ps1 | iex
 ```
 
+To verify a manually downloaded release asset against its GitHub build
+provenance attestation (requires the `gh` CLI):
+
+```
+gh attestation verify sinter-<target>.tar.gz --owner shellfu
+```
+
 Or build from source (requires a Rust toolchain):
 
 ```
@@ -118,9 +125,11 @@ is auditable, in the same spirit as the edges.
 | `sinter overlap <range>...` | Map open PRs onto the graph; rank pairwise merge risk (direct/radius/file) |
 | `sinter workspace <manifest>` | Build all members of a cross-repo workspace + refresh boundary links |
 | `sinter init --workspace` | Write a starter workspace manifest (never overwrites) |
-| `sinter install [targets]` | Write agent cards (claude, cursor, agents/AGENTS.md, enforce, all); `--mcp` registers the server for Claude Code, Cursor, and Codex |
+| `sinter install [targets]` | Write agent cards (claude, cursor, agents/AGENTS.md, enforce (`--strict` available), all); `--mcp` registers the server for Claude Code, Cursor, and Codex |
 | `sinter scip [repo]` | Run every matching compiler indexer, merge into `.sinter/index.scip`, rebuild; no-op when fresh (`--force` reindexes); `scip check` is the CI freshness guard |
 | `sinter doctor [repo]` | Diagnose installation + graph (including an MCP handshake and lock-held reporting); every finding names its fix; `--fix` applies the safe ones |
+| `sinter map [repo]` | One-screen orientation: module tree, hub symbols, doc entry points (`--json`) |
+| `sinter update` | Self-update to the latest release, checksum-verified (`--dry-run` reports only) |
 | `sinter completion <shell>` | Shell completions |
 | `sinter version` | Version, graph schema, language packs |
 
@@ -134,8 +143,13 @@ Rust, Go, Python, TypeScript, JavaScript (ESM, CJS, JSX), Java, C#, C,
 C++ (including Unreal Engine macro conventions), SQL (DDL/DML), Bash,
 Protobuf, and Markdown (headings become nested section nodes with the
 opening paragraph as doc, so `sinter ask` finds prose docs with file:line
-provenance). A language is pure data — a tree-sitter grammar, one `.scm`
-capture query, and a spec row — consumed by a single engine that never
+provenance; `[text](target)` links become `uses` edges from the linking
+section to the target file — or, with `#fragment`, to the section whose
+heading slugifies to it — when and only when the target resolves to a
+file in the corpus: dead links stay unresolved, external URLs produce
+nothing). A language is pure data — a tree-sitter grammar, one `.scm`
+capture query (plus an optional secondary inline grammar, spec-declared),
+and a spec row — consumed by a single engine that never
 branches on language. Adding a language requires no engine code; if it
 ever does, the capture contract is wrong, not the language.
 
