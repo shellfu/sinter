@@ -410,6 +410,18 @@ fn csharp_grammar() -> Language {
     tree_sitter_c_sharp::LANGUAGE.into()
 }
 
+/// C# module identity is the file's directory, Go-style: `using Acme.Util;`
+/// imports a namespace (never a type), and namespaces conventionally mirror
+/// directories. `Acme/Util/TextHelper.cs` -> ["Acme", "Util"], so the using
+/// directive's segments suffix-match the directory key. Path-derived only:
+/// namespace declarations that diverge from layout are out of scope
+/// (stated boundary of the csharp pack, see queries/csharp.scm).
+fn csharp_module_path(file: &str) -> Vec<String> {
+    let mut segments: Vec<String> = file.split('/').map(str::to_string).collect();
+    segments.pop(); // file name; namespaces are directories
+    segments
+}
+
 fn sql_grammar() -> Language {
     tree_sitter_sequel::LANGUAGE.into()
 }
@@ -440,18 +452,43 @@ fn c_absolutize(path: &str, file: &str) -> Vec<String> {
     cpp_absolutize(path, file)
 }
 
-/// Dotted-FQN module identity from the file path; package-declaration
-/// awareness belongs to the language pack, not the engine.
-fn dotted_module_path(file: &str) -> Vec<String> {
-    let trimmed = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
-    trimmed
-        .split('/')
+/// Java packages are directories: `com/acme/util/Text.java` ->
+/// ["com", "acme", "util"], matching a path-aligned `package com.acme.util;`.
+/// The class contributes its own segment as a definition, so the FQN
+/// `com.acme.util.Text` resolves as module + top-level def.
+// ponytail: assumes package declarations align with directories; parse the
+// package_declaration into module identity if misaligned repos matter.
+fn java_module_path(file: &str) -> Vec<String> {
+    dirname_segments(file)
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Java qualified references arrive as full invocation text
+/// (`Text.trim(s)`): everything from the first `(` on is arguments, not
+/// path. Imports are already-absolute dotted FQNs.
+fn java_absolutize(path: &str, _file: &str) -> Vec<String> {
+    let head = path.split('(').next().unwrap_or(path);
+    head.split('.')
+        .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .collect()
 }
 
-/// Dotted absolute imports (Java/C# style): already-absolute FQNs split
+/// All .sql files in a directory share one namespace (a database schema
+/// has no per-file scoping), so the module key is the directory alone:
+/// `db/schema.sql` and `db/queries.sql` both map to ["db"].
+fn sql_module_path(file: &str) -> Vec<String> {
+    let dir = file.rsplit_once('/').map_or("", |(dir, _)| dir);
+    dir.split('/')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Dotted absolute imports (C#/SQL style): already-absolute FQNs split
 /// on dots; no relative forms exist.
 fn dotted_absolutize(path: &str, _file: &str) -> Vec<String> {
     path.trim()
@@ -585,9 +622,9 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         grammar: java_grammar,
         query_source: include_str!("../queries/java.scm"),
         comment_kinds: &["line_comment", "block_comment"],
-        module_path: dotted_module_path,
+        module_path: java_module_path,
         path_separators: &["."],
-        absolutize: dotted_absolutize,
+        absolutize: java_absolutize,
         receivers: &["this"],
         doc_skip_kinds: &[],
         manifest: None,
@@ -598,7 +635,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         grammar: csharp_grammar,
         query_source: include_str!("../queries/csharp.scm"),
         comment_kinds: &["comment"],
-        module_path: dotted_module_path,
+        module_path: csharp_module_path,
         path_separators: &["."],
         absolutize: dotted_absolutize,
         receivers: &["this", "base"],
@@ -611,7 +648,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         grammar: sql_grammar,
         query_source: include_str!("../queries/sql.scm"),
         comment_kinds: &["comment", "marginalia"],
-        module_path: dotted_module_path,
+        module_path: sql_module_path,
         path_separators: &["."],
         absolutize: dotted_absolutize,
         receivers: &[],

@@ -1,0 +1,30 @@
+{
+  "nodes": [
+    ["file", "main.js", "main.js"],
+    ["function", "greet", "main.js", "Greets a person by name."],
+    ["class", "App", "main.js"],
+    ["method", "App::run", "main.js", "Runs the app."],
+    ["file", "util.js", "util.js"],
+    ["function", "formatLabel", "util.js", "Formats a label for display."]
+  ],
+  "contains": [
+    ["main.js", "greet"],
+    ["main.js", "App"],
+    ["App", "App::run"],
+    ["util.js", "formatLabel"]
+  ],
+  "references": [
+    ["imports", "./util/formatLabel"],
+    ["imports", "react/useState"],
+    ["calls", "useState"],
+    ["calls", "log"],
+    ["calls", "greet"],
+    ["calls", "formatLabel"]
+  ],
+  "resolved": [
+    ["import", "imports", "main.js", "formatLabel"],
+    ["scope", "calls", "App::run", "greet"],
+    ["import", "calls", "App::run", "formatLabel"]
+  ],
+  "unresolved_count": 3
+}

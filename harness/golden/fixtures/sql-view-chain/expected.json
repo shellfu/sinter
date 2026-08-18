@@ -1,0 +1,21 @@
+{
+  "nodes": [
+    ["file", "schema.sql", "schema.sql"],
+    ["struct", "events", "schema.sql", "Raw click events."],
+    ["typealias", "click_events", "schema.sql", "Click events only, newest first."],
+    ["file", "report.sql", "report.sql"]
+  ],
+  "contains": [
+    ["schema.sql", "events"],
+    ["schema.sql", "click_events"]
+  ],
+  "references": [
+    ["uses", "events"],
+    ["uses", "click_events"]
+  ],
+  "resolved": [
+    ["scope", "uses", "click_events", "events", "schema.sql", "schema.sql"],
+    ["scope", "uses", "report.sql", "click_events", "report.sql", "schema.sql"]
+  ],
+  "unresolved_count": 0
+}

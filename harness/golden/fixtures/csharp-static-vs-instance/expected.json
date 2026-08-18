@@ -1,0 +1,32 @@
+{
+  "nodes": [
+    ["file", "Worker.cs", "Worker.cs"],
+    ["class", "Worker", "Worker.cs"],
+    ["method", "Worker::Run", "Worker.cs"],
+    ["method", "Worker::Prepare", "Worker.cs"],
+    ["method", "Worker::Step", "Worker.cs"],
+    ["class", "Helper", "Worker.cs"],
+    ["method", "Helper::Assist", "Worker.cs"]
+  ],
+  "contains": [
+    ["Worker.cs", "Worker"],
+    ["Worker", "Worker::Run"],
+    ["Worker", "Worker::Prepare"],
+    ["Worker", "Worker::Step"],
+    ["Worker.cs", "Helper"],
+    ["Helper", "Helper::Assist"]
+  ],
+  "references": [
+    ["calls", "Prepare"],
+    ["calls", "Step"],
+    ["calls", "Helper"],
+    ["calls", "Assist"]
+  ],
+  "resolved": [
+    ["scope", "calls", "Worker::Run", "Worker::Prepare"],
+    ["scope", "calls", "Worker::Run", "Worker::Step"],
+    ["scope", "calls", "Worker::Run", "Helper"],
+    ["scope", "calls", "Worker::Run", "Helper::Assist"]
+  ],
+  "unresolved_count": 1
+}

@@ -490,3 +490,85 @@ fn resolution_rust_mod_sibling_call() {
 fn resolution_rust_dyn_dispatch() {
     check("rust-dyn-dispatch");
 }
+
+/// Cross-pack resolution: foo.c's call binds through `#include "bar.h"`
+/// (bar.h and bar.c share module path ["bar"]) to the definition in
+/// bar.c; the angle include stays an unresolved external.
+#[test]
+fn resolution_c_basic() {
+    check("c-basic");
+}
+
+/// Same-named statics in two files: each call resolves within its own
+/// file's scope.
+#[test]
+fn resolution_c_static_scope() {
+    check("c-static-scope");
+}
+
+#[test]
+fn resolution_javascript_basic() {
+    check("javascript-basic");
+}
+
+/// CommonJS interop: destructured require binds the item, whole-module
+/// require aliases the module for member calls.
+#[test]
+fn resolution_javascript_cjs() {
+    check("javascript-cjs");
+}
+
+/// JSX: <Button/> in a consumer registers a `uses` reference to the
+/// component; lowercase host elements are ignored.
+#[test]
+fn resolution_javascript_jsx() {
+    check("javascript-jsx");
+}
+
+/// SQL: all .sql files in a directory share one namespace (sql_module_path
+/// keys on the directory), so queries.sql table refs bind to schema.sql
+/// definitions with scope evidence; audit_log stays unresolved.
+#[test]
+fn resolution_sql_basic() {
+    check("sql-basic");
+}
+
+/// View chain: view -> table and query -> view both bind by scope.
+#[test]
+fn resolution_sql_view_chain() {
+    check("sql-view-chain");
+}
+
+/// C# pack: path-derived, namespace-aligned module identity (directories
+/// mirror namespaces; `using Ns;` is a glob import of that directory).
+#[test]
+fn resolution_csharp_basic() {
+    check("csharp-basic");
+}
+
+#[test]
+fn resolution_csharp_cross_namespace() {
+    check("csharp-cross-namespace");
+}
+
+/// Static call and `this.` receiver resolve; an untyped instance receiver
+/// (`var` local) is pinned unresolved — never a wrong bind.
+#[test]
+fn resolution_csharp_static_vs_instance() {
+    check("csharp-static-vs-instance");
+}
+
+#[test]
+fn resolution_java_basic() {
+    check("java-basic");
+}
+
+#[test]
+fn resolution_java_cross_package() {
+    check("java-cross-package");
+}
+
+#[test]
+fn resolution_java_interface_impl() {
+    check("java-interface-impl");
+}

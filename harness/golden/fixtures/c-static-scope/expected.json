@@ -1,0 +1,24 @@
+{
+  "nodes": [
+    ["file", "alpha.c", "alpha.c"],
+    ["function", "helper", "alpha.c"],
+    ["function", "alpha_run", "alpha.c"],
+    ["file", "beta.c", "beta.c"],
+    ["function", "helper", "beta.c"],
+    ["function", "beta_run", "beta.c"]
+  ],
+  "contains": [
+    ["alpha.c", "helper"],
+    ["alpha.c", "alpha_run"],
+    ["beta.c", "helper"],
+    ["beta.c", "beta_run"]
+  ],
+  "references": [
+    ["calls", "helper"]
+  ],
+  "resolved": [
+    ["scope", "calls", "alpha_run", "helper", "alpha.c", "alpha.c"],
+    ["scope", "calls", "beta_run", "helper", "beta.c", "beta.c"]
+  ],
+  "unresolved_count": 0
+}

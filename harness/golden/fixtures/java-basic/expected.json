@@ -1,0 +1,39 @@
+{
+  "nodes": [
+    ["file", "com/acme/app/Main.java", "com/acme/app/Main.java"],
+    ["class", "Main", "com/acme/app/Main.java", "Application entry point."],
+    ["method", "Main::Main", "com/acme/app/Main.java", "Creates the app."],
+    ["method", "Main::run", "com/acme/app/Main.java", "Runs the app."],
+    ["file", "com/acme/app/Text.java", "com/acme/app/Text.java"],
+    ["class", "Text", "com/acme/app/Text.java", "String helpers."],
+    ["field", "Text::MAX_LEN", "com/acme/app/Text.java", "Maximum line length."],
+    ["method", "Text::trim", "com/acme/app/Text.java", "Trims surrounding whitespace."],
+    ["file", "com/acme/app/Mode.java", "com/acme/app/Mode.java"],
+    ["enum", "Mode", "com/acme/app/Mode.java", "Run modes."],
+    ["constant", "Mode::FAST", "com/acme/app/Mode.java"],
+    ["constant", "Mode::SLOW", "com/acme/app/Mode.java"]
+  ],
+  "contains": [
+    ["com/acme/app/Main.java", "Main"],
+    ["Main", "Main::Main"],
+    ["Main", "Main::run"],
+    ["com/acme/app/Text.java", "Text"],
+    ["Text", "Text::MAX_LEN"],
+    ["Text", "Text::trim"],
+    ["com/acme/app/Mode.java", "Mode"],
+    ["Mode", "Mode::FAST"],
+    ["Mode", "Mode::SLOW"]
+  ],
+  "references": [
+    ["imports", "java.util.List"],
+    ["imports", "java.lang.Math.max"],
+    ["calls", "Text"],
+    ["calls", "trim"],
+    ["calls", "strip"]
+  ],
+  "resolved": [
+    ["scope", "calls", "Main::run", "Text"],
+    ["scope", "calls", "Main::run", "Text::trim"]
+  ],
+  "unresolved_count": 3
+}

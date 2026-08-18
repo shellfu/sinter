@@ -1,0 +1,29 @@
+{
+  "nodes": [
+    ["file", "com/acme/greet/Greeter.java", "com/acme/greet/Greeter.java"],
+    ["interface", "Greeter", "com/acme/greet/Greeter.java", "Greets people."],
+    ["method", "Greeter::greet", "com/acme/greet/Greeter.java", "Produces a greeting for a name."],
+    ["file", "com/acme/greet/ConsoleGreeter.java", "com/acme/greet/ConsoleGreeter.java"],
+    ["class", "ConsoleGreeter", "com/acme/greet/ConsoleGreeter.java", "Console implementation of Greeter."],
+    ["method", "ConsoleGreeter::greet", "com/acme/greet/ConsoleGreeter.java", "Greets with a plain prefix."],
+    ["file", "com/acme/greet/FancyGreeter.java", "com/acme/greet/FancyGreeter.java"],
+    ["class", "FancyGreeter", "com/acme/greet/FancyGreeter.java", "Adds flourish to the console greeter."]
+  ],
+  "contains": [
+    ["com/acme/greet/Greeter.java", "Greeter"],
+    ["Greeter", "Greeter::greet"],
+    ["com/acme/greet/ConsoleGreeter.java", "ConsoleGreeter"],
+    ["ConsoleGreeter", "ConsoleGreeter::greet"],
+    ["com/acme/greet/FancyGreeter.java", "FancyGreeter"]
+  ],
+  "references": [
+    ["uses", "Greeter"],
+    ["uses", "ConsoleGreeter"]
+  ],
+  "resolved": [
+    ["scope", "uses", "ConsoleGreeter", "Greeter"],
+    ["scope", "uses", "FancyGreeter", "ConsoleGreeter"],
+    ["dynamic", "calls", "Greeter::greet", "ConsoleGreeter::greet"]
+  ],
+  "unresolved_count": 0
+}

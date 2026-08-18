@@ -1,0 +1,26 @@
+{
+  "nodes": [
+    ["file", "main.js", "main.js"],
+    ["variable", "lib", "main.js"],
+    ["function", "main", "main.js", "Entry point."],
+    ["file", "lib.js", "lib.js"],
+    ["function", "double", "lib.js", "Doubles a number."]
+  ],
+  "contains": [
+    ["main.js", "lib"],
+    ["main.js", "main"],
+    ["lib.js", "double"]
+  ],
+  "references": [
+    ["imports", "./lib/double"],
+    ["imports", "./lib"],
+    ["calls", "require"],
+    ["calls", "double"]
+  ],
+  "resolved": [
+    ["import", "imports", "main.js", "double"],
+    ["import", "imports", "lib", "lib.js"],
+    ["import", "calls", "main", "double"]
+  ],
+  "unresolved_count": 2
+}

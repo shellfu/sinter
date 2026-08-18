@@ -476,3 +476,85 @@ fn golden_rust_mod_sibling_call() {
 fn golden_rust_dyn_dispatch() {
     check("rust-dyn-dispatch");
 }
+
+/// C basics: functions (definitions and a prototype), struct/enum/union/
+/// typedef, function-like and object-like macros, quoted vs angle
+/// includes, and a cross-file call through a shared header. The header
+/// itself parses under the cpp pack — the .c extension split is
+/// deliberate.
+#[test]
+fn golden_c_basic() {
+    check("c-basic");
+}
+
+/// Two translation units each define a `static` function with the same
+/// name; each caller must see its own file's static, never the sibling's.
+#[test]
+fn golden_c_static_scope() {
+    check("c-static-scope");
+}
+
+#[test]
+fn golden_javascript_basic() {
+    check("javascript-basic");
+}
+
+/// CommonJS interop: destructured require binds the item, whole-module
+/// require aliases the module for member calls.
+#[test]
+fn golden_javascript_cjs() {
+    check("javascript-cjs");
+}
+
+/// JSX: <Button/> in a consumer registers a `uses` reference to the
+/// component; lowercase host elements are ignored.
+#[test]
+fn golden_javascript_jsx() {
+    check("javascript-jsx");
+}
+
+/// SQL DDL/DML: tables and a foreign-key use; the query file's FROM /
+/// JOIN / INSERT / UPDATE targets reference the schema's tables, plus
+/// one table that exists nowhere (audit_log).
+#[test]
+fn golden_sql_basic() {
+    check("sql-basic");
+}
+
+/// View chain: a view over a table, a query over the view.
+#[test]
+fn golden_sql_view_chain() {
+    check("sql-view-chain");
+}
+
+/// C# pack: path-derived, namespace-aligned module identity (directories
+/// mirror namespaces; `using Ns;` is a glob import of that directory).
+#[test]
+fn golden_csharp_basic() {
+    check("csharp-basic");
+}
+
+#[test]
+fn golden_csharp_cross_namespace() {
+    check("csharp-cross-namespace");
+}
+
+#[test]
+fn golden_csharp_static_vs_instance() {
+    check("csharp-static-vs-instance");
+}
+
+#[test]
+fn golden_java_basic() {
+    check("java-basic");
+}
+
+#[test]
+fn golden_java_cross_package() {
+    check("java-cross-package");
+}
+
+#[test]
+fn golden_java_interface_impl() {
+    check("java-interface-impl");
+}

@@ -1,0 +1,27 @@
+{
+  "nodes": [
+    ["file", "Acme/Util/TextHelper.cs", "Acme/Util/TextHelper.cs"],
+    ["class", "TextHelper", "Acme/Util/TextHelper.cs", "<summary>Text utilities.</summary>"],
+    ["method", "TextHelper::Reverse", "Acme/Util/TextHelper.cs", "<summary>Reverses a string.</summary>"],
+    ["file", "Acme/App/Program.cs", "Acme/App/Program.cs"],
+    ["class", "Program", "Acme/App/Program.cs"],
+    ["method", "Program::Run", "Acme/App/Program.cs"]
+  ],
+  "contains": [
+    ["Acme/Util/TextHelper.cs", "TextHelper"],
+    ["TextHelper", "TextHelper::Reverse"],
+    ["Acme/App/Program.cs", "Program"],
+    ["Program", "Program::Run"]
+  ],
+  "references": [
+    ["imports", "Acme.Util.*"],
+    ["calls", "TextHelper"],
+    ["calls", "Reverse"]
+  ],
+  "resolved": [
+    ["import", "imports", "Acme/App/Program.cs", "Acme/Util/TextHelper.cs"],
+    ["import", "calls", "Program::Run", "TextHelper"],
+    ["import", "calls", "Program::Run", "TextHelper::Reverse"]
+  ],
+  "unresolved_count": 0
+}

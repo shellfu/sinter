@@ -1,0 +1,23 @@
+{
+  "nodes": [
+    ["file", "schema.sql", "schema.sql"],
+    ["struct", "users", "schema.sql", "Registered users of the shop."],
+    ["struct", "orders", "schema.sql", "Orders placed by users."],
+    ["file", "queries.sql", "queries.sql"]
+  ],
+  "contains": [
+    ["schema.sql", "users"],
+    ["schema.sql", "orders"]
+  ],
+  "references": [
+    ["uses", "users"],
+    ["uses", "orders"],
+    ["uses", "audit_log"]
+  ],
+  "resolved": [
+    ["scope", "uses", "orders", "users", "schema.sql", "schema.sql"],
+    ["scope", "uses", "queries.sql", "users", "queries.sql", "schema.sql"],
+    ["scope", "uses", "queries.sql", "orders", "queries.sql", "schema.sql"]
+  ],
+  "unresolved_count": 1
+}
