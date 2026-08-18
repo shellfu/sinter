@@ -394,6 +394,73 @@ fn typescript_module_path(file: &str) -> Vec<String> {
         .collect()
 }
 
+fn javascript_grammar() -> Language {
+    tree_sitter_javascript::LANGUAGE.into()
+}
+
+fn c_grammar() -> Language {
+    tree_sitter_c::LANGUAGE.into()
+}
+
+fn java_grammar() -> Language {
+    tree_sitter_java::LANGUAGE.into()
+}
+
+fn csharp_grammar() -> Language {
+    tree_sitter_c_sharp::LANGUAGE.into()
+}
+
+fn sql_grammar() -> Language {
+    tree_sitter_sequel::LANGUAGE.into()
+}
+
+fn javascript_module_path(file: &str) -> Vec<String> {
+    let trimmed = file
+        .strip_suffix(".jsx")
+        .or_else(|| file.strip_suffix(".mjs"))
+        .or_else(|| file.strip_suffix(".cjs"))
+        .or_else(|| file.strip_suffix(".js"))
+        .unwrap_or(file);
+    trimmed
+        .split('/')
+        .filter(|s| !matches!(*s, "index" | ""))
+        .map(str::to_string)
+        .collect()
+}
+
+fn javascript_absolutize(path: &str, file: &str) -> Vec<String> {
+    typescript_absolutize(path, file)
+}
+
+fn c_module_path(file: &str) -> Vec<String> {
+    cpp_module_path(file)
+}
+
+fn c_absolutize(path: &str, file: &str) -> Vec<String> {
+    cpp_absolutize(path, file)
+}
+
+/// Dotted-FQN module identity from the file path; package-declaration
+/// awareness belongs to the language pack, not the engine.
+fn dotted_module_path(file: &str) -> Vec<String> {
+    let trimmed = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+    trimmed
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Dotted absolute imports (Java/C# style): already-absolute FQNs split
+/// on dots; no relative forms exist.
+fn dotted_absolutize(path: &str, _file: &str) -> Vec<String> {
+    path.trim()
+        .split('.')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 pub static LANGUAGES: &[LanguageSpec] = &[
     LanguageSpec {
         name: "rust",
@@ -484,6 +551,71 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         absolutize: cpp_absolutize,
         receivers: &["this"],
         doc_skip_kinds: &["expression_statement"],
+        manifest: None,
+    },
+    LanguageSpec {
+        name: "javascript",
+        extensions: &["js", "jsx", "mjs", "cjs"],
+        grammar: javascript_grammar,
+        query_source: include_str!("../queries/javascript.scm"),
+        comment_kinds: &["comment"],
+        module_path: javascript_module_path,
+        path_separators: &["/", "."],
+        absolutize: javascript_absolutize,
+        receivers: &["this"],
+        doc_skip_kinds: &[],
+        manifest: None,
+    },
+    LanguageSpec {
+        name: "c",
+        extensions: &["c"],
+        grammar: c_grammar,
+        query_source: include_str!("../queries/c.scm"),
+        comment_kinds: &["comment"],
+        module_path: c_module_path,
+        path_separators: &["/"],
+        absolutize: c_absolutize,
+        receivers: &[],
+        doc_skip_kinds: &[],
+        manifest: None,
+    },
+    LanguageSpec {
+        name: "java",
+        extensions: &["java"],
+        grammar: java_grammar,
+        query_source: include_str!("../queries/java.scm"),
+        comment_kinds: &["line_comment", "block_comment"],
+        module_path: dotted_module_path,
+        path_separators: &["."],
+        absolutize: dotted_absolutize,
+        receivers: &["this"],
+        doc_skip_kinds: &[],
+        manifest: None,
+    },
+    LanguageSpec {
+        name: "csharp",
+        extensions: &["cs"],
+        grammar: csharp_grammar,
+        query_source: include_str!("../queries/csharp.scm"),
+        comment_kinds: &["comment"],
+        module_path: dotted_module_path,
+        path_separators: &["."],
+        absolutize: dotted_absolutize,
+        receivers: &["this", "base"],
+        doc_skip_kinds: &[],
+        manifest: None,
+    },
+    LanguageSpec {
+        name: "sql",
+        extensions: &["sql"],
+        grammar: sql_grammar,
+        query_source: include_str!("../queries/sql.scm"),
+        comment_kinds: &["comment", "marginalia"],
+        module_path: dotted_module_path,
+        path_separators: &["."],
+        absolutize: dotted_absolutize,
+        receivers: &[],
+        doc_skip_kinds: &[],
         manifest: None,
     },
 ];
