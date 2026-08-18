@@ -43,7 +43,7 @@ jobs:
       # No-op (one directory walk) when the restored index is still fresh;
       # full index + rebuild otherwise. This is what keeps the job cheap.
       - name: Build index if stale
-        run: sinter scip --if-stale
+        run: sinter scip
 
       # The artifact teammates fetch (see docs/team.md for the gh one-liner).
       - name: Publish index

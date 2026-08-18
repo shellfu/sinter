@@ -1,4 +1,4 @@
-//! `sinter scip --check` / `--if-stale`: the CI guard and the idempotent
+//! `sinter scip check` / bare `sinter scip`: the CI guard and the idempotent
 //! index job. Freshness is mtime-based, so tests pin mtimes explicitly
 //! instead of sleeping.
 
@@ -24,7 +24,7 @@ fn set_mtime(path: &Path, t: SystemTime) {
         .unwrap();
 }
 
-/// --check: missing index exits 1; fresh index exits 0 with "index
+/// `scip check`: missing index exits 1; fresh index exits 0 with "index
 /// fresh"; a source file newer than the index exits 1 with the count.
 #[test]
 fn check_reports_freshness_without_indexing() {
@@ -33,8 +33,11 @@ fn check_reports_freshness_without_indexing() {
     std::fs::write(repo.join("a.rs"), "pub fn f() {}\n").unwrap();
     std::fs::write(repo.join("b.rs"), "pub fn g() {}\n").unwrap();
 
-    let out = sinter(repo, &["scip", "--check"]);
-    assert!(!out.status.success(), "missing index must fail --check");
+    let out = sinter(repo, &["scip", "check"]);
+    assert!(
+        !out.status.success(),
+        "missing index must fail `scip check`"
+    );
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("no SCIP index"),
         "{}",
@@ -47,8 +50,8 @@ fn check_reports_freshness_without_indexing() {
     set_mtime(&repo.join("a.rs"), past);
     set_mtime(&repo.join("b.rs"), past);
 
-    let out = sinter(repo, &["scip", "--check"]);
-    assert!(out.status.success(), "fresh index must pass --check");
+    let out = sinter(repo, &["scip", "check"]);
+    assert!(out.status.success(), "fresh index must pass `scip check`");
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("index fresh"),
         "{}",
@@ -59,17 +62,17 @@ fn check_reports_freshness_without_indexing() {
         &repo.join("a.rs"),
         SystemTime::now() + Duration::from_secs(60),
     );
-    let out = sinter(repo, &["scip", "--check"]);
-    assert!(!out.status.success(), "newer source must fail --check");
+    let out = sinter(repo, &["scip", "check"]);
+    assert!(!out.status.success(), "newer source must fail `scip check`");
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("1 source file"), "{err}");
 }
 
-/// --if-stale: fresh index is a one-line no-op that executes no indexer
+/// bare `scip`: fresh index is a one-line no-op that executes no indexer
 /// (fake rust-analyzer on PATH records execution); stale index runs it.
 #[cfg(unix)]
 #[test]
-fn if_stale_skips_indexers_when_fresh() {
+fn bare_scip_skips_indexers_when_fresh() {
     let dir = tempfile::tempdir().unwrap();
     let bin = tempfile::tempdir().unwrap();
     let repo = dir.path();
@@ -109,9 +112,9 @@ fn if_stale_skips_indexers_when_fresh() {
         SystemTime::now() - Duration::from_secs(60),
     );
 
-    let out = run(&["scip", "--if-stale"]);
+    let out = run(&["scip"]);
     assert!(out.status.success());
-    assert!(!marker.exists(), "fresh --if-stale executed an indexer");
+    assert!(!marker.exists(), "fresh bare `scip` executed an indexer");
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("nothing to do"),
         "{}",
@@ -124,6 +127,6 @@ fn if_stale_skips_indexers_when_fresh() {
         &repo.join("a.rs"),
         SystemTime::now() + Duration::from_secs(60),
     );
-    run(&["scip", "--if-stale"]);
-    assert!(marker.exists(), "stale --if-stale must run the indexer");
+    run(&["scip"]);
+    assert!(marker.exists(), "stale bare `scip` must run the indexer");
 }

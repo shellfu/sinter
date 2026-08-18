@@ -64,7 +64,7 @@ enum Staleness {
     Stale(usize),
 }
 
-/// The doctor's staleness notion, reimplemented here so `--check` needs
+/// The doctor's staleness notion, reimplemented here so `check` needs
 /// neither a graph nor an indexer: mtime of every language file vs the
 /// index's mtime.
 fn staleness(repo: &Path) -> Staleness {
@@ -99,7 +99,7 @@ fn staleness(repo: &Path) -> Staleness {
     }
 }
 
-/// `sinter scip --check`: the CI guard. Exit 0 when the index exists and
+/// `sinter scip check`: the CI guard. Exit 0 when the index exists and
 /// no source file is newer; exit 1 otherwise. Never runs an indexer.
 pub fn check(repo: &Path) -> Result<()> {
     let repo = repo.canonicalize()?;
@@ -113,13 +113,14 @@ pub fn check(repo: &Path) -> Result<()> {
     }
 }
 
-/// `sinter scip --if-stale`: index only when `--check` would fail, so the
-/// CI job is idempotent and a cache hit costs one directory walk.
+/// Bare `sinter scip`: index only when `check` would fail, so the command
+/// is idempotent and a CI cache hit costs one directory walk. `--force`
+/// routes to `run` instead.
 pub fn run_if_stale(repo: &Path) -> Result<()> {
     let canon = repo.canonicalize()?;
     match staleness(&canon) {
         Staleness::Fresh => {
-            println!("index fresh — nothing to do");
+            println!("index fresh — nothing to do (--force to reindex)");
             Ok(())
         }
         Staleness::Missing | Staleness::Stale(_) => run(repo),
