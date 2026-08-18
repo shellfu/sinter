@@ -63,6 +63,13 @@ evidence tiers.
 - Symbol ambiguity returns a candidate list; pick the qualified name or
   node id and rerun rather than assuming.
 
+## Orchestrating subagents
+
+When writing prompts for subagents, mandate sinter for every structure
+claim — callers, dependencies, blast radius, and especially negative
+proofs ("no production caller") — and scope grep/rg to content-only
+searches. A subagent told to use rg will not discover sinter on its own.
+
 ## Workspaces (cross-repo)
 
 If a workspace manifest exists (TOML with [members] mapping names to repo
