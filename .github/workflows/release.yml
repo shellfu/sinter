@@ -68,6 +68,7 @@ jobs:
       contents: write
       id-token: write
       attestations: write
+      actions: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -86,3 +87,13 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes
+      # A release created with GITHUB_TOKEN does not emit a workflow-visible
+      # `release: published` event, so the fan-out must be dispatched
+      # explicitly (workflow_dispatch is exempt from that suppression).
+      - name: fan out to pypi, crates.io, and homebrew
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for wf in pypi.yml crates.yml tap.yml; do
+            gh workflow run "$wf" --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
+          done

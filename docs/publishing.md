@@ -2,7 +2,7 @@
 
 How sinter reaches each distribution channel. Everything is automated
 off a tag push: `release.yml` builds and publishes the GitHub release
-(attested binaries), and the release-published event then fans out to
+(attested binaries), and its final step dispatches the fan-out to
 `pypi.yml` (wheels via Trusted Publishing), `crates.yml` (five crates
 via crates.io Trusted Publishing), and `tap.yml` (Homebrew formula via
 the tap deploy key). One `git push origin main vX.Y.Z` reaches every
