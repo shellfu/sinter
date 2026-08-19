@@ -1,0 +1,41 @@
+# Update the Homebrew tap formula on release: fill version + sha256s
+# from the published assets and push to shellfu/homebrew-tap via its
+# deploy key. No-op commit-wise when the formula is already current.
+name: tap
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  update-formula:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: resolve version
+        id: v
+        run: echo "version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+      - name: fill formula from release checksums
+        run: packaging/homebrew/update-formula.sh "${{ steps.v.outputs.version }}"
+      - name: push to tap
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$TAP_DEPLOY_KEY" > ~/.ssh/tap
+          chmod 600 ~/.ssh/tap
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap -o StrictHostKeyChecking=accept-new"
+          git clone --depth 1 git@github.com:shellfu/homebrew-tap.git tap
+          cp packaging/homebrew/sinter.rb tap/Formula/sinter.rb
+          cd tap
+          if git diff --quiet; then
+            echo "formula already current — nothing to push"
+            exit 0
+          fi
+          git -c user.name="sinter release" -c user.email="shellfu@users.noreply.github.com" \
+            commit -am "Update sinter to ${{ steps.v.outputs.version }}"
+          git push
