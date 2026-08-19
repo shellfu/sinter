@@ -33,8 +33,17 @@ query can filter on it.
 
 ## Install
 
-One line, no dependencies (Linux and macOS; verifies the release
-checksum, installs to `~/.local/bin`):
+Package managers:
+
+```
+cargo install sinter-io        # or: cargo binstall sinter-io (prebuilt)
+uv tool install sinter-io      # or: pipx install sinter-io
+brew install shellfu/tap/sinter
+```
+
+All of them put a binary named `sinter` on PATH. Or the one-liner, no
+dependencies (Linux and macOS; verifies the release checksum, installs
+to `~/.local/bin`):
 
 ```
 curl -fsSL https://raw.githubusercontent.com/shellfu/sinter/main/scripts/install.sh | sh
@@ -53,6 +62,9 @@ provenance attestation (requires the `gh` CLI):
 ```
 gh attestation verify sinter-<target>.tar.gz --owner shellfu
 ```
+
+PyPI wheels carry sigstore provenance via Trusted Publishing. Once
+installed, `sinter update` self-updates from GitHub releases.
 
 Or build from source (requires a Rust toolchain):
 
