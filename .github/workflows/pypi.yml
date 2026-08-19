@@ -68,3 +68,6 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
+          # Reruns rebuild every wheel; identical filenames already on
+          # PyPI must not fail the publish of the new ones.
+          skip-existing: true
