@@ -13,15 +13,10 @@ crates.io; cargo does not support workspace-inherited dependency versions).
 
 ### One-time setup
 
-- [ ] `cargo login` with a crates.io token that has publish scope.
-- [ ] Claim the names by publishing once, in dependency order (below). All
-      five names (`sinter-core`, `sinter-store`, `sinter-extract`,
-      `sinter-resolve`, `sinter-io`) must be free or already yours.
-- [ ] `crates/sinter-extract/Cargo.toml` still lacks
-      `repository.workspace = true` (the crate was owned by other work when
-      the rest were updated) — add it before first publish. Not blocking:
-      cargo publishes without `repository`, it is just a missing link on the
-      crates.io page.
+- [x] All five names (`sinter-core`, `sinter-store`, `sinter-extract`,
+      `sinter-resolve`, `sinter-io`) are claimed and published (0.38.0).
+- Per session: `cargo login` with a fresh crates.io publish-scoped token;
+  revoke it afterwards. The account needs a verified email.
 
 ### Per release
 
@@ -46,23 +41,21 @@ from the versioned GitHub asset URLs.
 
 ## PyPI (maturin wheels)
 
-`.github/workflows/pypi.yml` builds wheels for the six release targets from
+`.github/workflows/pypi.yml` builds wheels for the six release targets (plus manylinux retags of the
+musllinux wheels — the static binary is valid under both linux tags, and
+glibc pip/uv reject musllinux; `skip-existing` keeps reruns green) from
 the `sinter-io` bin crate (directory crates/sinter-cli) (`maturin`, `bindings = "bin"`,
 `crates/sinter-cli/pyproject.toml`) whenever a GitHub release is published,
-then uploads via Trusted Publishing. The workflow is inert until setup is
-done: the publish job fails cleanly at the OIDC token exchange and uploads
-nothing.
+then uploads via Trusted Publishing. It can also be run manually via
+workflow_dispatch.
 
-### One-time setup
+### One-time setup (done for sinter-io, 0.38.0)
 
-- [ ] Verify the package name is available on pypi.org — "sinter" is likely
-      taken. The name lives in exactly one place:
+- [x] Package name `sinter-io` — lives in exactly one place:
       `crates/sinter-cli/pyproject.toml` `[project] name`.
-- [ ] On PyPI: add a Trusted Publisher (pending publisher for a new name) —
-      owner `shellfu`, repository `sinter`, workflow `pypi.yml`,
-      environment `pypi`.
-- [ ] On GitHub: create the `pypi` environment for the repo
-      (Settings → Environments).
+- [x] PyPI Trusted Publisher: owner `shellfu`, repository `sinter`,
+      workflow `pypi.yml`, environment `pypi`.
+- [x] GitHub `pypi` environment (Settings → Environments).
 
 ### Per release
 
@@ -75,8 +68,7 @@ tarballs per OS/arch, sha256 pinned).
 
 ### One-time setup
 
-- [ ] Create the `shellfu/homebrew-tap` GitHub repo with a `Formula/`
-      directory.
+- [x] `shellfu/homebrew-tap` exists with `Formula/sinter.rb` at 0.38.0.
 
 ### Per release
 
