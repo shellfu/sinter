@@ -1,8 +1,12 @@
 # Publishing sinter
 
-How sinter reaches each distribution channel. GitHub releases are fully
-automated (tag push → `release.yml`); everything below is either automated
-off the release or a short manual command list.
+How sinter reaches each distribution channel. Everything is automated
+off a tag push: `release.yml` builds and publishes the GitHub release
+(attested binaries), and the release-published event then fans out to
+`pypi.yml` (wheels via Trusted Publishing), `crates.yml` (five crates
+via crates.io Trusted Publishing), and `tap.yml` (Homebrew formula via
+the tap deploy key). One `git push origin main vX.Y.Z` reaches every
+channel; no long-lived credentials exist anywhere.
 
 Versioning stays single-source: `make bump VERSION=x.y.z` rewrites both the
 `[workspace.package]` version and the `sinter-* = { version = "…" }` path-dep
@@ -68,12 +72,17 @@ tarballs per OS/arch, sha256 pinned).
 
 ### One-time setup
 
-- [x] `shellfu/homebrew-tap` exists with `Formula/sinter.rb` at 0.38.0.
+- [x] `shellfu/homebrew-tap` exists with `Formula/sinter.rb`.
+- [x] Deploy key on the tap repo; private half is the `TAP_DEPLOY_KEY`
+      secret here.
 
 ### Per release
 
+Nothing — `tap.yml` regenerates the formula from the release checksums
+and pushes it. Manual fallback:
+
 ```sh
-packaging/homebrew/update-formula.sh 0.38.0   # fills version + sha256s
+packaging/homebrew/update-formula.sh <version>
 cp packaging/homebrew/sinter.rb ../homebrew-tap/Formula/sinter.rb
 # commit + push in the tap repo
 ```
