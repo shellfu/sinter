@@ -17,21 +17,12 @@ jobs:
     strategy:
       matrix:
         include:
-          # The binary is fully static, so the same musl build ships under
-          # both linux wheel tags: manylinux for glibc systems (which
-          # reject musllinux by tag) and musllinux for Alpine-alikes.
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             manylinux: musllinux_1_2
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
             manylinux: musllinux_1_2
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-            manylinux: "2014"
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-24.04-arm
-            manylinux: "2014"
           - target: x86_64-apple-darwin
             os: macos-latest
           - target: aarch64-apple-darwin
@@ -51,7 +42,7 @@ jobs:
           manylinux: ${{ matrix.manylinux || 'auto' }}
       - uses: actions/upload-artifact@v4
         with:
-          name: wheel-${{ matrix.target }}-${{ matrix.manylinux || 'native' }}
+          name: wheel-${{ matrix.target }}
           path: dist
 
   publish:
@@ -65,6 +56,19 @@ jobs:
         with:
           merge-multiple: true
           path: dist
+      # glibc systems reject musllinux-tagged wheels, but the binary is
+      # fully static — the same wheel is valid as manylinux. Retag copies
+      # so both linux tags ship without a second build toolchain.
+      - name: retag musllinux wheels for manylinux
+        run: |
+          pip install --quiet 'wheel>=0.40'
+          for f in dist/*musllinux_1_2_x86_64.whl; do
+            python -m wheel tags --platform-tag manylinux2014_x86_64 "$f"
+          done
+          for f in dist/*musllinux_1_2_aarch64.whl; do
+            python -m wheel tags --platform-tag manylinux2014_aarch64 "$f"
+          done
+          ls dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
