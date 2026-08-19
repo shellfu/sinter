@@ -1,5 +1,5 @@
 [package]
-name = "sinter-cli"
+name = "sinter-io"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
