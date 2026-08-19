@@ -138,13 +138,16 @@ struct Import {
 struct FileDef<'a> {
     node: &'a Node,
     /// Qualified prefix ("Server" for Server::run; "" for top level).
-    prefix: String,
+    prefix: &'a str,
     /// Every ancestor on the prefix is function-like, so the name is
     /// lexically visible bare inside them (nested fns yes, methods no).
     functionish: bool,
 }
 
-struct Index<'a> {
+/// Prebuilt lookup structures over one corpus snapshot. Built once per
+/// resolution pass and shared by [`resolve`] and [`dynamic_edges`] — the
+/// build walks every node and is the most expensive part of a pass.
+pub struct Index<'a> {
     /// (file, plain name) -> defs with visibility info.
     by_file_name: HashMap<(&'a str, &'a str), Vec<FileDef<'a>>>,
     /// (file, qualified) -> def, receiver/type lookups.
@@ -187,11 +190,24 @@ fn key_of(spec: &LanguageSpec, roots: &[ModuleRoot], file: &str) -> Vec<String> 
         &file[root.dir.len() + 1..]
     };
     let mut key = (spec.module_path)(rel);
+    // A declared name may span several segments in reference form
+    // (Go's `module example.com/proj` vs Rust's single-segment crate
+    // name): split it the same way reference paths split.
+    let mut name_segments = vec![root.name.clone()];
+    for sep in spec.path_separators {
+        name_segments = name_segments
+            .iter()
+            .flat_map(|s| s.split(sep).map(str::to_string))
+            .collect();
+    }
+    name_segments.retain(|s| !s.is_empty());
     match key.first() {
         Some(head) if manifest.self_names.contains(&head.as_str()) => {
-            key[0] = root.name.clone();
+            key.splice(0..1, name_segments);
         }
-        _ => key.insert(0, root.name.clone()),
+        _ => {
+            key.splice(0..0, name_segments);
+        }
     }
     key
 }
@@ -234,6 +250,17 @@ fn module_of(node: &Node, roots: &[ModuleRoot]) -> Vec<String> {
     module
 }
 
+/// Per-node data whose computation is independent of every other node —
+/// the expensive half of the index build, computed in parallel.
+struct Prep<'a> {
+    file_module: Vec<String>,
+    qualified: &'a str,
+    prefix: &'a str,
+    functionish: bool,
+    /// file_module + prefix segments, the `by_name` key module.
+    module: Vec<String>,
+}
+
 fn build_index<'a>(
     nodes: &'a [Node],
     all_imports: &'a [Reference],
@@ -241,6 +268,7 @@ fn build_index<'a>(
     embeds: &'a [Embed],
     roots: &[ModuleRoot],
 ) -> Index<'a> {
+    use rayon::prelude::*;
     let mut index = Index {
         by_file_name: HashMap::new(),
         by_file_qualified: HashMap::new(),
@@ -263,11 +291,63 @@ fn build_index<'a>(
             node.kind,
         );
     }
-    for node in nodes {
-        let Some(spec) = spec_for_path(&node.file) else {
+    // Pass 2a, parallel: everything derivable from one node alone —
+    // module keys, qualified prefix, lexical visibility — is the hot
+    // part of the build (measured on 1.6M-node corpora). Map insertion
+    // stays serial below, in node order, so the index is byte-identical
+    // to a serial build.
+    let preps: Vec<Option<Prep<'a>>> = nodes
+        .par_iter()
+        .map(|node| {
+            let spec = spec_for_path(&node.file)?;
+            let file_module = key_of(spec, roots, &node.file);
+            if node.kind == SymbolKind::File {
+                return Some(Prep {
+                    file_module,
+                    qualified: "",
+                    prefix: "",
+                    functionish: false,
+                    module: Vec::new(),
+                });
+            }
+            let qualified = qualified_of(node.id.as_str());
+            let prefix = qualified.rsplit_once("::").map_or("", |(p, _)| p);
+            let functionish =
+                prefix
+                    .split("::")
+                    .filter(|s| !s.is_empty())
+                    .try_fold(String::new(), |acc, seg| {
+                        let q = if acc.is_empty() {
+                            seg.to_string()
+                        } else {
+                            format!("{acc}::{seg}")
+                        };
+                        let kind = kind_of.get(&(node.file.as_str(), q.as_str()));
+                        match kind {
+                            Some(k) if is_callable(*k) && *k != SymbolKind::Class => Some(q),
+                            None => None, // impl/receiver scope: not lexically callable
+                            Some(_) => None,
+                        }
+                    });
+            let mut module = file_module.clone();
+            if !prefix.is_empty() {
+                module.extend(prefix.split("::").map(str::to_string));
+            }
+            Some(Prep {
+                file_module,
+                qualified,
+                prefix,
+                functionish: prefix.is_empty() || functionish.is_some(),
+                module,
+            })
+        })
+        .collect();
+    // Pass 2b, serial: insert in node order.
+    for (node, prep) in nodes.iter().zip(preps) {
+        let Some(prep) = prep else {
             continue;
         };
-        let file_module = key_of(spec, roots, &node.file);
+        let file_module = prep.file_module;
         if node.kind == SymbolKind::File {
             index.file_nodes.insert(node.file.as_str(), node);
             if let Some(tail) = file_module.last() {
@@ -276,41 +356,20 @@ fn build_index<'a>(
                     .entry(tail.clone())
                     .or_default()
                     .push((file_module.clone(), node));
-            }
-            if let Some(tail) = file_module.last() {
                 let entries = index.files_of_module.entry(tail.clone()).or_default();
                 match entries.iter_mut().find(|m| m.key == file_module) {
                     Some(m) => m.files.push(&node.file),
                     None => entries.push(ModuleFiles {
-                        key: file_module.clone(),
+                        key: file_module,
                         files: vec![&node.file],
                     }),
                 }
             }
             continue;
         }
-        let qualified = qualified_of(node.id.as_str());
-        let prefix = qualified.rsplit_once("::").map_or("", |(p, _)| p);
-        let functionish =
-            prefix
-                .split("::")
-                .filter(|s| !s.is_empty())
-                .try_fold(String::new(), |acc, seg| {
-                    let q = if acc.is_empty() {
-                        seg.to_string()
-                    } else {
-                        format!("{acc}::{seg}")
-                    };
-                    let kind = kind_of.get(&(node.file.as_str(), q.as_str()));
-                    match kind {
-                        Some(k) if is_callable(*k) && *k != SymbolKind::Class => Some(q),
-                        None => None, // impl/receiver scope: not lexically callable
-                        Some(_) => None,
-                    }
-                });
         index
             .by_file_qualified
-            .insert((node.file.as_str(), qualified), node);
+            .insert((node.file.as_str(), prep.qualified), node);
         index
             .defs_by_file
             .entry(node.file.as_str())
@@ -322,19 +381,15 @@ fn build_index<'a>(
             .or_default()
             .push(FileDef {
                 node,
-                prefix: prefix.to_string(),
-                functionish: prefix.is_empty() || functionish.is_some(),
+                prefix: prep.prefix,
+                functionish: prep.functionish,
             });
-        let mut module = file_module.clone();
-        if !prefix.is_empty() {
-            module.extend(prefix.split("::").map(str::to_string));
-        }
         index
             .by_name
             .entry(node.name.as_str())
             .or_default()
-            .push((module, node));
-        if prefix.is_empty() {
+            .push((prep.module, node));
+        if prep.prefix.is_empty() {
             index
                 .module_defs
                 .entry(file_module)
@@ -393,6 +448,23 @@ fn strip_glob(name: &str) -> &str {
 }
 
 impl<'a> Index<'a> {
+    /// Build the lookup index once; [`resolve`] and [`dynamic_edges`]
+    /// both borrow it, so one pass never builds it twice.
+    pub fn build(
+        nodes: &'a [Node],
+        all_imports: &'a [Reference],
+        locals: &'a [LocalBinding],
+        embeds: &'a [Embed],
+        roots: &[ModuleRoot],
+    ) -> Index<'a> {
+        let t = std::time::Instant::now();
+        let index = build_index(nodes, all_imports, locals, embeds, roots);
+        if std::env::var_os("SINTER_TIMING").is_some() {
+            eprintln!("index build: {:?}", t.elapsed());
+        }
+        index
+    }
+
     /// Local binding in scope at `at`, returning its declared type if any.
     fn local_at(&self, file: &str, name: &str, at: u64) -> Option<Option<&'a str>> {
         self.locals
@@ -617,18 +689,9 @@ fn namespace_pick(candidates: Vec<&Node>, relation: Relation) -> Option<&Node> {
 }
 
 pub fn resolve(
-    nodes: &[Node],
+    index: &Index<'_>,
     references: &[Reference],
-    locals: &[LocalBinding],
-    all_imports: &[Reference],
-    embeds: &[Embed],
-    roots: &[ModuleRoot],
 ) -> (Vec<Binding>, ResolutionStats, Vec<usize>) {
-    let t = std::time::Instant::now();
-    let index = build_index(nodes, all_imports, locals, embeds, roots);
-    if std::env::var_os("SINTER_TIMING").is_some() {
-        eprintln!("index build: {:?}", t.elapsed());
-    }
     use rayon::prelude::*;
     let results: Vec<Res> = references
         .par_iter()
@@ -643,7 +706,7 @@ pub fn resolve(
                 .unwrap_or_else(|| NodeId::new(r.file.clone()));
             let file_module = key_of(spec, &index.roots, &r.file);
             let imports = index.imports.get(r.file.as_str());
-            let (target, evidence, internal) = resolve_one(&index, spec, r, &file_module, imports);
+            let (target, evidence, internal) = resolve_one(index, spec, r, &file_module, imports);
             match target {
                 Some(node) if node.id != src => {
                     // A "call" landing on a type is a conversion or
@@ -660,6 +723,7 @@ pub fn resolve(
                             relation,
                             evidence,
                             confidence: evidence.confidence(),
+                            site: Some(r.span),
                         },
                         reference: i,
                     })
@@ -959,20 +1023,22 @@ fn slugify(name: &str) -> String {
 /// which is exactly why the edges carry the distinct Dynamic evidence.
 /// Pairing rule: the impl block names the trait (same file/module, or a
 /// named import) and the method names match.
-pub fn dynamic_edges(
-    nodes: &[Node],
-    trait_impls: &[TraitImpl],
-    all_imports: &[Reference],
-    roots: &[ModuleRoot],
-) -> Vec<Edge> {
-    if trait_impls.is_empty() {
+pub fn dynamic_edges(index: &Index<'_>, nodes: &[Node], trait_impls: &[TraitImpl]) -> Vec<Edge> {
+    let implicit = nodes
+        .iter()
+        .any(|n| spec_for_path(&n.file).is_some_and(|s| s.implicit_interfaces));
+    if trait_impls.is_empty() && !implicit {
         return Vec::new();
     }
-    let index = build_index(nodes, all_imports, &[], &[], roots);
+    let roots = &index.roots;
     let mut by_file: HashMap<&str, Vec<&Node>> = HashMap::new();
+    let mut types_by_file: HashMap<&str, Vec<&Node>> = HashMap::new();
     for n in nodes {
         if is_callable(n.kind) {
             by_file.entry(n.file.as_str()).or_default().push(n);
+        }
+        if is_member_scope(n.kind) {
+            types_by_file.entry(n.file.as_str()).or_default().push(n);
         }
     }
     // Class included: C# captures base classes as @trait because its
@@ -993,6 +1059,7 @@ pub fn dynamic_edges(
         let trait_node = index
             .type_def(&ti.file, &file_module, &ti.trait_name)
             .filter(|n| is_trait(n))
+            .map(|n| (n, Evidence::Scope))
             .or_else(|| {
                 // Trait bound through a named import; unique or nothing.
                 let named: Vec<&Node> = index
@@ -1005,17 +1072,40 @@ pub fn dynamic_edges(
                     .filter(|n| is_trait(n))
                     .collect();
                 match named.as_slice() {
-                    [node] => Some(node),
+                    [node] => Some((node, Evidence::Import)),
+                    _ => None,
+                }
+            })
+            .or_else(|| {
+                // Glob imports (C++ #include, C# using): the trait is one
+                // of the module's top-level names; unique or nothing.
+                let globbed: Vec<&Node> = index
+                    .imports
+                    .get(ti.file.as_str())
+                    .into_iter()
+                    .flatten()
+                    .filter(|imp| imp.glob)
+                    .filter_map(|imp| {
+                        let mut full = imp.segments.clone();
+                        full.push(ti.trait_name.clone());
+                        index.resolve_path_defs(&full, 4)
+                    })
+                    .filter(|n| is_trait(n))
+                    .collect();
+                match globbed.as_slice() {
+                    [node] => Some((node, Evidence::Import)),
                     _ => None,
                 }
             });
-        let Some(trait_node) = trait_node else {
+        let Some((trait_node, pair_evidence)) = trait_node else {
             continue; // external trait: nothing in the corpus to fan into
         };
+        let mut impl_methods: Vec<&Node> = Vec::new();
         for method in by_file.get(ti.file.as_str()).into_iter().flatten() {
             if !(ti.span.start <= method.span.start && method.span.end <= ti.span.end) {
                 continue;
             }
+            impl_methods.push(method);
             if let Some(trait_method) = index.member_of(trait_node, &method.name, 1)
                 && trait_method.id != method.id
             {
@@ -1025,12 +1115,147 @@ pub fn dynamic_edges(
                     relation: Relation::Calls,
                     evidence: Evidence::Dynamic,
                     confidence: Evidence::Dynamic.confidence(),
+                    // Fan-out is assumed, not written anywhere: no site.
+                    site: None,
                 });
             }
         }
+        // Persistent supertype edge, impl type -> trait/base. The block
+        // either IS the implementing type's declaration (class languages)
+        // or contains its methods (Rust impl blocks) — the method prefix
+        // then names the type. Same kinds mean inheritance (class : class,
+        // interface extends interface); differing kinds mean an interface
+        // contract. Evidence mirrors how the pairing was bound.
+        let impl_type = types_by_file
+            .get(ti.file.as_str())
+            .into_iter()
+            .flatten()
+            .find(|n| n.span == ti.span)
+            .copied()
+            .or_else(|| {
+                let prefix = impl_methods.iter().find_map(|m| {
+                    let q = qualified_of(m.id.as_str());
+                    q.rsplit_once("::")
+                        .map(|(p, _)| p.rsplit("::").next().unwrap_or(p))
+                })?;
+                index.type_def(&ti.file, &file_module, prefix)
+            });
+        if let Some(impl_type) = impl_type
+            && impl_type.id != trait_node.id
+        {
+            let relation = if impl_type.kind == trait_node.kind {
+                Relation::Extends
+            } else {
+                Relation::Implements
+            };
+            edges.push(Edge {
+                src: impl_type.id.clone(),
+                dst: trait_node.id.clone(),
+                relation,
+                evidence: pair_evidence,
+                confidence: pair_evidence.confidence(),
+                // The impl block's span lives in ti.file, which may not be
+                // the impl type's file — a site here could point into the
+                // wrong file, so none is carried.
+                site: None,
+            });
+        }
+    }
+    if implicit {
+        edges.extend(implicit_interface_edges(nodes, roots));
     }
     edges.sort();
     edges.dedup();
+    edges
+}
+
+/// Structural interface satisfaction for languages where no syntax names
+/// the interface at the implementing type (spec.implicit_interfaces — Go):
+/// within one package, a type T satisfies interface I when T's method
+/// names cover all of I's declared methods. Name-only matching
+/// over-approximates signatures, so every edge carries Dynamic evidence
+/// (Inferred, excludable). Package scope keeps precision high: matching
+/// the whole corpus would pair unrelated same-shaped types.
+/// ponytail: cross-package satisfaction (io.Writer style) not inferred;
+/// widen to module scope if a real repo shows the recall gap.
+fn implicit_interface_edges(nodes: &[Node], roots: &[ModuleRoot]) -> Vec<Edge> {
+    // (package key, type name) -> type nodes; (package key, type name) ->
+    // methods declared/received under that name.
+    let mut types: HashMap<(Vec<String>, &str), Vec<&Node>> = HashMap::new();
+    let mut types_by_key: HashMap<Vec<String>, Vec<&Node>> = HashMap::new();
+    let mut methods: HashMap<(Vec<String>, &str), Vec<&Node>> = HashMap::new();
+    for n in nodes {
+        let Some(spec) = spec_for_path(&n.file) else {
+            continue;
+        };
+        if !spec.implicit_interfaces {
+            continue;
+        }
+        let key = key_of(spec, roots, &n.file);
+        match n.kind {
+            SymbolKind::Interface | SymbolKind::Struct | SymbolKind::TypeAlias => {
+                types
+                    .entry((key.clone(), n.name.as_str()))
+                    .or_default()
+                    .push(n);
+                types_by_key.entry(key).or_default().push(n);
+            }
+            SymbolKind::Method => {
+                let q = qualified_of(n.id.as_str());
+                if let Some((owner, _)) = q.rsplit_once("::")
+                    && !owner.contains("::")
+                {
+                    methods.entry((key, owner)).or_default().push(n);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut edges = Vec::new();
+    for ((key, name), candidates) in &types {
+        // Unique or nothing: a same-named sibling makes ownership ambiguous.
+        let [iface] = candidates.as_slice() else {
+            continue;
+        };
+        if iface.kind != SymbolKind::Interface {
+            continue;
+        }
+        let Some(iface_methods) = methods.get(&(key.clone(), *name)) else {
+            continue; // empty interface: everything satisfies it — emit nothing
+        };
+        for ty in types_by_key.get(key).into_iter().flatten() {
+            if ty.kind == SymbolKind::Interface {
+                continue;
+            }
+            let ty_methods = methods.get(&(key.clone(), ty.name.as_str()));
+            let covers = |m: &Node| ty_methods.into_iter().flatten().any(|tm| tm.name == m.name);
+            if !iface_methods.iter().all(|m| covers(m)) {
+                continue;
+            }
+            for im in iface_methods {
+                for tm in ty_methods.into_iter().flatten() {
+                    if tm.name == im.name {
+                        edges.push(Edge {
+                            src: im.id.clone(),
+                            dst: tm.id.clone(),
+                            relation: Relation::Calls,
+                            evidence: Evidence::Dynamic,
+                            confidence: Evidence::Dynamic.confidence(),
+                            site: None,
+                        });
+                    }
+                }
+            }
+            edges.push(Edge {
+                src: ty.id.clone(),
+                dst: iface.id.clone(),
+                relation: Relation::Implements,
+                evidence: Evidence::Dynamic,
+                confidence: Evidence::Dynamic.confidence(),
+                site: None,
+            });
+        }
+    }
     edges
 }
 
@@ -1115,6 +1340,7 @@ pub fn resolve_boundary(
                     relation,
                     evidence: Evidence::Import,
                     confidence: Evidence::Import.confidence(),
+                    site: Some(r.span),
                 },
                 reference: i,
             });

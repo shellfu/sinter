@@ -54,13 +54,19 @@ function-body behavior.
 | Vague/conceptual: "where is X handled" | `sinter ask "<question>"` |
 | Orient on a symbol (signature, docs, callers) | `sinter show <symbol>` |
 | What depends on X / blast radius | `sinter affected <symbol>` |
+| What does X depend on (forward) | `sinter deps <symbol>` |
 | How does A reach B | `sinter path <A> <B>` |
 | What does this commit/diff/PR affect downstream | `sinter impact <rev-range>` (e.g. `HEAD~1..HEAD`) |
 
+- Every read verb takes `--json` and exits grep-style (0 results,
+  1 none, 2 error) — branch on the code, not the prose. Results carry
+  call sites (`file:line`).
+- `--relations calls,uses` on affected/deps/path drops file-level
+  import noise from a blast radius.
 - Queries self-sync before answering — no manual refresh needed
   (`sinter build` remains for CI/scripts; git hooks refresh on commit).
 - "unresolved" and candidate lists are real answers — refine and rerun,
-  never guess a binding.
+  never guess a binding; `sinter unresolved` lists the graph's gaps.
 - Spawning subagents? Their prompts must mandate sinter for structure
   claims (callers, dependencies, blast radius, "no usages" proofs) and
   reserve grep/rg for content-only searches.

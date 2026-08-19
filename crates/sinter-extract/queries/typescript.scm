@@ -4,6 +4,9 @@
 (class_declaration name: (type_identifier) @name) @def.class
 (method_definition name: (property_identifier) @name) @def.method
 (interface_declaration name: (type_identifier) @name) @def.interface
+; interface method signatures are declared symbols (Iface::method):
+; fan-out sources for implements pairing
+(method_signature name: (property_identifier) @name) @def.method
 (enum_declaration name: (identifier) @name) @def.enum
 (type_alias_declaration name: (type_identifier) @name) @def.typealias
 
@@ -25,6 +28,20 @@
       (variable_declarator
         name: (identifier) @name
         value: [(arrow_function) (function_expression)])) @def.function))
+
+; `implements` pairs the class with the interface (dynamic-dispatch
+; fan-out, like Rust traits); `extends` on an interface is inheritance —
+; both reference the supertype
+(class_declaration
+  (class_heritage (implements_clause [
+    (type_identifier) @ref.use @trait
+    (generic_type name: (type_identifier) @ref.use @trait)
+  ]))) @trait.impl
+(interface_declaration
+  (extends_type_clause type: [
+    (type_identifier) @ref.use @trait
+    (generic_type name: (type_identifier) @ref.use @trait)
+  ])) @trait.impl
 
 ; named imports bind the item: module + name joined by the engine
 (import_statement

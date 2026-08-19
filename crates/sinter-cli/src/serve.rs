@@ -53,10 +53,24 @@ fn serve(scope: Scope) -> Result<()> {
         };
         let response = match handle(&scope, method, &params) {
             Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
-            Err(e) => json!({
-                "jsonrpc": "2.0", "id": id,
-                "error": {"code": -32000, "message": format!("{e:#}")}
-            }),
+            Err(e) => {
+                // Recovery hint: lookup already appends close-name
+                // suggestions when it has them; a bare miss would
+                // otherwise dead-end the calling agent. Its hint names
+                // the CLI verb — swap it for the MCP tool, exactly one
+                // hint either way.
+                let mut message = format!("{e:#}");
+                if message.contains("no symbol matches") {
+                    if let Some(pos) = message.find(" — try `sinter ask") {
+                        message.truncate(pos);
+                    }
+                    message.push_str(" — try the ask tool for concept search");
+                }
+                json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "error": {"code": -32000, "message": message}
+                })
+            }
         };
         writeln!(stdout, "{response}")?;
         stdout.flush()?;
@@ -118,6 +132,19 @@ fn filter_args(args: &Value) -> (Vec<String>, bool) {
         .and_then(Value::as_str)
         .is_some_and(|c| c == "certain");
     (evidence, certain)
+}
+
+/// `relations` array to the --relations-style name list.
+fn relations_args(args: &Value) -> Vec<String> {
+    args.get("relations")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn node_json(node: &Node) -> Value {
@@ -223,15 +250,21 @@ fn affected_one(
                     "depth": r.depth,
                     "relation": r.via.relation.as_str(),
                     "evidence": r.via.evidence.as_str(),
+                    "site": crate::render::site_json(repo, &r.via),
                 })
             } else {
-                json!({
+                let mut entry = json!({
                     "s": qualified_of(r.node.id.as_str()),
                     "k": r.node.kind.as_str(),
                     "f": r.node.file,
                     "e": format!("{}/{}", r.via.relation.as_str(), r.via.evidence.as_str()),
                     "d": r.depth,
-                })
+                });
+                let site = crate::render::site_json(repo, &r.via);
+                if !site.is_null() {
+                    entry["site"] = site;
+                }
+                entry
             }
         })
         .collect();
@@ -277,8 +310,23 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
         let hits = crate::ask::ask_json(repo, &symbol("question")?, limit)?;
         return Ok(json!({ "hits": hits }));
     }
+    if name == "overlap" {
+        // impact::compute opens the store per range — same constraint.
+        let ranges: Vec<String> = args
+            .get("ranges")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        return overlap_json(repo, &ranges);
+    }
     let store = &open_store(repo)?;
     match name {
+        "map" => map_json(repo, store),
         "show" => {
             let node = unique_symbol(store, &symbol("symbol")?)?;
             let edge_json = |e: &sinter_core::Edge, other: &sinter_core::NodeId| {
@@ -286,6 +334,7 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
                     "symbol": qualified_of(other.as_str()),
                     "relation": e.relation.as_str(),
                     "evidence": e.evidence.as_str(),
+                    "site": crate::render::site_json(repo, e),
                 })
             };
             let out: Vec<Value> = store
@@ -317,7 +366,8 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
         }
         "affected" => {
             let (evidence, certain) = filter_args(args);
-            let filter = edge_filter(&evidence, certain)?;
+            let mut filter = edge_filter(&evidence, certain)?;
+            filter.relations = crate::lookup::relation_set(&relations_args(args))?;
             let depth = args.get("max_depth").and_then(Value::as_u64).unwrap_or(10) as usize;
             let (limit, detail) = affected_args(args);
             let one = |sym: &str| -> Result<Value> {
@@ -340,9 +390,55 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
             }
             one(&symbol("symbol")?)
         }
+        "deps" => {
+            let (evidence, certain) = filter_args(args);
+            let mut filter = edge_filter(&evidence, certain)?;
+            filter.relations = crate::lookup::relation_set(&relations_args(args))?;
+            let depth = args.get("max_depth").and_then(Value::as_u64).unwrap_or(10) as usize;
+            let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
+            let node = unique_symbol(store, &symbol("symbol")?)?;
+            let reached = store.dependencies(&node.id, &filter, depth)?;
+            // Honest-empty signal: unresolved refs inside this definition
+            // mean the dependency list may be incomplete.
+            let unresolved = store
+                .references_in(&node.file)?
+                .iter()
+                .filter(|r| r.enclosing.as_ref() == Some(&node.id))
+                .count();
+            let entries: Vec<Value> = reached
+                .iter()
+                .take(limit)
+                .map(|r| {
+                    let mut entry = json!({
+                        "s": qualified_of(r.node.id.as_str()),
+                        "k": r.node.kind.as_str(),
+                        "f": r.node.file,
+                        "e": format!("{}/{}", r.via.relation.as_str(), r.via.evidence.as_str()),
+                        "d": r.depth,
+                    });
+                    let site = crate::render::site_json(repo, &r.via);
+                    if !site.is_null() {
+                        entry["site"] = site;
+                    }
+                    entry
+                })
+                .collect();
+            let mut out = json!({
+                "symbol": node_json(&node),
+                "total": reached.len(),
+                "unresolved_refs_in_symbol": unresolved,
+                "by_file": by_file(reached.iter().map(|r| r.node.file.clone())),
+                "dependencies": entries,
+            });
+            if reached.len() > limit {
+                out["truncated"] = json!(reached.len() - limit);
+            }
+            Ok(out)
+        }
         "path" => {
             let (evidence, certain) = filter_args(args);
-            let filter = edge_filter(&evidence, certain)?;
+            let mut filter = edge_filter(&evidence, certain)?;
+            filter.relations = crate::lookup::relation_set(&relations_args(args))?;
             let from = unique_symbol(store, &symbol("from")?)?;
             let to = unique_symbol(store, &symbol("to")?)?;
             let path = store.shortest_path(&from.id, &to.id, &filter)?;
@@ -353,11 +449,106 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
                     "to": qualified_of(e.dst.as_str()),
                     "relation": e.relation.as_str(),
                     "evidence": e.evidence.as_str(),
+                    "site": crate::render::site_json(repo, e),
                 })).collect::<Vec<_>>(),
             }))
         }
         other => anyhow::bail!("unknown tool {other}"),
     }
+}
+
+/// One-screen orientation card, mirroring `sinter map --json` (map.rs
+/// keeps its helpers private to that verb): module tree with per-directory
+/// symbol counts, most depended-on hubs, doc entry points.
+fn map_json(repo: &Path, store: &sinter_store::Store) -> Result<Value> {
+    use std::collections::BTreeMap;
+    // Streamed reads, matching map.rs: materializing (and re-validating)
+    // the whole graph via read_graph took seconds and gigabytes on big
+    // corpora just to count in-degrees.
+    let node_count = store.node_count()?;
+    let edge_count = store.edge_count()?;
+    let nodes: Vec<Node> = store.all_nodes()?;
+    // Depth-2 directory counts; lexicographic order keeps each top-level
+    // directory adjacent to its children.
+    let mut tree: BTreeMap<String, usize> = BTreeMap::new();
+    for node in &nodes {
+        let mut parts: Vec<&str> = node.file.split('/').collect();
+        parts.pop(); // file name
+        let top = parts.first().copied().unwrap_or(".");
+        *tree.entry(top.to_string()).or_default() += 1;
+        if let Some(second) = parts.get(1) {
+            *tree.entry(format!("{top}/{second}")).or_default() += 1;
+        }
+    }
+    let by_id: BTreeMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let degrees = store.in_degrees()?;
+    let mut ranked: Vec<(&str, usize)> = degrees.iter().map(|(id, n)| (id.as_str(), *n)).collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    let hubs: Vec<Value> = ranked
+        .into_iter()
+        .filter_map(|(id, n)| {
+            by_id.get(id).map(|node| {
+                json!({
+                    "name": qualified_of(id),
+                    "kind": node.kind.as_str(),
+                    "file": node.file,
+                    "line": crate::render::line_of(repo, &node.file, node.span.start),
+                    "in_degree": n,
+                })
+            })
+        })
+        .take(10)
+        .collect();
+    // Level-1 sections of README.md and top-level docs/*.md, in doc order.
+    let mut docs: BTreeMap<String, Vec<(u64, String)>> = BTreeMap::new();
+    for node in &nodes {
+        if node.kind != sinter_core::SymbolKind::Section {
+            continue;
+        }
+        let file = node.file.as_str();
+        let top_level_doc = file == "README.md"
+            || (file.starts_with("docs/")
+                && file.ends_with(".md")
+                && file.matches('/').count() == 1);
+        let h1 = node.signature.starts_with('#') && !node.signature.starts_with("##");
+        if top_level_doc && h1 {
+            docs.entry(file.to_string())
+                .or_default()
+                .push((node.span.start, node.name.clone()));
+        }
+    }
+    Ok(json!({
+        "repo": repo.file_name().map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| ".".into()),
+        "nodes": node_count,
+        "edges": edge_count,
+        "modules": tree.iter()
+            .map(|(path, n)| json!({"path": path, "nodes": n}))
+            .collect::<Vec<_>>(),
+        "hubs": hubs,
+        "docs": docs.iter().map(|(file, sections)| {
+            let mut sections = sections.clone();
+            sections.sort();
+            json!({"file": file,
+                   "sections": sections.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>()})
+        }).collect::<Vec<_>>(),
+    }))
+}
+
+/// Pairwise merge risk between rev ranges — `sinter overlap`'s compute,
+/// with per-range summaries as counts, not full sets (agent context
+/// budget).
+fn overlap_json(repo: &Path, ranges: &[String]) -> Result<Value> {
+    let (maps, pairs) = crate::overlap::compute(repo, ranges)?;
+    Ok(json!({
+        "changes": maps.iter().map(|p| json!({
+            "label": p.label,
+            "touched": p.touched.len(),
+            "radius": p.radius.len(),
+            "files": p.files.len(),
+        })).collect::<Vec<_>>(),
+        "pairs": serde_json::to_value(pairs)?,
+    }))
 }
 
 fn tools_list() -> Value {
@@ -367,8 +558,16 @@ fn tools_list() -> Value {
             "description": "restrict to these evidence kinds"},
         "min_confidence": {"type": "string", "enum": ["certain", "inferred"],
             "description": "certain = compiler-grade edges only"},
+        "relations": {"type": "array", "items": {"type": "string",
+            "enum": ["calls", "uses", "imports", "implements", "extends"]},
+            "description": "follow only these relations (e.g. drop file-level imports)"},
     });
     json!({"tools": [
+        {
+            "name": "map",
+            "description": "One-screen orientation card for the repository: node/edge totals, the module tree with per-directory symbol counts, the most depended-on hub symbols, and doc entry points. Call this first in an unfamiliar repo.",
+            "inputSchema": {"type": "object", "properties": {}},
+        },
         {
             "name": "ask",
             "description": "Answer a vague or conceptual codebase question (\"where is X handled\", \"how does Y work\") with ranked, content-bearing hits: signature, doc, file:line, and match provenance. Use this first when no exact symbol is known.",
@@ -379,7 +578,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "show",
-            "description": "Orient on one symbol: signature, doc, file, plus every incoming and outgoing edge with relation and evidence.",
+            "description": "Orient on one symbol: signature, doc, file, plus every incoming and outgoing edge with relation, evidence, and call site (`site`: file:line of the reference).",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": {"type": "string"},
             }, "required": ["symbol"]},
@@ -394,7 +593,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "affected",
-            "description": "Reverse blast radius: everything transitively depending on a symbol, cross-file. Summary-first: total, by_file (top files by dependent count), then dependents capped at `limit` (default 50; `truncated` reports how many were omitted). Terse dependent keys: s=qualified symbol, k=kind, f=file, e=relation/evidence, d=depth. Pass detail:true for full nodes within the limit. Pass `symbols` (array) to batch many symbols in one call — response is {results:[...]}, per-symbol errors inline. unresolved_refs_matching_name > 0 means the list may be incomplete — refine, or run `sinter scip`.",
+            "description": "Reverse blast radius: everything transitively depending on a symbol, cross-file. Summary-first: total, by_file (top files by dependent count), then dependents capped at `limit` (default 50; `truncated` reports how many were omitted). Terse dependent keys: s=qualified symbol, k=kind, f=file, e=relation/evidence, d=depth, site=file:line of the referencing site when known. Pass detail:true for full nodes within the limit. Pass `symbols` (array) to batch many symbols in one call — response is {results:[...]}, per-symbol errors inline. unresolved_refs_matching_name > 0 means the list may be incomplete — refine, or run `sinter scip`.",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": {"type": "string"},
                 "symbols": {"type": "array", "items": {"type": "string"},
@@ -406,16 +605,31 @@ fn tools_list() -> Value {
                     "description": "full node objects instead of terse entries"},
                 "evidence": filters["evidence"],
                 "min_confidence": filters["min_confidence"],
+                "relations": filters["relations"],
             }},
         },
         {
+            "name": "deps",
+            "description": "Forward blast radius: everything a symbol transitively depends on (calls, uses, imports), cross-file. Summary-first: total, by_file, then dependencies capped at `limit` (default 50; `truncated` reports how many were omitted). Terse keys: s=qualified symbol, k=kind, f=file, e=relation/evidence, d=depth, site=file:line of the referencing site when known. unresolved_refs_in_symbol > 0 means the list may be incomplete — run `sinter scip`.",
+            "inputSchema": {"type": "object", "properties": {
+                "symbol": {"type": "string"},
+                "max_depth": {"type": "integer"},
+                "limit": {"type": "integer",
+                    "description": "max dependencies returned (default 50)"},
+                "evidence": filters["evidence"],
+                "min_confidence": filters["min_confidence"],
+                "relations": filters["relations"],
+            }, "required": ["symbol"]},
+        },
+        {
             "name": "path",
-            "description": "Shortest dependency path from one symbol to another, with the relation and evidence of every step.",
+            "description": "Shortest dependency path from one symbol to another, with the relation, evidence, and call site (`site`: file:line) of every step.",
             "inputSchema": {"type": "object", "properties": {
                 "from": {"type": "string"},
                 "to": {"type": "string"},
                 "evidence": filters["evidence"],
                 "min_confidence": filters["min_confidence"],
+                "relations": filters["relations"],
             }, "required": ["from", "to"]},
         },
         {
@@ -424,6 +638,14 @@ fn tools_list() -> Value {
             "inputSchema": {"type": "object", "properties": {
                 "rev_range": {"type": "string"},
             }, "required": ["rev_range"]},
+        },
+        {
+            "name": "overlap",
+            "description": "Rank pairwise merge risk between several in-flight changes (git rev ranges, e.g. open PRs). Tiers: direct = both touch the same symbol (textual or semantic collision); radius = one touches a symbol the other's touched code depends on (merges clean, breaks semantically); file = same file, disjoint symbols. Ranges accept `label=range` (e.g. pr-12=main...branch).",
+            "inputSchema": {"type": "object", "properties": {
+                "ranges": {"type": "array", "items": {"type": "string"}, "minItems": 2,
+                    "description": "two or more rev-ranges, optionally labeled `label=range`"},
+            }, "required": ["ranges"]},
         },
     ]})
 }
@@ -460,13 +682,142 @@ fn ws_call_tool(manifest: &Path, name: &str, args: &Value) -> Result<Value> {
     };
 
     match name {
+        "ask" => {
+            // Fan candidate gathering out across members and merge-rank,
+            // the same shape ask::run_workspace prints for the CLI.
+            let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(5) as usize;
+            let question = symbol("question")?;
+            let mut hits: Vec<Value> = Vec::new();
+            for (member, repo) in &ws.members {
+                for mut hit in crate::ask::ask_json(repo, &question, limit)? {
+                    hit["member"] = json!(member);
+                    hits.push(hit);
+                }
+            }
+            // Deterministic: score desc, then member, file, span start.
+            hits.sort_by(|a, b| {
+                b["score"]
+                    .as_i64()
+                    .cmp(&a["score"].as_i64())
+                    .then_with(|| a["member"].as_str().cmp(&b["member"].as_str()))
+                    .then_with(|| a["file"].as_str().cmp(&b["file"].as_str()))
+                    .then_with(|| {
+                        a["span"]["start"]
+                            .as_u64()
+                            .cmp(&b["span"]["start"].as_u64())
+                    })
+            });
+            hits.truncate(limit);
+            Ok(json!({"hits": hits}))
+        }
+        "show" => {
+            let (member, node) = crate::workspace::find_symbol(&ws, &symbol("symbol")?)?;
+            let links = crate::workspace::LinkStore::open(&ws)?;
+            let link_json = |m: &str, id: &str, l: &crate::workspace::Link| {
+                json!({
+                    "member": m,
+                    "symbol": qualified_of(id),
+                    "relation": l.relation.as_str(),
+                    "evidence": l.evidence.as_str(),
+                    "via": l.via,
+                })
+            };
+            let boundary_out: Vec<Value> = links
+                .out_links(&member, node.id.as_str())?
+                .iter()
+                .map(|l| link_json(&l.dst_member, &l.dst_id, l))
+                .collect();
+            let boundary_in: Vec<Value> = links
+                .in_links(&member, node.id.as_str())?
+                .iter()
+                .map(|l| link_json(&l.src_member, &l.src_id, l))
+                .collect();
+            let store = sinter_store::Store::open(crate::pipeline::db_path(&ws.members[&member]))?;
+            let member_root = ws.members[&member].clone();
+            let edge_json = |e: &sinter_core::Edge, other: &sinter_core::NodeId| {
+                json!({
+                    "symbol": qualified_of(other.as_str()),
+                    "relation": e.relation.as_str(),
+                    "evidence": e.evidence.as_str(),
+                    "site": crate::render::site_json(&member_root, e),
+                })
+            };
+            let out: Vec<Value> = store
+                .out_edges(&node.id)?
+                .iter()
+                .map(|e| edge_json(e, &e.dst))
+                .collect();
+            let inn: Vec<Value> = store
+                .in_edges(&node.id)?
+                .iter()
+                .map(|e| edge_json(e, &e.src))
+                .collect();
+            Ok(json!({
+                "symbol": member_node(&node, &member),
+                "outgoing": out,
+                "incoming": inn,
+                "boundary_outgoing": boundary_out,
+                "boundary_incoming": boundary_in,
+            }))
+        }
+        "impact" => {
+            // Mirrors `sinter impact --workspace` (impact::run renders for
+            // humans; MCP needs the JSON): compute inside the changed
+            // member, then continue the radius across boundary links.
+            let member = symbol("member")?;
+            let repo = ws
+                .members
+                .get(&member)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "unknown member `{member}` (members: {})",
+                        ws.members.keys().cloned().collect::<Vec<_>>().join(", ")
+                    )
+                })?
+                .clone();
+            let mut report = crate::impact::compute(&repo, &symbol("rev_range")?)?;
+            // Resolve changed symbols to node ids first, then drop the
+            // handle: workspace traversal opens every member store itself,
+            // and redb forbids a second open of the same file in-process.
+            let changed_ids: Vec<sinter_core::NodeId> = {
+                let store = open_store(&repo)?;
+                report
+                    .changed_symbols
+                    .iter()
+                    .filter_map(|c| unique_symbol(&store, &c.qualified).ok().map(|n| n.id))
+                    .collect()
+            };
+            let filter = sinter_store::EdgeFilter::default();
+            let mut cross: std::collections::BTreeMap<String, crate::impact::SymbolRef> =
+                std::collections::BTreeMap::new();
+            for node_id in &changed_ids {
+                for reached in crate::workspace::dependents(&ws, &member, node_id, &filter, 25)? {
+                    if reached.member == member {
+                        continue; // local radius already counted
+                    }
+                    let key = format!("{}:{}", reached.member, reached.node.id.as_str());
+                    let sym = crate::impact::SymbolRef {
+                        qualified: qualified_of(reached.node.id.as_str()).to_string(),
+                        kind: reached.node.kind.as_str(),
+                        file: format!("{}:{}", reached.member, reached.node.file),
+                    };
+                    if crate::impact::is_test(&reached.node) {
+                        report.affected_tests.push(sym.clone());
+                    }
+                    cross.insert(key, sym);
+                }
+            }
+            report.blast_radius.extend(cross.into_values());
+            Ok(crate::impact::to_json(&report))
+        }
         "query" => {
             let (member, node) = crate::workspace::find_symbol(&ws, &symbol("symbol")?)?;
             Ok(json!({"result": member_node(&node, &member)}))
         }
         "affected" => {
             let (evidence, certain) = filter_args(args);
-            let filter = edge_filter(&evidence, certain)?;
+            let mut filter = edge_filter(&evidence, certain)?;
+            filter.relations = crate::lookup::relation_set(&relations_args(args))?;
             let depth = args.get("max_depth").and_then(Value::as_u64).unwrap_or(10) as usize;
             let (limit, detail) = affected_args(args);
             let (member, node) = crate::workspace::find_symbol(&ws, &symbol("symbol")?)?;
@@ -510,7 +861,8 @@ fn ws_call_tool(manifest: &Path, name: &str, args: &Value) -> Result<Value> {
             let (from_member, from) = crate::workspace::find_symbol(&ws, &symbol("from")?)?;
             let (to_member, to) = crate::workspace::find_symbol(&ws, &symbol("to")?)?;
             let (evidence, certain) = filter_args(args);
-            let filter = edge_filter(&evidence, certain)?;
+            let mut filter = edge_filter(&evidence, certain)?;
+            filter.relations = crate::lookup::relation_set(&relations_args(args))?;
             let steps = crate::workspace::shortest_path(
                 &ws,
                 (&from_member, &from.id),
@@ -530,7 +882,9 @@ fn ws_call_tool(manifest: &Path, name: &str, args: &Value) -> Result<Value> {
             }))
         }
         other => {
-            anyhow::bail!("unknown tool {other} (workspace scope serves: query, affected, path)")
+            anyhow::bail!(
+                "unknown tool {other} (workspace scope serves: ask, show, query, affected, path, impact)"
+            )
         }
     }
 }
@@ -542,9 +896,27 @@ fn ws_tools_list() -> Value {
             "description": "restrict to these evidence kinds"},
         "min_confidence": {"type": "string", "enum": ["certain", "inferred"],
             "description": "certain = compiler-grade edges only"},
+        "relations": {"type": "array", "items": {"type": "string",
+            "enum": ["calls", "uses", "imports", "implements", "extends"]},
+            "description": "follow only these relations (e.g. drop file-level imports)"},
     });
     let addressing = "Symbols accept `member:Symbol` (member from the workspace manifest) or any bare name that resolves uniquely across members.";
     json!({"tools": [
+        {
+            "name": "ask",
+            "description": "Answer a vague or conceptual question (\"where is X handled\", \"how does Y work\") across every workspace member: candidates gathered per member, merge-ranked, each hit tagged with its member. Use this first when no exact symbol is known.",
+            "inputSchema": {"type": "object", "properties": {
+                "question": {"type": "string"},
+                "limit": {"type": "integer"},
+            }, "required": ["question"]},
+        },
+        {
+            "name": "show",
+            "description": format!("Orient on one symbol: signature, doc, file, every incoming and outgoing edge inside its member (with relation, evidence, and call site), plus boundary links into and out of the other members. {addressing}"),
+            "inputSchema": {"type": "object", "properties": {
+                "symbol": {"type": "string"},
+            }, "required": ["symbol"]},
+        },
         {
             "name": "query",
             "description": format!("Resolve a symbol across every workspace member. {addressing}"),
@@ -564,6 +936,7 @@ fn ws_tools_list() -> Value {
                     "description": "full node objects instead of terse entries"},
                 "evidence": filters["evidence"],
                 "min_confidence": filters["min_confidence"],
+                "relations": filters["relations"],
             }, "required": ["symbol"]},
         },
         {
@@ -574,7 +947,17 @@ fn ws_tools_list() -> Value {
                 "to": {"type": "string"},
                 "evidence": filters["evidence"],
                 "min_confidence": filters["min_confidence"],
+                "relations": filters["relations"],
             }, "required": ["from", "to"]},
+        },
+        {
+            "name": "impact",
+            "description": "Changed symbols, blast radius, and affected tests for a git rev range (e.g. HEAD~1..HEAD) in one member, with the radius continued across boundary links into the other members (cross-member entries carry a `member:` file prefix).",
+            "inputSchema": {"type": "object", "properties": {
+                "member": {"type": "string",
+                    "description": "workspace member the rev range applies to"},
+                "rev_range": {"type": "string"},
+            }, "required": ["member", "rev_range"]},
         },
     ]})
 }

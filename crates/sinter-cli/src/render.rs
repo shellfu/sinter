@@ -5,6 +5,51 @@
 use std::io::IsTerminal;
 use std::path::Path;
 
+use serde_json::{Value, json};
+use sinter_core::{Edge, Node};
+use sinter_resolve::qualified_of;
+
+/// One node in the shape the MCP tools use — `--json` mirrors it.
+pub fn node_json(node: &Node) -> Value {
+    json!({
+        "id": node.id.as_str(),
+        "qualified": qualified_of(node.id.as_str()),
+        "name": node.name,
+        "kind": node.kind.as_str(),
+        "file": node.file,
+        "span": {"start": node.span.start, "end": node.span.end},
+        "signature": node.signature,
+        "doc": node.doc,
+    })
+}
+
+/// (file, line) of an edge's call site: the file derives from the src node
+/// id, the line from the site span. None when the edge carries no site
+/// (containment, dynamic fan-out, implements/extends, declared links).
+pub fn site_of(repo: &Path, edge: &Edge) -> Option<(String, Option<usize>)> {
+    let span = edge.site?;
+    let file = edge
+        .src
+        .as_str()
+        .split_once('#')
+        .map_or(edge.src.as_str(), |(f, _)| f);
+    Some((file.to_string(), line_of(repo, file, span.start)))
+}
+
+/// `file:line` call-site text for JSON (`null` when the edge has none).
+pub fn site_json(repo: &Path, edge: &Edge) -> Value {
+    match site_of(repo, edge) {
+        Some((file, Some(line))) => json!(format!("{file}:{line}")),
+        Some((file, None)) => json!(file),
+        None => Value::Null,
+    }
+}
+
+/// Hyperlinked `file:line` call site for human output; None when absent.
+pub fn site_location(repo: &Path, edge: &Edge) -> Option<String> {
+    site_of(repo, edge).map(|(file, line)| location(repo, &file, line))
+}
+
 /// 1-based line of a byte offset, from the file's current content.
 pub fn line_of(repo: &Path, file: &str, byte: u64) -> Option<usize> {
     let source = std::fs::read_to_string(repo.join(file)).ok()?;

@@ -382,7 +382,7 @@ fn adjacency_counts(store: &Store, node: &Node) -> Result<(usize, usize, Vec<Str
 /// merge-rank with the same deterministic formula, tie-break extended by
 /// member name. Stays single-topic: clause splitting (clauses_of) is
 /// repo-scope only until a workspace question demands it.
-pub fn run_workspace(manifest: &Path, question: &str, limit: usize) -> Result<()> {
+pub fn run_workspace(manifest: &Path, question: &str, limit: usize) -> Result<bool> {
     let ws = crate::workspace::load(manifest)?;
     let terms = terms_of(question);
     if terms.is_empty() {
@@ -405,7 +405,7 @@ pub fn run_workspace(manifest: &Path, question: &str, limit: usize) -> Result<()
     });
     if all.is_empty() {
         println!("no match for {:?} in any member", terms.join(" "));
-        return Ok(());
+        return Ok(false);
     }
     println!(
         "Best matches across {} members ({} terms: {}):
@@ -440,7 +440,7 @@ pub fn run_workspace(manifest: &Path, question: &str, limit: usize) -> Result<()
     if all.len() > limit {
         println!("{} more matches below cutoff", all.len() - limit);
     }
-    Ok(())
+    Ok(true)
 }
 
 fn hit_json(repo: &Path, h: &Hit) -> serde_json::Value {
@@ -535,7 +535,7 @@ fn run_multi(
     store: &Store,
     clauses: &[(String, Vec<String>)],
     limit: usize,
-) -> Result<()> {
+) -> Result<bool> {
     let groups = multi_hits(store, clauses, limit)?;
     println!("Best matches ({} topics):\n", groups.len());
     let mut best: Option<(i64, &Hit)> = None;
@@ -555,20 +555,20 @@ fn run_multi(
     if let Some((_, top)) = best {
         let q = qualified_of(top.node.id.as_str());
         println!("Next: sinter show {q} · sinter affected {q}");
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 
-pub fn run(repo: &Path, question: &str, limit: usize, json: bool) -> Result<()> {
+/// Ok(true) when any hit surfaced (grep-style exit codes).
+pub fn run(repo: &Path, question: &str, limit: usize, json: bool) -> Result<bool> {
     let repo = repo.canonicalize()?;
     if json {
         // ask_json opens the store itself; must run before this function
         // takes its own handle (redb forbids a second in-process open).
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&ask_json(&repo, question, limit)?)?
-        );
-        return Ok(());
+        let hits = ask_json(&repo, question, limit)?;
+        println!("{}", serde_json::to_string_pretty(&hits)?);
+        return Ok(!hits.is_empty());
     }
     let store = open_store(&repo)?;
     let clauses = clauses_of(question);
@@ -588,7 +588,7 @@ pub fn run(repo: &Path, question: &str, limit: usize, json: bool) -> Result<()> 
             let names: Vec<&str> = close.iter().map(|n| n.name.as_str()).collect();
             println!("closest symbols: {}", names.join(", "));
         }
-        return Ok(());
+        return Ok(false);
     }
 
     println!(
@@ -622,5 +622,5 @@ pub fn run(repo: &Path, question: &str, limit: usize, json: bool) -> Result<()> 
         let q = qualified_of(top.node.id.as_str());
         println!("Next: sinter show {q} · sinter affected {q}");
     }
-    Ok(())
+    Ok(true)
 }

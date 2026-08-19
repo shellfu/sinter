@@ -5,6 +5,7 @@
     ["struct", "Server", "main.go"],
     ["method", "Server::Start", "main.go"],
     ["interface", "Handler", "main.go"],
+    ["method", "Handler::Handle", "main.go"],
     ["constant", "MaxRetries", "main.go"],
     ["variable", "debug", "main.go"],
     ["file", "pkg/util/util.go", "pkg/util/util.go"],
@@ -15,6 +16,7 @@
     ["main.go", "Server"],
     ["main.go", "Server::Start"],
     ["main.go", "Handler"],
+    ["Handler", "Handler::Handle"],
     ["main.go", "MaxRetries"],
     ["main.go", "debug"],
     ["pkg/util/util.go", "Reverse"]

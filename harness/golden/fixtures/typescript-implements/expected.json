@@ -1,0 +1,30 @@
+{
+  "nodes": [
+    ["file", "greeter.ts", "greeter.ts"],
+    ["interface", "Greeter", "greeter.ts", "A greeting contract."],
+    ["method", "Greeter::greet", "greeter.ts"],
+    ["class", "ConsoleGreeter", "greeter.ts", "Console implementation of Greeter."],
+    ["method", "ConsoleGreeter::greet", "greeter.ts"],
+    ["interface", "LoudGreeter", "greeter.ts", "Interface inheritance."],
+    ["method", "LoudGreeter::volume", "greeter.ts"]
+  ],
+  "contains": [
+    ["greeter.ts", "Greeter"],
+    ["Greeter", "Greeter::greet"],
+    ["greeter.ts", "ConsoleGreeter"],
+    ["ConsoleGreeter", "ConsoleGreeter::greet"],
+    ["greeter.ts", "LoudGreeter"],
+    ["LoudGreeter", "LoudGreeter::volume"]
+  ],
+  "references": [
+    ["uses", "Greeter"]
+  ],
+  "resolved": [
+    ["scope", "uses", "ConsoleGreeter", "Greeter"],
+    ["scope", "uses", "LoudGreeter", "Greeter"],
+    ["scope", "implements", "ConsoleGreeter", "Greeter"],
+    ["scope", "extends", "LoudGreeter", "Greeter"],
+    ["dynamic", "calls", "Greeter::greet", "ConsoleGreeter::greet"]
+  ],
+  "unresolved_count": 0
+}

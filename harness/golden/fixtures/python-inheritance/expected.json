@@ -1,0 +1,31 @@
+{
+  "nodes": [
+    ["file", "animal.py", "animal.py"],
+    ["class", "Animal", "animal.py", "Base animal."],
+    ["function", "Animal::speak", "animal.py", "Make a sound."],
+    ["file", "dog.py", "dog.py"],
+    ["class", "Dog", "dog.py", "A dog."],
+    ["function", "Dog::speak", "dog.py"],
+    ["function", "Dog::greet", "dog.py"]
+  ],
+  "contains": [
+    ["animal.py", "Animal"],
+    ["Animal", "Animal::speak"],
+    ["dog.py", "Dog"],
+    ["Dog", "Dog::speak"],
+    ["Dog", "Dog::greet"]
+  ],
+  "references": [
+    ["imports", "animal.Animal"],
+    ["uses", "Animal"],
+    ["calls", "speak"]
+  ],
+  "resolved": [
+    ["import", "imports", "dog.py", "Animal", "dog.py", "animal.py"],
+    ["import", "uses", "Dog", "Animal", "dog.py", "animal.py"],
+    ["import", "extends", "Dog", "Animal", "dog.py", "animal.py"],
+    ["scope", "calls", "Dog::greet", "Dog::speak", "dog.py", "dog.py"],
+    ["dynamic", "calls", "Animal::speak", "Dog::speak", "animal.py", "dog.py"]
+  ],
+  "unresolved_count": 0
+}

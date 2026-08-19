@@ -29,7 +29,7 @@ done
 [ -z "$root" ] && exit 0
 
 NUDGE="sinter graph available: if this search asks a structure question (symbol location, callers, blast radius, impact), one sinter call answers it ranked and evidence-backed. Grep remains right for content/function-body text."
-TASK_NUDGE="sinter graph available: you are writing a subagent prompt. Structure claims (who calls X, is Y a dependency of Z, blast radius, any *no callers/no usages* proof) must be answered by sinter ask/show/affected/path/impact, never by grep. Mandate that routing in the subagent prompt; steer grep/rg to content-only searches."
+TASK_NUDGE="sinter graph available: you are writing a subagent prompt. Structure claims (who calls X, is Y a dependency of Z, blast radius, any *no callers/no usages* proof) must be answered by sinter ask/show/affected/deps/path/impact, never by grep. Mandate that routing in the subagent prompt; steer grep/rg to content-only searches."
 GIT_NUDGE="sinter graph available: if you are assessing what a commit or diff changes or affects downstream, sinter impact <rev-range> (e.g. HEAD~1..HEAD) answers changed symbols, blast radius, and affected tests in one call."
 DENY_REASON="This repo has a sinter code graph: query sinter first for structure questions — sinter ask \\\"<question>\\\", sinter show <symbol>, sinter affected <symbol>, sinter path <A> <B>, sinter impact <rev-range>. If sinter was insufficient, rerun this exact search and it will be allowed."
 
@@ -50,7 +50,7 @@ emit_deny() {
 
 case "$1" in
   prompt)
-    echo "This repo has a sinter code graph. For structure questions (where is X, who calls X, blast radius, how A reaches B, what a commit/diff affects) query sinter before grep or git archaeology: sinter ask/query/show/affected/path/impact. Queries self-sync against uncommitted edits."
+    echo "This repo has a sinter code graph. For structure questions (where is X, who calls X, blast radius, how A reaches B, what a commit/diff affects) query sinter before grep or git archaeology: sinter ask/query/show/affected/deps/path/impact. Queries self-sync against uncommitted edits."
     ;;
   grep|grep-strict)
     input=$(cat)

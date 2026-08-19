@@ -404,7 +404,11 @@ pub fn dependents(
             let admit = filter
                 .evidence
                 .as_ref()
-                .is_none_or(|allowed| allowed.contains(&link.evidence));
+                .is_none_or(|allowed| allowed.contains(&link.evidence))
+                && filter
+                    .relations
+                    .as_ref()
+                    .is_none_or(|allowed| allowed.contains(&link.relation));
             if !admit {
                 continue;
             }
@@ -484,7 +488,11 @@ pub fn shortest_path(
             let admit = filter
                 .evidence
                 .as_ref()
-                .is_none_or(|allowed| allowed.contains(&link.evidence));
+                .is_none_or(|allowed| allowed.contains(&link.evidence))
+                && filter
+                    .relations
+                    .as_ref()
+                    .is_none_or(|allowed| allowed.contains(&link.relation));
             if admit {
                 nexts.push((
                     (link.dst_member.clone(), link.dst_id.clone()),

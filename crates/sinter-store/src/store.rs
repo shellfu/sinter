@@ -58,7 +58,13 @@ pub(crate) const META: TableDefinition<&str, u32> = TableDefinition::new("meta")
 /// without re-extracting. Additive table — absent in older dbs, which
 /// makes the first build after upgrade re-resolve once.
 pub(crate) const RESOLVE_META: TableDefinition<&str, &str> = TableDefinition::new("resolve_meta");
-const SCHEMA_VERSION: u32 = 7;
+/// Single-row crash-recovery intent: the union of update deltas not yet
+/// followed by a completed resolution pass (see `Store::update_files` /
+/// `Store::clear_pending_delta`). Additive table — absent in older dbs,
+/// read as empty.
+pub(crate) const PENDING: TableDefinition<&str, &[u8]> = TableDefinition::new("pending_delta");
+// v8: Edge gained `site` (call-site span); postcard wire format changed.
+const SCHEMA_VERSION: u32 = 8;
 
 /// Per-file freshness record: content hash plus the stat identity
 /// (mtime, len) it was hashed at. A scan whose stat matches reuses the
@@ -190,6 +196,7 @@ impl Store {
             txn.open_table(INTERN)?;
             txn.open_table(INTERN_REV)?;
             txn.open_table(RESOLVE_META)?;
+            txn.open_table(PENDING)?;
         }
         txn.commit()?;
         Ok(store)
@@ -256,6 +263,24 @@ impl Store {
             for guard in values {
                 refs.push(postcard::from_bytes(guard?.value())?);
             }
+        }
+        Ok(refs)
+    }
+
+    /// Stored unresolved references, optionally narrowed to one file
+    /// and/or a name (final-segment match, same rule as
+    /// [`Store::unresolved_named`]). The `sinter unresolved` listing.
+    pub fn unresolved_refs(
+        &self,
+        file: Option<&str>,
+        name: Option<&str>,
+    ) -> Result<Vec<Reference>, StoreError> {
+        let mut refs = match file {
+            Some(file) => self.references_in(file)?,
+            None => self.all_unresolved()?,
+        };
+        if let Some(name) = name {
+            refs.retain(|r| name_tail_matches(&r.name, name));
         }
         Ok(refs)
     }
@@ -431,6 +456,30 @@ impl Store {
             nodes.push(postcard::from_bytes(entry?.1.value())?);
         }
         Ok(nodes)
+    }
+
+    /// Non-`Contains` in-degree per node id, streamed straight off the
+    /// IN_EDGES table — hub ranking without materializing (and
+    /// re-validating) the whole graph. Nodes with zero such in-edges are
+    /// omitted.
+    pub fn in_degrees(&self) -> Result<Vec<(String, usize)>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_multimap_table(IN_EDGES)?;
+        let mut out = Vec::new();
+        for entry in table.iter()? {
+            let (key, values) = entry?;
+            let mut n = 0usize;
+            for guard in values {
+                let edge: Edge = postcard::from_bytes(guard?.value())?;
+                if edge.relation != sinter_core::Relation::Contains {
+                    n += 1;
+                }
+            }
+            if n > 0 {
+                out.push((key.value().to_string(), n));
+            }
+        }
+        Ok(out)
     }
 
     /// Rebuild the full in-memory graph, re-validating every invariant.

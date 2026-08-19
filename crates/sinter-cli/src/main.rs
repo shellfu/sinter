@@ -1,6 +1,7 @@
 mod affected;
 mod ask;
 mod build;
+mod deps;
 mod doctor;
 mod hooks;
 mod impact;
@@ -17,6 +18,7 @@ mod scip;
 mod serve;
 mod show;
 mod uninit;
+mod unresolved;
 mod update;
 mod watch;
 mod workspace;
@@ -28,11 +30,17 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 
 /// sinter — code knowledge-graph engine.
 #[derive(Parser)]
-#[command(name = "sinter", version, about)]
+#[command(name = "sinter", version, about, after_help = EXIT_CODES)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
 }
+
+const EXIT_CODES: &str =
+    "Exit codes (grep-style, for the read commands ask/query/show/path/affected/deps/unresolved):
+  0  found results
+  1  valid query, no results
+  2  usage or execution error";
 
 #[derive(Args)]
 struct FilterArgs {
@@ -44,6 +52,35 @@ struct FilterArgs {
     certain: bool,
 }
 
+/// Relation restriction, on the traversal verbs that walk edges
+/// transitively (affected/path/deps) — e.g. `--relations calls,uses` to
+/// keep file-level import edges out of a blast radius.
+#[derive(Args)]
+struct RelationsArg {
+    /// Follow only these relations (calls, uses, imports, implements, extends)
+    #[arg(long, value_delimiter = ',')]
+    relations: Vec<String>,
+}
+
+/// Repository path, accepted both as a positional and as `--repo` so
+/// lifecycle commands (`sinter build`) and read commands (`sinter ask
+/// --repo`) share one habit.
+#[derive(Args)]
+struct RepoArg {
+    /// Repository path
+    #[arg(default_value = ".", value_name = "REPO")]
+    repo: PathBuf,
+    /// Repository path (flag form; same as the positional)
+    #[arg(long = "repo", value_name = "REPO", conflicts_with = "repo")]
+    repo_flag: Option<PathBuf>,
+}
+
+impl RepoArg {
+    fn path(&self) -> &PathBuf {
+        self.repo_flag.as_ref().unwrap_or(&self.repo)
+    }
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Build all workspace members and refresh cross-repo boundary links
@@ -53,8 +90,8 @@ enum Command {
     },
     /// Onboard a repo: build + git hooks + agent integration + MCP, then doctor
     Init {
-        #[arg(default_value = ".")]
-        repo: PathBuf,
+        #[command(flatten)]
+        repo: RepoArg,
         /// Also write the Cursor rule file
         #[arg(long)]
         cursor: bool,
@@ -85,26 +122,26 @@ enum Command {
     },
     /// Offboard a repo: remove the graph and every sinter-managed artifact
     Uninit {
-        #[arg(default_value = ".")]
-        repo: PathBuf,
+        #[command(flatten)]
+        repo: RepoArg,
         /// Also remove the global skill card and ~/.claude enforcement hooks
         #[arg(short = 'g', long)]
         global: bool,
     },
     /// Build or incrementally refresh the graph for a repository
     Build {
-        #[arg(default_value = ".")]
-        repo: PathBuf,
+        #[command(flatten)]
+        repo: RepoArg,
     },
     /// Watch a repository and keep the graph fresh
     Watch {
-        #[arg(default_value = ".")]
-        repo: PathBuf,
+        #[command(flatten)]
+        repo: RepoArg,
     },
     /// Diagnose the installation and a repo's graph; every finding names its fix
     Doctor {
-        #[arg(default_value = ".")]
-        repo: PathBuf,
+        #[command(flatten)]
+        repo: RepoArg,
         /// Diagnose a workspace instead (path to manifest)
         #[arg(long)]
         workspace: Option<PathBuf>,
@@ -154,70 +191,154 @@ enum Command {
     },
     /// Ask a vague question, get a ranked, content-bearing starting point
     Ask {
+        /// Natural-language question ("where is auth handled")
         question: String,
+        /// Repository to query
         #[arg(long, default_value = ".")]
         repo: PathBuf,
-        /// Fan out across a workspace (path to manifest)
+        /// Traverse across the workspace (path to manifest)
         #[arg(long)]
         workspace: Option<PathBuf>,
+        /// Maximum hits to print
         #[arg(long, default_value_t = 5)]
         limit: usize,
-        #[arg(long)]
+        /// Structured output (same shape as the MCP `ask` tool; not
+        /// available with --workspace)
+        #[arg(long, conflicts_with = "workspace")]
         json: bool,
     },
     /// One-screen orientation card for a symbol or file
     Show {
+        /// Symbol: name, qualified suffix (`Config::new`), or node id
         symbol: String,
+        /// Repository to query
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        /// Structured output (same shape as the MCP `show` tool)
+        #[arg(long)]
+        json: bool,
     },
     /// Search symbols (exact + trigram), content-bearing results
     Query {
+        /// Symbol name, qualified suffix, or fuzzy fragment
         symbol: String,
+        /// Repository to query
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        /// Maximum results to print
         #[arg(long, default_value_t = 10)]
         limit: usize,
+        /// Structured output (same shape as the MCP `query` tool)
+        #[arg(long)]
+        json: bool,
     },
     /// Reverse blast radius of a symbol
     Affected {
+        /// Symbol: name, qualified suffix, or node id
         symbol: String,
+        /// Repository to query
         #[arg(long, default_value = ".")]
         repo: PathBuf,
-        /// Traverse across a workspace (path to manifest)
+        /// Traverse across the workspace (path to manifest)
         #[arg(long)]
         workspace: Option<PathBuf>,
+        /// Maximum traversal depth
         #[arg(long, default_value_t = 10)]
         max_depth: usize,
+        /// Maximum dependents to print
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+        /// Structured output (same shape as the MCP `affected` tool; not
+        /// available with --workspace)
+        #[arg(long, conflicts_with = "workspace")]
+        json: bool,
         #[command(flatten)]
         filter: FilterArgs,
+        #[command(flatten)]
+        relations: RelationsArg,
+    },
+    /// Forward blast radius: everything a symbol transitively depends on
+    Deps {
+        /// Symbol: name, qualified suffix, or node id
+        symbol: String,
+        /// Repository to query
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// Maximum traversal depth
+        #[arg(long, default_value_t = 10)]
+        max_depth: usize,
+        /// Maximum dependencies to print
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+        /// Structured output (same shape as the MCP `deps` tool)
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        filter: FilterArgs,
+        #[command(flatten)]
+        relations: RelationsArg,
+    },
+    /// List unresolved references — the graph's honest gaps
+    Unresolved {
+        /// Repository to query
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// Only references in this repo-relative file
+        #[arg(long)]
+        file: Option<String>,
+        /// Only references whose name ends at this name
+        #[arg(long)]
+        name: Option<String>,
+        /// Maximum references to print
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+        /// Structured output
+        #[arg(long)]
+        json: bool,
     },
     /// How one symbol reaches another
     Path {
+        /// Source symbol
         from: String,
+        /// Destination symbol
         to: String,
+        /// Repository to query
         #[arg(long, default_value = ".")]
         repo: PathBuf,
-        /// Traverse across a workspace (path to manifest)
+        /// Traverse across the workspace (path to manifest)
         #[arg(long)]
         workspace: Option<PathBuf>,
+        /// Structured output (same shape as the MCP `path` tool; not
+        /// available with --workspace)
+        #[arg(long, conflicts_with = "workspace")]
+        json: bool,
         #[command(flatten)]
         filter: FilterArgs,
+        #[command(flatten)]
+        relations: RelationsArg,
     },
     /// Changed symbols, blast radius, and affected tests for a rev range
     Impact {
+        /// Git rev range (e.g. HEAD~1..HEAD, main...branch)
         rev_range: String,
+        /// Repository to query
         #[arg(long, default_value = ".")]
         repo: PathBuf,
-        /// Follow boundary links into other workspace members
+        /// Traverse across the workspace (path to manifest)
         #[arg(long)]
         workspace: Option<PathBuf>,
+        /// Structured output (same shape as the MCP `impact` tool)
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        filter: FilterArgs,
     },
     /// Map several in-flight changes (open PRs) onto the graph and rank
     /// pairwise merge risk (direct/radius/file tiers)
     Overlap {
         /// Two or more rev-ranges, optionally labeled: `pr-12=main...branch`
         ranges: Vec<String>,
+        /// Repository to query
         #[arg(long, default_value = ".")]
         repo: PathBuf,
         /// Structured output
@@ -238,16 +359,16 @@ enum Command {
     Scip {
         #[command(subcommand)]
         action: Option<ScipAction>,
-        #[arg(default_value = ".")]
-        repo: PathBuf,
+        #[command(flatten)]
+        repo: RepoArg,
         /// Reindex even when the index is fresh
         #[arg(long)]
         force: bool,
     },
     /// One-screen orientation for a repo: modules, hubs, doc entry points
     Map {
-        #[arg(default_value = ".")]
-        repo: PathBuf,
+        #[command(flatten)]
+        repo: RepoArg,
         /// Structured output
         #[arg(long)]
         json: bool,
@@ -267,20 +388,44 @@ enum Command {
 #[derive(Subcommand)]
 enum ScipAction {
     /// Exit 0 iff the index exists and no source file is newer
-    /// (CI guard; runs no indexer)
-    Check {
-        #[arg(default_value = ".")]
-        repo: PathBuf,
-    },
+    /// (CI guard; runs no indexer). Uses the `sinter scip` repo argument.
+    Check,
 }
 
 #[derive(Subcommand)]
 enum HooksAction {
     /// Write post-commit/post-checkout/post-merge hooks
     Install {
-        #[arg(default_value = ".")]
-        repo: PathBuf,
+        #[command(flatten)]
+        repo: RepoArg,
     },
+}
+
+/// --evidence/--certain/--relations flags to the traversal's EdgeFilter.
+fn traversal_filter(
+    filter: &FilterArgs,
+    relations: &RelationsArg,
+) -> anyhow::Result<sinter_store::EdgeFilter> {
+    let mut f = lookup::edge_filter(&filter.evidence, filter.certain)?;
+    f.relations = lookup::relation_set(&relations.relations)?;
+    Ok(f)
+}
+
+/// Grep-style exit for read commands: 0 found results, 1 valid query with
+/// no results, 2 usage or execution error (clap's own errors are 2).
+fn grep_exit(result: anyhow::Result<bool>) -> ExitCode {
+    match result {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("sinter: {e:#}");
+            if e.is::<lookup::NoMatch>() {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::from(2)
+            }
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -324,7 +469,7 @@ fn main() -> ExitCode {
     }
     let result = match cli.command {
         Command::Workspace { manifest } => workspace::run(&manifest),
-        Command::Uninit { repo, global } => uninit::run(&repo, global).map(|_| ()),
+        Command::Uninit { repo, global } => uninit::run(repo.path(), global).map(|_| ()),
         Command::Init {
             repo,
             cursor,
@@ -368,7 +513,7 @@ fn main() -> ExitCode {
             } else {
                 None
             };
-            return match init::run(&repo, cursor, scip_consent, global) {
+            return match init::run(repo.path(), cursor, scip_consent, global) {
                 Ok(true) => ExitCode::SUCCESS,
                 Ok(false) => ExitCode::FAILURE,
                 Err(e) => {
@@ -377,8 +522,8 @@ fn main() -> ExitCode {
                 }
             };
         }
-        Command::Build { repo } => build::run(&repo),
-        Command::Watch { repo } => watch::run(&repo),
+        Command::Build { repo } => build::run(repo.path()),
+        Command::Watch { repo } => watch::run(repo.path()),
         Command::Doctor {
             repo,
             workspace,
@@ -386,7 +531,7 @@ fn main() -> ExitCode {
         } => {
             let result = match workspace {
                 Some(manifest) => doctor::run_workspace(&manifest, fix),
-                None => doctor::run(&repo, fix),
+                None => doctor::run(repo.path(), fix),
             };
             return match result {
                 Ok(true) => ExitCode::SUCCESS,
@@ -415,56 +560,104 @@ fn main() -> ExitCode {
         ),
         Command::Hooks {
             action: HooksAction::Install { repo },
-        } => hooks::install(&repo),
+        } => hooks::install(repo.path()),
         Command::Ask {
             question,
             repo,
             workspace,
             limit,
             json,
-        } => match workspace {
-            Some(manifest) => ask::run_workspace(&manifest, &question, limit),
-            None => ask::run(&repo, &question, limit, json),
-        },
-        Command::Show { symbol, repo } => show::run(&repo, &symbol),
+        } => {
+            return grep_exit(match workspace {
+                Some(manifest) => ask::run_workspace(&manifest, &question, limit),
+                None => ask::run(&repo, &question, limit, json),
+            });
+        }
+        Command::Show { symbol, repo, json } => return grep_exit(show::run(&repo, &symbol, json)),
         Command::Query {
             symbol,
             repo,
             limit,
-        } => query::run(&repo, &symbol, limit),
+            json,
+        } => return grep_exit(query::run(&repo, &symbol, limit, json)),
         Command::Affected {
             symbol,
             repo,
             workspace,
             max_depth,
+            limit,
+            json,
             filter,
-        } => match workspace {
-            Some(manifest) => affected::run_workspace(
-                &manifest,
-                &symbol,
-                &filter.evidence,
-                filter.certain,
-                max_depth,
-            ),
-            None => affected::run(&repo, &symbol, &filter.evidence, filter.certain, max_depth),
-        },
+            relations,
+        } => {
+            return grep_exit(traversal_filter(&filter, &relations).and_then(
+                |f| match workspace {
+                    Some(manifest) => {
+                        affected::run_workspace(&manifest, &symbol, &f, max_depth, limit)
+                    }
+                    None => affected::run(&repo, &symbol, &f, max_depth, limit, json),
+                },
+            ));
+        }
+        Command::Deps {
+            symbol,
+            repo,
+            max_depth,
+            limit,
+            json,
+            filter,
+            relations,
+        } => {
+            return grep_exit(
+                traversal_filter(&filter, &relations)
+                    .and_then(|f| deps::run(&repo, &symbol, &f, max_depth, limit, json)),
+            );
+        }
+        Command::Unresolved {
+            repo,
+            file,
+            name,
+            limit,
+            json,
+        } => {
+            return grep_exit(unresolved::run(
+                &repo,
+                file.as_deref(),
+                name.as_deref(),
+                limit,
+                json,
+            ));
+        }
         Command::Path {
             from,
             to,
             repo,
             workspace,
+            json,
             filter,
-        } => match workspace {
-            Some(manifest) => {
-                pathcmd::run_workspace(&manifest, &from, &to, &filter.evidence, filter.certain)
-            }
-            None => pathcmd::run(&repo, &from, &to, &filter.evidence, filter.certain),
-        },
+            relations,
+        } => {
+            return grep_exit(traversal_filter(&filter, &relations).and_then(
+                |f| match workspace {
+                    Some(manifest) => pathcmd::run_workspace(&manifest, &from, &to, &f),
+                    None => pathcmd::run(&repo, &from, &to, &f, json),
+                },
+            ));
+        }
         Command::Impact {
             rev_range,
             repo,
             workspace,
-        } => impact::run(&repo, &rev_range, workspace.as_deref()),
+            json,
+            filter,
+        } => impact::run(
+            &repo,
+            &rev_range,
+            workspace.as_deref(),
+            &filter.evidence,
+            filter.certain,
+            json,
+        ),
         Command::Overlap { ranges, repo, json } => overlap::run(&repo, &ranges, json),
         Command::Serve { repo, workspace } => match workspace {
             Some(manifest) => serve::run_workspace(&manifest),
@@ -475,11 +668,11 @@ fn main() -> ExitCode {
             repo,
             force,
         } => match action {
-            Some(ScipAction::Check { repo }) => scip::check(&repo),
-            None if force => scip::run(&repo),
-            None => scip::run_if_stale(&repo),
+            Some(ScipAction::Check) => scip::check(repo.path()),
+            None if force => scip::run(repo.path()),
+            None => scip::run_if_stale(repo.path()),
         },
-        Command::Map { repo, json } => map::run(&repo, json),
+        Command::Map { repo, json } => map::run(repo.path(), json),
         Command::Update { dry_run } => update::run(dry_run),
         Command::Completion { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "sinter", &mut std::io::stdout());

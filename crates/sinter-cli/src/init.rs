@@ -163,6 +163,8 @@ pub fn run(repo: &Path, cursor: bool, scip: Option<bool>, global: bool) -> Resul
     // markdown); refresh incrementally so doctor verifies a current graph.
     pipeline::build(&repo, None)?;
 
+    println!("\ntip: `sinter completion <shell>` prints shell completions (bash/zsh/fish)");
+
     println!("\n== doctor ==");
     doctor::run(&repo, false)
 }

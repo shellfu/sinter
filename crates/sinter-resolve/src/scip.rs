@@ -212,6 +212,7 @@ pub fn resolve_with_index(
                     relation: r.relation,
                     evidence: sinter_core::Evidence::Scip,
                     confidence: sinter_core::Evidence::Scip.confidence(),
+                    site: Some(r.span),
                 };
                 match target {
                     Some(target) => {

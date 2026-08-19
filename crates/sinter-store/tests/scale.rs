@@ -73,6 +73,7 @@ fn synthetic_500k_nodes_within_budgets() {
                 relation: Relation::Calls,
                 evidence: Evidence::Scope,
                 confidence: Confidence::Inferred,
+                site: None,
             })
             .unwrap();
         }

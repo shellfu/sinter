@@ -112,8 +112,21 @@ fn check_inner(fixture: &str) {
         .cloned()
         .collect();
     let roots: Vec<sinter_extract::ModuleRoot> = walk_manifests(&root);
-    let (bindings, stats, _) = resolve(&nodes, &references, &locals, &all_imports, &embeds, &roots);
-    let dynamic = dynamic_edges(&nodes, &trait_impls, &all_imports, &roots);
+    let index = sinter_resolve::Index::build(&nodes, &all_imports, &locals, &embeds, &roots);
+    let (bindings, stats, _) = resolve(&index, &references);
+    let dynamic = dynamic_edges(&index, &nodes, &trait_impls);
+
+    // Every resolved binding carries its call site — the span of the
+    // reference it bound (the "at file:line" answer for query verbs).
+    for b in &bindings {
+        assert_eq!(
+            b.edge.site,
+            Some(references[b.reference].span),
+            "{fixture}: binding {} -> {} lost its call site",
+            b.edge.src,
+            b.edge.dst,
+        );
+    }
 
     // Found tuples are fully qualified: [evidence, relation, src, dst,
     // src_file, dst_file]. Expected tuples may be the 4-element legacy form
@@ -595,4 +608,35 @@ fn resolution_markdown_headings() {
 #[test]
 fn resolution_markdown_links() {
     check("markdown-links");
+}
+
+/// Implements/extends edges and dynamic fan-out through a TS interface.
+#[test]
+fn resolution_typescript_implements() {
+    check("typescript-implements");
+}
+
+/// Extends edge and dynamic fan-out from base method to override.
+#[test]
+fn resolution_python_inheritance() {
+    check("python-inheritance");
+}
+
+/// Structural method-set satisfaction: dynamic fan-out and an
+/// implements edge with no naming syntax at all.
+#[test]
+fn resolution_go_interface() {
+    check("go-interface");
+}
+
+/// Extends edge and virtual-override fan-out through an #include.
+#[test]
+fn resolution_cpp_inheritance() {
+    check("cpp-inheritance");
+}
+
+/// Module-path import binds through the go.mod manifest root.
+#[test]
+fn resolution_go_module_import() {
+    check("go-module-import");
 }

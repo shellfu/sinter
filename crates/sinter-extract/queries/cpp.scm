@@ -28,6 +28,14 @@
 (field_declaration
   declarator: (function_declarator declarator: (field_identifier) @name)) @def.method
 
+; base classes: reference + inherited-member promotion (@embed) +
+; dispatch pairing (@trait/@trait.impl) — virtual-override fan-out
+; approximation, mirroring the C# base_list treatment
+(class_specifier
+  (base_class_clause
+    (type_identifier) @ref.use @embed @trait)
+  body: (field_declaration_list)) @trait.impl
+
 ; namespaces scope their contents
 (namespace_definition name: (namespace_identifier) @name) @def.module
 

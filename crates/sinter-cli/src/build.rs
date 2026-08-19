@@ -9,6 +9,12 @@ pub fn run(repo: &Path) -> Result<()> {
     let report = pipeline::build(repo, None)?;
     pipeline::print_report(&report);
     let repo = repo.canonicalize()?;
+    if report.scanned == 0 {
+        eprintln!(
+            "warning: 0 source files found under {} — wrong directory?",
+            repo.display()
+        );
+    }
     println!(
         "  -> {} ({} on disk)",
         pipeline::db_path(&repo).display(),

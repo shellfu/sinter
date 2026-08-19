@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::Result;
-use sinter_core::{Node, Relation, SymbolKind};
+use sinter_core::{Node, SymbolKind};
 use sinter_resolve::qualified_of;
 
 use crate::lookup::open_store;
@@ -79,17 +79,16 @@ fn doc_entries(nodes: &[Node]) -> BTreeMap<String, Vec<(u64, String)>> {
 pub fn run(repo: &Path, json: bool) -> Result<()> {
     let repo = repo.canonicalize()?;
     let store = open_store(&repo)?;
-    // One-shot whole-graph read: map runs once per orientation, and a
-    // single pass beats a per-node in-edge query storm.
-    let graph = store.read_graph()?;
-    let nodes: Vec<Node> = graph.nodes().cloned().collect();
+    // Streamed reads: materializing (and re-validating) the whole graph
+    // via read_graph took seconds and gigabytes on big corpora just to
+    // count in-degrees.
+    let node_count = store.node_count()?;
+    let edge_count = store.edge_count()?;
+    let nodes: Vec<Node> = store.all_nodes()?;
     let by_id: BTreeMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
-    let mut in_degree: BTreeMap<&str, usize> = BTreeMap::new();
-    for edge in graph.edges() {
-        if edge.relation != Relation::Contains {
-            *in_degree.entry(edge.dst.as_str()).or_default() += 1;
-        }
-    }
+    let degrees = store.in_degrees()?;
+    let in_degree: BTreeMap<&str, usize> =
+        degrees.iter().map(|(id, n)| (id.as_str(), *n)).collect();
     let tree = module_tree(&nodes);
     let hubs = hubs(&by_id, &in_degree);
     let docs = doc_entries(&nodes);
@@ -132,8 +131,8 @@ pub fn run(repo: &Path, json: bool) -> Result<()> {
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "repo": name,
-                "nodes": graph.node_count(),
-                "edges": graph.edge_count(),
+                "nodes": node_count,
+                "edges": edge_count,
                 "modules": modules,
                 "hubs": hubs,
                 "docs": docs,
@@ -142,11 +141,7 @@ pub fn run(repo: &Path, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "{name} — {} nodes, {} edges",
-        graph.node_count(),
-        graph.edge_count()
-    );
+    println!("{name} — {node_count} nodes, {edge_count} edges");
     println!();
     println!("Modules");
     for (top, (count, children)) in &tree {

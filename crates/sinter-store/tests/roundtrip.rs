@@ -45,6 +45,7 @@ fn hand_built_roundtrip() {
             relation: r,
             evidence: Evidence::Structural,
             confidence: Confidence::Certain,
+            site: None,
         })
         .unwrap();
     }
@@ -62,6 +63,34 @@ fn hand_built_roundtrip() {
     assert_eq!(store.out_edges(&main).unwrap().len(), 3);
     assert_eq!(store.in_edges(&NodeId::new("Config")).unwrap().len(), 2);
     assert_eq!(store.in_edges(&NodeId::new("config")).unwrap().len(), 1);
+}
+
+/// Sites persist, and several call sites for one dependency fact keep a
+/// single representative edge (the smallest site) — cardinality never
+/// multiplies with call-site count.
+#[test]
+fn representative_site_per_edge_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("graph.redb");
+    let store = Store::create(&path).unwrap();
+    let edge = |start: u64| Edge {
+        src: NodeId::new("src/a.rs#caller@3"),
+        dst: NodeId::new("src/b.rs#callee@3"),
+        relation: Relation::Calls,
+        evidence: Evidence::Scope,
+        confidence: Confidence::Inferred,
+        site: Some(Span {
+            start,
+            end: start + 6,
+        }),
+    };
+    store
+        .insert_edges(&[edge(120), edge(80), edge(80)])
+        .unwrap();
+    let out = store.out_edges(&NodeId::new("src/a.rs#caller@3")).unwrap();
+    assert_eq!(out, vec![edge(80)]);
+    let inn = store.in_edges(&NodeId::new("src/b.rs#callee@3")).unwrap();
+    assert_eq!(inn, vec![edge(80)]);
 }
 
 proptest! {
@@ -88,6 +117,7 @@ proptest! {
                 relation: RELATIONS[*r],
                 evidence: if *c == 0 { Evidence::Structural } else { Evidence::Scope },
                 confidence: if *c == 0 { Confidence::Certain } else { Confidence::Inferred },
+        site: None,
             }).unwrap();
         }
 

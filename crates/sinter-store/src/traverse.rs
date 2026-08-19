@@ -16,11 +16,18 @@ pub struct EdgeFilter {
     pub evidence: Option<BTreeSet<Evidence>>,
     /// Minimum confidence; None = any.
     pub min_confidence: Option<Confidence>,
+    /// Allowed relations; None = all (Contains stays excluded either way).
+    pub relations: Option<BTreeSet<Relation>>,
 }
 
 impl EdgeFilter {
     pub fn admits(&self, edge: &Edge) -> bool {
         if edge.relation == Relation::Contains {
+            return false;
+        }
+        if let Some(allowed) = &self.relations
+            && !allowed.contains(&edge.relation)
+        {
             return false;
         }
         if let Some(allowed) = &self.evidence
@@ -67,6 +74,50 @@ impl Store {
                 }
                 if let Some(node) = self.node(&edge.src)? {
                     queue.push_back((edge.src.clone(), depth + 1));
+                    out.push(Reached {
+                        node,
+                        depth: depth + 1,
+                        via: edge,
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Forward transitive closure: everything `id` depends on (outgoing
+    /// non-Contains edges), breadth-first, deduplicated. A file start seeds
+    /// through its Contains edges (a file's dependencies live in the
+    /// symbols it contains), silently — containment is not a dependency.
+    pub fn dependencies(
+        &self,
+        id: &NodeId,
+        filter: &EdgeFilter,
+        max_depth: usize,
+    ) -> Result<Vec<Reached>, StoreError> {
+        let mut seen: HashSet<NodeId> = HashSet::from([id.clone()]);
+        let mut queue: VecDeque<(NodeId, usize)> = VecDeque::from([(id.clone(), 0)]);
+        if self
+            .node(id)?
+            .is_some_and(|n| n.kind == sinter_core::SymbolKind::File)
+        {
+            for edge in self.out_edges(id)? {
+                if edge.relation == Relation::Contains && seen.insert(edge.dst.clone()) {
+                    queue.push_back((edge.dst.clone(), 0));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        while let Some((current, depth)) = queue.pop_front() {
+            if depth >= max_depth {
+                continue;
+            }
+            for edge in self.out_edges(&current)? {
+                if !filter.admits(&edge) || !seen.insert(edge.dst.clone()) {
+                    continue;
+                }
+                if let Some(node) = self.node(&edge.dst)? {
+                    queue.push_back((edge.dst.clone(), depth + 1));
                     out.push(Reached {
                         node,
                         depth: depth + 1,

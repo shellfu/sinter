@@ -253,6 +253,8 @@ impl Extractor {
                     relation: Relation::Contains,
                     evidence: Evidence::Structural,
                     confidence: Evidence::Structural.confidence(),
+                    // Containment is structure, not a reference: no site.
+                    site: None,
                 });
                 def_spans.push((entry.start, entry.end, id.clone()));
                 Some(id)

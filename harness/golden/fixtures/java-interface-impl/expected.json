@@ -23,7 +23,9 @@
   "resolved": [
     ["scope", "uses", "ConsoleGreeter", "Greeter"],
     ["scope", "uses", "FancyGreeter", "ConsoleGreeter"],
-    ["dynamic", "calls", "Greeter::greet", "ConsoleGreeter::greet"]
+    ["dynamic", "calls", "Greeter::greet", "ConsoleGreeter::greet"],
+    ["scope", "implements", "ConsoleGreeter", "Greeter"],
+    ["scope", "extends", "FancyGreeter", "ConsoleGreeter"]
   ],
   "unresolved_count": 0
 }

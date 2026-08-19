@@ -23,19 +23,19 @@ use serde::Serialize;
 use crate::impact;
 
 #[derive(Serialize)]
-struct PrMap {
-    label: String,
+pub struct PrMap {
+    pub label: String,
     rev_range: String,
-    touched: BTreeSet<String>,
-    radius: BTreeSet<String>,
-    files: BTreeSet<String>,
+    pub touched: BTreeSet<String>,
+    pub radius: BTreeSet<String>,
+    pub files: BTreeSet<String>,
 }
 
 #[derive(Serialize)]
-struct Pair {
+pub struct Pair {
     a: String,
     b: String,
-    risk: &'static str,
+    pub risk: &'static str,
     direct: Vec<String>,
     radius: Vec<String>,
     files: Vec<String>,
@@ -106,7 +106,8 @@ fn pair(a: &PrMap, b: &PrMap) -> Pair {
     }
 }
 
-pub fn run(repo: &Path, args: &[String], json: bool) -> Result<()> {
+/// Parse, map, pair, rank — shared by the CLI verb and the MCP tool.
+pub fn compute(repo: &Path, args: &[String]) -> Result<(Vec<PrMap>, Vec<Pair>)> {
     if args.len() < 2 {
         bail!("need at least two rev-ranges (e.g. `sinter overlap main...pr-1 main...pr-2`)");
     }
@@ -129,6 +130,11 @@ pub fn run(repo: &Path, args: &[String], json: bool) -> Result<()> {
         _ => 3,
     };
     pairs.sort_by_key(|p| rank(p.risk));
+    Ok((maps, pairs))
+}
+
+pub fn run(repo: &Path, args: &[String], json: bool) -> Result<()> {
+    let (maps, pairs) = compute(repo, args)?;
 
     if json {
         println!(

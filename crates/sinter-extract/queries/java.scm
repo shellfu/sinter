@@ -14,10 +14,12 @@
 ; records interface-impl pairing (dynamic-dispatch fan-out, like Rust traits)
 ; superclass also embeds: inherited members resolve on the subclass
 ; (same member-promotion machinery as Go embedded structs)
+; @trait on the superclass too: Java methods are virtual by default, so
+; overridden methods fan out exactly like interface impls (C# precedent)
 (class_declaration superclass: (superclass [
-  (type_identifier) @ref.use @embed
-  (generic_type (type_identifier) @ref.use @embed)
-]))
+  (type_identifier) @ref.use @embed @trait
+  (generic_type (type_identifier) @ref.use @embed @trait)
+])) @trait.impl
 (class_declaration
   interfaces: (super_interfaces (type_list [
     (type_identifier) @ref.use @trait

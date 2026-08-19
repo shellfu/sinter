@@ -19,7 +19,8 @@
   ],
   "resolved": [
     ["scope", "uses", "Sub", "Base", "com/acme/Sub.java", "com/acme/Base.java"],
-    ["scope", "calls", "Sub::run", "Base::ping", "com/acme/Sub.java", "com/acme/Base.java"]
+    ["scope", "calls", "Sub::run", "Base::ping", "com/acme/Sub.java", "com/acme/Base.java"],
+    ["scope", "extends", "Sub", "Base", "com/acme/Sub.java", "com/acme/Base.java"]
   ],
   "unresolved_count": 0
 }

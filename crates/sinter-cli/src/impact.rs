@@ -41,17 +41,27 @@ fn symbol_ref(node: &Node) -> SymbolRef {
 }
 
 /// Test detection heuristic: conventional test files and names.
-fn is_test(node: &Node) -> bool {
+pub fn is_test(node: &Node) -> bool {
     let f = &node.file;
     f.ends_with("_test.go")
+        || f.ends_with("_test.py")
+        || f.ends_with("Tests.cs")
+        || f.contains(".test.")
+        || f.contains(".spec.")
         || f.starts_with("tests/")
         || f.contains("/tests/")
         || f.contains("/test/")
         || node.name.starts_with("test_")
         || node.name.starts_with("Test")
+        // Rust `#[cfg(test)] mod tests` inline modules.
+        || qualified_of(node.id.as_str()).split("::").any(|s| s == "tests")
 }
 
 pub fn compute(repo: &Path, rev_range: &str) -> Result<ImpactReport> {
+    compute_filtered(repo, rev_range, &EdgeFilter::default())
+}
+
+pub fn compute_filtered(repo: &Path, rev_range: &str, filter: &EdgeFilter) -> Result<ImpactReport> {
     let repo = repo.canonicalize()?;
     let store = open_store(&repo)?;
 
@@ -76,9 +86,14 @@ pub fn compute(repo: &Path, rev_range: &str) -> Result<ImpactReport> {
         .output()
         .context("run git diff")?;
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.to_lowercase().contains("not a git repository") {
+            bail!("not a git repository — impact needs git history");
+        }
+        // Full git stderr can run to pages; the first line names the problem.
         bail!(
             "git diff {rev_range} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            stderr.lines().next().unwrap_or("").trim()
         );
     }
     let mut hunks: BTreeMap<String, Vec<(usize, usize)>> = BTreeMap::new();
@@ -145,10 +160,9 @@ pub fn compute(repo: &Path, rev_range: &str) -> Result<ImpactReport> {
     }
 
     // Blast radius: union of dependents of every changed symbol.
-    let filter = EdgeFilter::default();
     let mut radius: BTreeMap<String, Node> = BTreeMap::new();
     for node in &changed {
-        for reached in store.dependents(&node.id, &filter, 25)? {
+        for reached in store.dependents(&node.id, filter, 25)? {
             radius.insert(reached.node.id.as_str().to_string(), reached.node);
         }
     }
@@ -172,8 +186,16 @@ pub fn compute(repo: &Path, rev_range: &str) -> Result<ImpactReport> {
     })
 }
 
-pub fn run(repo: &Path, rev_range: &str, manifest: Option<&Path>) -> Result<()> {
-    let mut report = compute(repo, rev_range)?;
+pub fn run(
+    repo: &Path,
+    rev_range: &str,
+    manifest: Option<&Path>,
+    evidence: &[String],
+    certain: bool,
+    json: bool,
+) -> Result<()> {
+    let filter = crate::lookup::edge_filter(evidence, certain)?;
+    let mut report = compute_filtered(repo, rev_range, &filter)?;
     // Workspace mode: follow boundary links out of the changed member and
     // continue the blast radius inside the other members.
     if let Some(manifest) = manifest {
@@ -200,7 +222,6 @@ pub fn run(repo: &Path, rev_range: &str, manifest: Option<&Path>) -> Result<()> 
                 })
                 .collect()
         };
-        let filter = EdgeFilter::default();
         let mut cross: std::collections::BTreeMap<String, SymbolRef> =
             std::collections::BTreeMap::new();
         for node_id in &changed_ids {
@@ -218,6 +239,10 @@ pub fn run(repo: &Path, rev_range: &str, manifest: Option<&Path>) -> Result<()> 
             }
         }
         report.blast_radius.extend(cross.into_values());
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&to_json(&report))?);
+        return Ok(());
     }
     println!(
         "impact {}: {} changed symbols, {} in blast radius, {} tests affected",
@@ -250,4 +275,53 @@ pub fn run(repo: &Path, rev_range: &str, manifest: Option<&Path>) -> Result<()> 
 /// Also usable by the MCP server.
 pub fn to_json(report: &ImpactReport) -> serde_json::Value {
     serde_json::to_value(report).expect("impact report serializes")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_test;
+    use sinter_core::{Node, NodeId, Span, SymbolKind};
+
+    fn node(id: &str, name: &str, file: &str) -> Node {
+        Node {
+            id: NodeId::new(id),
+            kind: SymbolKind::Function,
+            name: name.to_string(),
+            file: file.to_string(),
+            span: Span { start: 0, end: 1 },
+            signature: String::new(),
+            doc: None,
+        }
+    }
+
+    #[test]
+    fn detects_conventional_test_files_and_names() {
+        // One case per convention.
+        for (id, name, file) in [
+            ("a_test.go#f", "f", "a_test.go"),                  // Go
+            ("a_test.py#f", "f", "a_test.py"),                  // Python file
+            ("FooTests.cs#F", "F", "FooTests.cs"),              // C#
+            ("app.test.ts#f", "f", "app.test.ts"),              // JS/TS .test.
+            ("app.spec.js#f", "f", "app.spec.js"),              // JS/TS .spec.
+            ("tests/x.rs#f", "f", "tests/x.rs"),                // tests/ dir
+            ("crate/tests/x.rs#f", "f", "crate/tests/x.rs"),    // nested tests/
+            ("pkg/test/x.py#f", "f", "pkg/test/x.py"),          // test/ dir
+            ("m.py#test_f", "test_f", "m.py"),                  // test_ prefix
+            ("M.go#TestF", "TestF", "M.go"),                    // Test prefix
+            ("src/lib.rs#tests::works", "works", "src/lib.rs"), // #[cfg(test)] mod
+        ] {
+            assert!(is_test(&node(id, name, file)), "{file} {name}");
+        }
+    }
+
+    #[test]
+    fn plain_symbols_are_not_tests() {
+        for (id, name, file) in [
+            ("src/lib.rs#build", "build", "src/lib.rs"),
+            ("src/attest.rs#attest", "attest", "src/attest.rs"),
+            ("contest.py#run", "run", "contest.py"),
+        ] {
+            assert!(!is_test(&node(id, name, file)), "{file} {name}");
+        }
+    }
 }

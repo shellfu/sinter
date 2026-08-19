@@ -12,8 +12,8 @@ Two artifacts, two cost profiles:
   and costs minutes — rust-analyzer, scip-go, etc. have to typecheck the
   repo. This is the artifact worth building once and distributing.
 
-Ingestion is automatic: `pipeline.rs` fingerprints the index (path +
-mtime + size) and any `sinter build` — including the one a query
+Ingestion is automatic: `pipeline.rs` fingerprints the index (size +
+mtime) and any `sinter build` — including the one a query
 triggers — notices a changed fingerprint and re-resolves the corpus
 against it. So distribution is literally "put the file at
 `.sinter/index.scip`"; no import command exists because none is needed.
