@@ -580,3 +580,36 @@ fn golden_markdown_headings() {
 fn golden_markdown_links() {
     check("markdown-links");
 }
+
+/// `implements`/interface-`extends` heritage: interface method
+/// signatures are symbols; heritage clauses reference the supertype.
+#[test]
+fn golden_typescript_implements() {
+    check("typescript-implements");
+}
+
+/// Class bases: the base reference, and methods overriding base methods.
+#[test]
+fn golden_python_inheritance() {
+    check("python-inheritance");
+}
+
+/// Implicit interface satisfaction plus the `var _ I = (*T)(nil)`
+/// assertion idiom; interface method specs are symbols.
+#[test]
+fn golden_go_interface() {
+    check("go-interface");
+}
+
+/// Base-class specifier: reference + virtual-override pairing.
+#[test]
+fn golden_cpp_inheritance() {
+    check("cpp-inheritance");
+}
+
+/// go.mod-declared module path anchors full-path imports
+/// (`example.com/acme` -> the module root package).
+#[test]
+fn golden_go_module_import() {
+    check("go-module-import");
+}

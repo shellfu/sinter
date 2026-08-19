@@ -22,7 +22,8 @@
   "resolved": [
     ["scope", "uses", "Dog", "Animal", "Acme/Dog.cs", "Acme/Animal.cs"],
     ["scope", "calls", "Dog::Greet", "Dog::Speak", "Acme/Dog.cs", "Acme/Dog.cs"],
-    ["dynamic", "calls", "Animal::Speak", "Dog::Speak", "Acme/Animal.cs", "Acme/Dog.cs"]
+    ["dynamic", "calls", "Animal::Speak", "Dog::Speak", "Acme/Animal.cs", "Acme/Dog.cs"],
+    ["scope", "extends", "Dog", "Animal", "Acme/Dog.cs", "Acme/Animal.cs"]
   ],
   "unresolved_count": 0
 }

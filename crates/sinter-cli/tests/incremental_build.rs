@@ -149,7 +149,15 @@ fn manifest_rename_invalidates_resolution() {
         !rebuild.contains(" 0 files re-resolved"),
         "manifest change must re-resolve: {rebuild}"
     );
-    let after = sinter(repo, &["affected", "double", "--repo"]);
+    // Dependents dropped to zero: grep-style exit 1, so run raw.
+    let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
+        .args(["affected", "double", "--repo"])
+        .arg(repo)
+        .env("HOME", repo)
+        .env("USERPROFILE", repo)
+        .output()
+        .expect("run sinter");
+    let after = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
         !after.contains("main"),
         "stale dependents survived the rename: {after}"

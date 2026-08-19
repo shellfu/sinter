@@ -1,0 +1,27 @@
+{
+  "nodes": [
+    ["file", "animal.h", "animal.h"],
+    ["class", "Animal", "animal.h", "Base animal with a virtual Speak."],
+    ["method", "Animal::Speak", "animal.h"],
+    ["file", "dog.h", "dog.h"],
+    ["class", "Dog", "dog.h", "A dog overriding Speak."],
+    ["method", "Dog::Speak", "dog.h"]
+  ],
+  "contains": [
+    ["animal.h", "Animal"],
+    ["Animal", "Animal::Speak"],
+    ["dog.h", "Dog"],
+    ["Dog", "Dog::Speak"]
+  ],
+  "references": [
+    ["imports", "animal.h"],
+    ["uses", "Animal"]
+  ],
+  "resolved": [
+    ["import", "imports", "dog.h", "animal.h"],
+    ["import", "uses", "Dog", "Animal", "dog.h", "animal.h"],
+    ["import", "extends", "Dog", "Animal", "dog.h", "animal.h"],
+    ["dynamic", "calls", "Animal::Speak", "Dog::Speak", "animal.h", "dog.h"]
+  ],
+  "unresolved_count": 0
+}

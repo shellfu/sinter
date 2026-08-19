@@ -124,10 +124,29 @@ fn workspace_end_to_end() {
             "import",
         ],
     );
-    assert!(ok, "{out}");
+    // Filtered to nothing: grep-style exit 1.
+    assert!(!ok, "{out}");
     assert!(
         !out.contains("ConsumeSettled"),
         "declared link not filterable:\n{out}"
+    );
+    // Relation filter crosses the boundary too: the declared link is
+    // `uses`, so restricting traversal to `calls` drops it.
+    let (ok, out) = sinter(
+        root,
+        &[
+            "affected",
+            "PublishSettled",
+            "--workspace",
+            m,
+            "--relations",
+            "calls",
+        ],
+    );
+    assert!(!ok, "{out}");
+    assert!(
+        !out.contains("ConsumeSettled"),
+        "declared link not relation-filterable:\n{out}"
     );
 
     // Cross-repo path: billing's Charge reaches common's Backoff.
@@ -211,6 +230,47 @@ fn workspace_impact_crosses_members() {
         out.contains("billing:"),
         "cross-member radius missing billing:\n{out}"
     );
+
+    // Same answer over MCP: the workspace impact tool names the member.
+    use std::io::Write;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sinter"))
+        .args(["serve", "--workspace", m])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn serve");
+    writeln!(
+        child.stdin.as_mut().unwrap(),
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"impact","arguments":{{"member":"common","rev_range":"HEAD~1..HEAD"}}}}}}"#
+    )
+    .unwrap();
+    drop(child.stdin.take());
+    let output = child.wait_with_output().unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    let body = response["result"]["content"][0]["text"].as_str().unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert!(
+        parsed["changed_symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["qualified"].as_str().unwrap().contains("Backoff")),
+        "{body}"
+    );
+    let radius = parsed["blast_radius"].as_array().unwrap();
+    assert!(
+        radius
+            .iter()
+            .any(|s| s["file"].as_str().unwrap().starts_with("auth:")),
+        "cross-member radius missing auth over MCP: {body}"
+    );
+    assert!(
+        radius
+            .iter()
+            .any(|s| s["file"].as_str().unwrap().starts_with("billing:")),
+        "cross-member radius missing billing over MCP: {body}"
+    );
 }
 
 #[test]
@@ -248,6 +308,33 @@ fn workspace_stale_and_declared_errors() {
     let (ok, out) = sinter(root, &["workspace", m]);
     assert!(!ok, "{out}");
     assert!(out.contains("NoSuchSymbol"), "{out}");
+}
+
+/// Workspace traversal has no JSON renderer; `--json --workspace` must
+/// refuse loudly (usage error, exit 2) instead of silently dropping the
+/// flag.
+#[test]
+fn json_conflicts_with_workspace() {
+    for argv in [
+        vec!["ask", "anything", "--workspace", "ws.toml", "--json"],
+        vec!["affected", "Backoff", "--workspace", "ws.toml", "--json"],
+        vec!["path", "A", "B", "--workspace", "ws.toml", "--json"],
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
+            .args(&argv)
+            .output()
+            .expect("run sinter");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{argv:?} should be a usage error: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("--workspace"),
+            "{argv:?} error should name the conflict"
+        );
+    }
 }
 
 /// Parallel workspace queries share the link store; opens must ride out
@@ -308,6 +395,16 @@ fn serve_workspace_answers_across_members() {
             r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"affected","arguments":{{"symbol":"common:Backoff"}}}}}}"#
         )
         .unwrap();
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"ask","arguments":{{"question":"retry backoff"}}}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{{"name":"show","arguments":{{"symbol":"common:Backoff"}}}}}}"#
+        )
+        .unwrap();
     }
     drop(child.stdin.take());
     let output = child.wait_with_output().unwrap();
@@ -321,7 +418,11 @@ fn serve_workspace_answers_across_members() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["query", "affected", "path"], "honest ws surface");
+    assert_eq!(
+        names,
+        ["ask", "show", "query", "affected", "path", "impact"],
+        "honest ws surface"
+    );
 
     let affected: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
     let body = affected["result"]["content"][0]["text"].as_str().unwrap();
@@ -335,5 +436,27 @@ fn serve_workspace_answers_across_members() {
             s.starts_with("auth:") || s.starts_with("billing:")
         }),
         "terse dependents must cross into other members: {body}"
+    );
+
+    // ask fans out across members; top hit carries member attribution.
+    let ask: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    let body = ask["result"]["content"][0]["text"].as_str().unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
+    let first = &parsed["hits"].as_array().unwrap()[0];
+    assert_eq!(first["member"], "common", "{body}");
+    assert_eq!(first["name"], "Backoff", "{body}");
+
+    // show carries in-member edges plus boundary links from other members.
+    let show: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    let body = show["result"]["content"][0]["text"].as_str().unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert_eq!(parsed["symbol"]["member"], "common", "{body}");
+    let boundary_in = parsed["boundary_incoming"].as_array().unwrap();
+    assert!(
+        boundary_in.iter().any(|l| {
+            let m = l["member"].as_str().unwrap();
+            m == "auth" || m == "billing"
+        }),
+        "boundary links must name the other members: {body}"
     );
 }

@@ -14,14 +14,32 @@
   (type_spec name: (type_identifier) @name type: (struct_type)) @def.struct)
 (type_declaration
   (type_spec name: (type_identifier) @name type: (interface_type)) @def.interface)
+
+; interface method specs are declared symbols: they scope under the
+; interface (Iface::Method) and are the fan-out sources for implicit
+; satisfaction (resolver-side method-set matching)
+(method_elem name: (field_identifier) @name) @def.method
 (type_declaration
   (type_spec name: (type_identifier) @name
     type: [(type_identifier) (qualified_type) (map_type) (slice_type)
            (array_type) (function_type) (channel_type) (pointer_type)]) @def.typealias)
 
-; package-level constants and variables only; function bodies hold locals
-(source_file (const_declaration (const_spec name: (identifier) @name) @def.constant))
-(source_file (var_declaration (var_spec name: (identifier) @name) @def.variable))
+; package-level constants and variables only; function bodies hold locals.
+; The blank identifier binds nothing and is not a symbol.
+(source_file (const_declaration (const_spec name: (identifier) @name) @def.constant
+  (#not-eq? @name "_")))
+(source_file (var_declaration (var_spec name: (identifier) @name) @def.variable
+  (#not-eq? @name "_")))
+
+; compile-time satisfaction assertion `var _ Iface = (*T)(nil)`:
+; the interface is used by this file
+(source_file
+  (var_declaration
+    (var_spec
+      name: (identifier) @_blank
+      type: [(type_identifier) @ref.use
+             (qualified_type name: (type_identifier) @ref.use)])
+    (#eq? @_blank "_")))
 
 ; imports: plain, aliased, dot
 (import_spec !name path: (interpreted_string_literal) @import)

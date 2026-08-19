@@ -9,7 +9,7 @@ use sinter_core::{Edge, Relation, SymbolKind};
 use sinter_resolve::qualified_of;
 
 use crate::lookup::{open_store, unique_symbol};
-use crate::render::{ellipsize, line_of, location};
+use crate::render::{ellipsize, line_of, location, node_json, site_json, site_location};
 
 const EXEMPLARS: usize = 8;
 
@@ -41,10 +41,41 @@ fn evidence_tally(edges: &[&Edge]) -> String {
         .join(" · ")
 }
 
-pub fn run(repo: &Path, symbol: &str) -> Result<()> {
+/// Ok(true) when the symbol resolved (grep-style exit codes).
+pub fn run(repo: &Path, symbol: &str, json: bool) -> Result<bool> {
     let repo = repo.canonicalize()?;
     let store = open_store(&repo)?;
     let node = unique_symbol(&store, symbol)?;
+    if json {
+        // Same shape as the MCP `show` tool.
+        let edge_json = |e: &Edge, other: &str| {
+            serde_json::json!({
+                "symbol": qualified_of(other),
+                "relation": e.relation.as_str(),
+                "evidence": e.evidence.as_str(),
+                "site": site_json(&repo, e),
+            })
+        };
+        let out: Vec<serde_json::Value> = store
+            .out_edges(&node.id)?
+            .iter()
+            .map(|e| edge_json(e, e.dst.as_str()))
+            .collect();
+        let inn: Vec<serde_json::Value> = store
+            .in_edges(&node.id)?
+            .iter()
+            .map(|e| edge_json(e, e.src.as_str()))
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "symbol": node_json(&node),
+                "outgoing": out,
+                "incoming": inn,
+            }))?
+        );
+        return Ok(true);
+    }
     let line = line_of(&repo, &node.file, node.span.start);
 
     println!(
@@ -102,24 +133,31 @@ pub fn run(repo: &Path, symbol: &str) -> Result<()> {
         .filter(|e| e.relation != Relation::Contains)
         .collect();
     if !dependents.is_empty() {
-        let mut per_file: BTreeMap<&str, usize> = BTreeMap::new();
+        // Per src file: edge count plus one representative call site (the
+        // smallest span start — matches the stored representative).
+        let mut per_file: BTreeMap<&str, (usize, Option<u64>)> = BTreeMap::new();
         for e in &dependents {
             let file = e
                 .src
                 .as_str()
                 .split_once('#')
                 .map_or(e.src.as_str(), |(f, _)| f);
-            *per_file.entry(file).or_default() += 1;
+            let entry = per_file.entry(file).or_default();
+            entry.0 += 1;
+            if let Some(span) = e.site {
+                entry.1 = Some(entry.1.map_or(span.start, |s| s.min(span.start)));
+            }
         }
         println!(
             "used by ({} files, {} edges)",
             per_file.len(),
             dependents.len()
         );
-        let mut rows: Vec<(&str, usize)> = per_file.into_iter().collect();
-        rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
-        for (file, count) in rows.iter().take(EXEMPLARS) {
-            println!("  {file}   {count} edges");
+        let mut rows: Vec<(&str, (usize, Option<u64>))> = per_file.into_iter().collect();
+        rows.sort_by(|a, b| b.1.0.cmp(&a.1.0).then_with(|| a.0.cmp(b.0)));
+        for (file, (count, site)) in rows.iter().take(EXEMPLARS) {
+            let line = site.and_then(|byte| line_of(&repo, file, byte));
+            println!("  {}   {count} edges", location(&repo, file, line));
         }
         if rows.len() > EXEMPLARS {
             println!("  … (+{} files)", rows.len() - EXEMPLARS);
@@ -131,10 +169,28 @@ pub fn run(repo: &Path, symbol: &str) -> Result<()> {
         .filter(|e| matches!(e.relation, Relation::Calls | Relation::Uses))
         .collect();
     if !calls.is_empty() {
+        // Exemplars carry their call site (`name (file:line)`) so "A calls
+        // B" comes with "at file:line" instead of forcing a follow-up grep.
+        let shown: Vec<String> = calls
+            .iter()
+            .take(EXEMPLARS)
+            .map(|e| {
+                let q = qualified_of(e.dst.as_str());
+                let name = q.rsplit("::").next().unwrap_or(q);
+                match site_location(&repo, e) {
+                    Some(site) => format!("{name} ({site})"),
+                    None => name.to_string(),
+                }
+            })
+            .collect();
+        let mut listed = shown.join(", ");
+        if calls.len() > EXEMPLARS {
+            listed.push_str(&format!(", … (+{})", calls.len() - EXEMPLARS));
+        }
         println!(
             "calls ({})       {}    [{}]",
             calls.len(),
-            names(&calls, |e| e.dst.as_str()),
+            listed,
             evidence_tally(&calls)
         );
     }
@@ -146,5 +202,5 @@ pub fn run(repo: &Path, symbol: &str) -> Result<()> {
         "Next: sinter affected {} --max-depth 3",
         qualified_of(node.id.as_str())
     );
-    Ok(())
+    Ok(true)
 }

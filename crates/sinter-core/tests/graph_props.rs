@@ -22,6 +22,7 @@ fn edge(src: &str, dst: &str, relation: Relation) -> Edge {
         relation,
         evidence: Evidence::Structural,
         confidence: Confidence::Certain,
+        site: None,
     }
 }
 

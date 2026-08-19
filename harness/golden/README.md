@@ -28,7 +28,7 @@ output. Correcting an expectation requires a written semantics argument
 recorded in the git design history — a failing test is never by itself a
 reason to edit a fixture.
 
-Current corpus: 49 fixtures across six languages (basics plus idiom
+Current corpus: 78 fixtures across thirteen languages (basics plus idiom
 fixtures mined from the prototype's changelog: shadowing families,
 alias/star/dot/relative imports, re-export chains, receivers, embeddings,
 namespace collisions, macro misparse resilience) —

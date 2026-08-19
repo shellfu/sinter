@@ -142,7 +142,7 @@ fn ask_zero_hits_and_stopword_only() {
     assert!(ok, "{out}");
 
     let (ok, out) = sinter(repo, &["ask", "zzqx flurble"]);
-    assert!(ok, "{out}");
+    assert!(!ok, "no-result ask must exit nonzero: {out}");
     assert!(out.contains("no match"), "{out}");
 
     let (ok, out) = sinter(repo, &["ask", "where is the?"]);
@@ -937,7 +937,8 @@ fn ask_verbose_question_drops_scaffolding_and_flags_weak_match() {
             "What documentation describes dashboard usability, operator experience, or comparisons to k9s?",
         ],
     );
-    assert!(ok, "{out}");
+    // No topic matched: grep-style exit 1, output still printed.
+    assert!(!ok, "{out}");
     // Scaffolding terms are gone from the term list...
     let header = out.lines().next().unwrap_or_default();
     for filler in ["documentation", "describes", "comparisons"] {
@@ -1024,7 +1025,8 @@ fn ask_codex_shaped_question_splits_sanely() {
              operator experience, terminal layout, keyboard controls, or comparisons to k9s?",
         ],
     );
-    assert!(ok, "{out}");
+    // No topic matched: grep-style exit 1, output still printed.
+    assert!(!ok, "{out}");
     assert!(out.contains("topics):"), "did not split: {out}");
     // Soft scaffolding stripped from clause labels.
     assert!(out.contains("## dashboard usability"), "{out}");

@@ -39,6 +39,7 @@ fn contains(src: &Node, dst: &Node) -> Edge {
         relation: Relation::Contains,
         evidence: Evidence::Structural,
         confidence: Confidence::Certain,
+        site: None,
     }
 }
 
@@ -99,6 +100,7 @@ fn update_replaces_only_touched_file() {
         relation: Relation::Calls,
         evidence: Evidence::Scope,
         confidence: Confidence::Inferred,
+        site: None,
     };
     store.insert_edges(std::slice::from_ref(&cross)).unwrap();
     assert_eq!(store.in_edges(&a1.nodes[1].id).unwrap().len(), 2); // contains + cross
@@ -142,7 +144,8 @@ fn update_replaces_only_touched_file() {
     assert_eq!(store.file_hashes().unwrap().len(), 1);
 }
 
-/// remove_resolution_edges drops only non-structural edges of the given files.
+/// apply_resolution's teardown drops only non-structural edges of the
+/// given files.
 #[test]
 fn resolution_edges_removed_structural_kept() {
     let dir = tempfile::tempdir().unwrap();
@@ -157,14 +160,79 @@ fn resolution_edges_removed_structural_kept() {
             relation: Relation::Calls,
             evidence: Evidence::Import,
             confidence: Confidence::Inferred,
+            site: None,
         }])
         .unwrap();
 
     let mut files = BTreeSet::new();
     files.insert("a.rs".to_string());
-    store.remove_resolution_edges(&files).unwrap();
+    store.apply_resolution(&files, &[], &files, &[]).unwrap();
 
     assert!(store.out_edges(&a.nodes[1].id).unwrap().is_empty());
     // Structural contains edge from the file node survives.
     assert_eq!(store.in_edges(&a.nodes[1].id).unwrap().len(), 1);
+}
+
+/// The lethal crash window: update_files tears down a dependent file's
+/// binding (an in-edge into the changed file), then the process dies
+/// before the resolution pass re-derives it. The dependent set is gone
+/// from the tables — only the pending delta, committed atomically with
+/// the teardown, still names it. It must survive reopen and clear only
+/// on demand.
+#[test]
+fn pending_delta_survives_crash_between_update_and_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("g.redb");
+    let store = Store::create(&db).unwrap();
+
+    let a = facts("a.rs", "h1", &["alpha"], &[]);
+    // b's binding into a is an import bound to a's file node: b references
+    // no name a defines, so ref_files(def_names) can never rediscover it.
+    let b = facts("b.rs", "h2", &["beta"], &[]);
+    store.update_files(&[a.clone(), b.clone()], &[]).unwrap();
+    store.commit_hashes(&[a.clone(), b.clone()]).unwrap();
+    let bind = Edge {
+        src: b.nodes[0].id.clone(),
+        dst: a.nodes[0].id.clone(),
+        relation: Relation::Imports,
+        evidence: Evidence::Import,
+        confidence: Confidence::Inferred,
+        site: None,
+    };
+    store.insert_edges(std::slice::from_ref(&bind)).unwrap();
+    store.clear_pending_delta().unwrap();
+
+    // Change a.rs; the crash happens here: no resolution pass follows.
+    let a2 = facts("a.rs", "h3", &["alpha2"], &[]);
+    let delta = store.update_files(std::slice::from_ref(&a2), &[]).unwrap();
+    assert!(delta.dependent_files.contains("b.rs"));
+    let bound_into_a = |store: &Store| {
+        store
+            .out_edges(&b.nodes[0].id)
+            .unwrap()
+            .iter()
+            .any(|e| e.dst == a.nodes[0].id)
+    };
+    assert!(!bound_into_a(&store), "binding should be torn down");
+    drop(store);
+
+    // Next build: the persisted delta still names the dependent file.
+    let store = Store::open(&db).unwrap();
+    let residue = store.pending_delta().unwrap();
+    assert!(
+        residue.dependent_files.contains("b.rs"),
+        "crash residue lost: {residue:?}"
+    );
+    assert!(residue.def_names.contains("alpha"));
+
+    // Replay what the pipeline does with the residue: re-resolve b.rs and
+    // commit its re-derived binding atomically with the teardown.
+    let files: BTreeSet<String> = ["a.rs".to_string(), "b.rs".to_string()].into();
+    store
+        .apply_resolution(&files, std::slice::from_ref(&bind), &files, &[])
+        .unwrap();
+    store.clear_pending_delta().unwrap();
+    assert!(bound_into_a(&store), "binding must be recovered");
+    let cleared = store.pending_delta().unwrap();
+    assert!(cleared.dependent_files.is_empty() && cleared.def_names.is_empty());
 }

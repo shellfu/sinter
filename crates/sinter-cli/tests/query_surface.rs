@@ -71,9 +71,10 @@ fn query_affected_path_impact() {
     assert!(out.contains("entry"), "{out}");
     assert!(out.contains("test_entry"), "{out}");
 
-    // evidence filter: scip-only finds nothing (no index present).
+    // evidence filter: scip-only finds nothing (no index present) —
+    // grep-style exit 1 for a valid query with no results.
     let (ok, out) = sinter(repo, &["affected", "core_fn", "--evidence", "scip"]);
-    assert!(ok, "{out}");
+    assert!(!ok, "{out}");
     assert!(out.contains("0 dependents"), "{out}");
 
     // path: entry reaches core_fn through the import-evidence call edge.
@@ -175,15 +176,158 @@ fn affected_through_dyn_dispatch() {
     assert!(out.contains("/dynamic"), "{out}");
 
     // Honesty: excluding dynamic evidence excludes the fan-out.
-    let (ok, out) = sinter(
+    let (_, out) = sinter(
         repo,
         &["affected", "Dog::speak", "--evidence", "import,scope,scip"],
     );
-    assert!(ok, "{out}");
     assert!(!out.contains("announce"), "{out}");
 
     // --certain also excludes it (Dynamic is Inferred by construction).
-    let (ok, out) = sinter(repo, &["affected", "Dog::speak", "--certain"]);
-    assert!(ok, "{out}");
+    let (_, out) = sinter(repo, &["affected", "Dog::speak", "--certain"]);
     assert!(!out.contains("announce"), "{out}");
+}
+
+fn sinter_code(repo: &Path, args: &[&str]) -> (Option<i32>, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
+        .args(args)
+        .env("HOME", repo)
+        .env("USERPROFILE", repo)
+        .current_dir(repo)
+        .output()
+        .expect("run sinter");
+    (
+        out.status.code(),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )
+}
+
+/// New surface: `--json` on the read commands (mirroring the MCP tool
+/// shapes), grep-style exit codes, `--limit` on affected, and `--repo`
+/// accepted by lifecycle commands.
+#[test]
+fn json_flags_exit_codes_and_repo_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(
+        repo.join("src/lib.rs"),
+        "mod util;\nuse crate::util::core_fn;\n\n/// Entry point.\npub fn entry() -> u32 {\n    core_fn()\n}\n\npub fn other_entry() -> u32 {\n    core_fn()\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("src/util.rs"),
+        "/// The core.\npub fn core_fn() -> u32 {\n    41\n}\n",
+    )
+    .unwrap();
+    git(repo, &["init", "-q"]);
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "init"]);
+
+    // Lifecycle commands accept --repo (positional still works elsewhere).
+    let (code, out) = sinter_code(repo, &["build", "--repo", "."]);
+    assert_eq!(code, Some(0), "{out}");
+    // Both at once is a usage error.
+    let (code, _) = sinter_code(repo, &["build", ".", "--repo", "."]);
+    assert_eq!(code, Some(2));
+
+    // query --json: MCP `query` shape.
+    let (code, out) = sinter_code(repo, &["query", "core_fn", "--json"]);
+    assert_eq!(code, Some(0), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["exact"], serde_json::json!(true), "{out}");
+    assert_eq!(v["results"][0]["name"], serde_json::json!("core_fn"));
+
+    // show --json: MCP `show` shape.
+    let (code, out) = sinter_code(repo, &["show", "core_fn", "--json"]);
+    assert_eq!(code, Some(0), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["symbol"]["name"], serde_json::json!("core_fn"));
+    assert!(v["incoming"].as_array().is_some(), "{out}");
+    // Every edge exposes `site`; the call from `entry` names its call site
+    // (`core_fn()` on line 6 of src/lib.rs).
+    let entry_call = v["incoming"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| {
+            e["symbol"].as_str().is_some_and(|s| s.ends_with("entry")) && e["relation"] == "calls"
+        })
+        .unwrap_or_else(|| panic!("no call edge from entry: {out}"));
+    assert_eq!(
+        entry_call["site"],
+        serde_json::json!("src/lib.rs:6"),
+        "{out}"
+    );
+
+    // affected --json: MCP `affected` shape, terse entries.
+    let (code, out) = sinter_code(repo, &["affected", "core_fn", "--json"]);
+    assert_eq!(code, Some(0), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v["total"].as_u64().unwrap() >= 2, "{out}");
+    assert!(v["dependents"][0]["s"].is_string(), "{out}");
+
+    // affected --limit: truncation footer, ask-style.
+    let (code, out) = sinter_code(repo, &["affected", "core_fn", "--limit", "1"]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("more dependents below cutoff"), "{out}");
+    assert!(out.contains("--limit"), "{out}");
+
+    // path --json: MCP `path` shape.
+    let (code, out) = sinter_code(repo, &["path", "entry", "core_fn", "--json"]);
+    assert_eq!(code, Some(0), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["found"], serde_json::json!(true), "{out}");
+    assert!(v["steps"][0]["relation"].is_string(), "{out}");
+    // Each hop names where it is written.
+    assert_eq!(
+        v["steps"][0]["site"],
+        serde_json::json!("src/lib.rs:6"),
+        "{out}"
+    );
+
+    // impact --json: the ImpactReport shape.
+    let (code, out) = sinter_code(repo, &["impact", "HEAD", "--json"]);
+    assert_eq!(code, Some(0), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v["changed_symbols"].is_array(), "{out}");
+
+    // Grep-style exit codes: 1 = valid query, no results.
+    let (code, out) = sinter_code(repo, &["show", "no_such_symbol_zzqx"]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains("sinter ask"), "no concept-search hint: {out}");
+    let (code, _) = sinter_code(repo, &["query", "zzqxzzqx"]);
+    assert_eq!(code, Some(1));
+    let (code, out) = sinter_code(repo, &["path", "core_fn", "entry"]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains("no path"), "{out}");
+    // 2 = usage/execution error (bad evidence kind).
+    let (code, _) = sinter_code(repo, &["affected", "core_fn", "--evidence", "bogus"]);
+    assert_eq!(code, Some(2));
+
+    // map accepts --repo like the other read commands.
+    let (code, out) = sinter_code(repo, &["map", "--repo", "."]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("nodes"), "{out}");
+}
+
+/// Empty graph: read commands say so instead of "no match", build warns.
+#[test]
+fn empty_graph_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::write(repo.join("notes.txt"), "no source here\n").unwrap();
+
+    let (code, out) = sinter_code(repo, &["build"]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("0 source files found under"), "{out}");
+    assert!(out.contains("wrong directory?"), "{out}");
+
+    let (code, out) = sinter_code(repo, &["query", "anything"]);
+    assert_eq!(code, Some(2), "{out}");
+    assert!(out.contains("graph") && out.contains("is empty"), "{out}");
+    assert!(out.contains("right directory"), "{out}");
 }

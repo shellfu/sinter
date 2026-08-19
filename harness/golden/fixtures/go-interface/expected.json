@@ -1,0 +1,29 @@
+{
+  "nodes": [
+    ["file", "speaker.go", "speaker.go"],
+    ["interface", "Speaker", "speaker.go", "Speaker says things."],
+    ["method", "Speaker::Speak", "speaker.go"],
+    ["function", "Announce", "speaker.go", "Announce speaks through the interface."],
+    ["file", "dog.go", "dog.go"],
+    ["struct", "Dog", "dog.go", "Dog barks."],
+    ["method", "Dog::Speak", "dog.go", "Speak returns a bark."]
+  ],
+  "contains": [
+    ["speaker.go", "Speaker"],
+    ["Speaker", "Speaker::Speak"],
+    ["speaker.go", "Announce"],
+    ["dog.go", "Dog"],
+    ["dog.go", "Dog::Speak"]
+  ],
+  "references": [
+    ["uses", "Speaker"],
+    ["calls", "Speak"]
+  ],
+  "resolved": [
+    ["scope", "uses", "speaker.go", "Speaker", "speaker.go", "speaker.go"],
+    ["scope", "calls", "Announce", "Speaker::Speak", "speaker.go", "speaker.go"],
+    ["dynamic", "calls", "Speaker::Speak", "Dog::Speak", "speaker.go", "dog.go"],
+    ["dynamic", "implements", "Dog", "Speaker", "dog.go", "speaker.go"]
+  ],
+  "unresolved_count": 0
+}

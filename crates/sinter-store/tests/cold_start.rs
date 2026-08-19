@@ -33,6 +33,7 @@ fn cold_query_under_100ms() {
                 relation: Relation::Calls,
                 evidence: Evidence::Structural,
                 confidence: Confidence::Certain,
+                site: None,
             })
             .unwrap();
         }

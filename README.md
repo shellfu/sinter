@@ -131,6 +131,8 @@ is auditable, in the same spirit as the edges.
 | `sinter show <symbol>` | One-screen orientation card for a symbol or file |
 | `sinter query <symbol>` | Exact + fuzzy symbol search |
 | `sinter affected <symbol>` | Reverse blast radius, evidence-filterable |
+| `sinter deps <symbol>` | Forward blast radius: everything a symbol transitively depends on |
+| `sinter unresolved` | List unresolved references — the graph's honest gaps (`--file`, `--name`) |
 | `sinter path <from> <to>` | Shortest dependency path with per-step evidence |
 | `sinter impact <rev-range>` | Changed symbols → blast radius → affected tests |
 | `sinter serve` | MCP server over stdio (`--repo` for one repo, `--workspace <manifest>` for a cross-repo scope) |
@@ -145,9 +147,12 @@ is auditable, in the same spirit as the edges.
 | `sinter completion <shell>` | Shell completions |
 | `sinter version` | Version, graph schema, language packs |
 
-`affected`, `path`, and every MCP tool accept `--evidence
-scip,import,scope,dynamic` and `--certain` to restrict traversal to stronger
-evidence tiers.
+`affected`, `deps`, and `path` accept `--evidence scip,import,scope,dynamic`
+and `--certain` to restrict traversal to stronger evidence tiers, and
+`--relations calls,uses,imports,implements,extends` to restrict which edge
+relations are followed (e.g. drop file-level import edges from a blast
+radius); their MCP counterparts take the same filters as `evidence` (array),
+`min_confidence: "certain"`, and `relations` (array) parameters.
 
 ## Languages
 
@@ -184,7 +189,7 @@ automatically. Recipe, cache-key guidance, and a copy-paste workflow:
 
 ## Accuracy and performance are measured, not asserted
 
-- **Golden corpus**: 72 hand-verified fixtures across all thirteen languages,
+- **Golden corpus**: hand-verified fixtures (78 at time of writing) across all thirteen languages,
   mined from real-world extraction idioms. Extraction and resolution both
   gate CI at precision/recall 1.0; any change that moves the metric fails
   with the exact missing/extra tuples printed. Expectations derive from
@@ -195,7 +200,10 @@ automatically. Recipe, cache-key guidance, and a copy-paste workflow:
   sync is now a stat-only walk — no file reads, no write transactions —
   measured 46→16ms on this repository and 55→10ms on an 80MB/400-file
   synthetic corpus; the old 73ms 2M-LOC no-op figure predates the stat
-  gate. Enforced by tests in `harness/perf/` and the CI suites.
+  gate. Cold open and incremental-edit budgets are CI-enforced
+  (`crates/sinter-store/tests/cold_start.rs`,
+  `crates/sinter-cli/tests/incremental_build.rs`); the full-build, warm-query,
+  and memory budgets are measured manually per `harness/perf/README.md`.
 
 ## Workspace layout
 

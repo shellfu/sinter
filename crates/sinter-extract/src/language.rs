@@ -138,6 +138,11 @@ pub struct LanguageSpec {
     /// def whose name slugifies to the fragment — and never through the
     /// symbol tiers. Evidence or nothing: a dead link stays unresolved.
     pub file_refs: bool,
+    /// Interface satisfaction is implicit (Go): no syntax names the
+    /// interface at the implementing type, so the resolver runs a
+    /// structural method-set pass instead of `@trait`/`@trait.impl`
+    /// pairing. Pure data; the engine never branches on language name.
+    pub implicit_interfaces: bool,
 }
 
 fn rust_normalize(name: &str) -> String {
@@ -149,6 +154,20 @@ static RUST_MANIFEST: ManifestSpec = ManifestSpec {
     name_key: "name",
     self_names: &["crate"],
     normalize: rust_normalize,
+};
+
+fn identity_normalize(name: &str) -> String {
+    name.to_string()
+}
+
+/// `module example.com/proj` — the declared module path anchors full-path
+/// imports to the repo directory holding go.mod. No self-alias: Go import
+/// paths are always absolute.
+static GO_MANIFEST: ManifestSpec = ManifestSpec {
+    filename: "go.mod",
+    name_key: "module",
+    self_names: &[],
+    normalize: identity_normalize,
 };
 
 fn split_all(path: &str, separators: &[&str]) -> Vec<String> {
@@ -257,8 +276,8 @@ fn go_grammar() -> Language {
 }
 
 /// `src/util.rs` -> ["crate", "util"]; `src/foo/mod.rs` -> ["crate", "foo"].
-// ponytail: single-crate view; multi-crate workspaces collide on "crate" and
-// resolve only unambiguous suffixes. Crate-name mapping lands in Phase 7.
+/// Single-crate view by design: the resolver's manifest-aware `key_of`
+/// replaces the "crate" head with the declared package name in workspaces.
 fn rust_module_path(file: &str) -> Vec<String> {
     let trimmed = file.strip_suffix(".rs").unwrap_or(file);
     let after_src = trimmed.rsplit_once("src/").map_or(trimmed, |(_, r)| r);
@@ -607,6 +626,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         manifest: Some(&RUST_MANIFEST),
         inline: None,
         file_refs: false,
+        implicit_interfaces: false,
     },
     LanguageSpec {
         name: "go",
@@ -619,9 +639,10 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         absolutize: go_absolutize,
         receivers: &[],
         doc_skip_kinds: &[],
-        manifest: None,
+        manifest: Some(&GO_MANIFEST),
         inline: None,
         file_refs: false,
+        implicit_interfaces: true,
     },
     LanguageSpec {
         name: "python",
@@ -637,6 +658,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         manifest: None,
         inline: None,
         file_refs: false,
+        implicit_interfaces: false,
     },
     LanguageSpec {
         name: "typescript",
@@ -652,6 +674,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         manifest: None,
         inline: None,
         file_refs: false,
+        implicit_interfaces: false,
     },
     LanguageSpec {
         name: "bash",
@@ -667,6 +690,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         manifest: None,
         inline: None,
         file_refs: false,
+        implicit_interfaces: false,
     },
     LanguageSpec {
         name: "proto",
@@ -682,6 +706,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         manifest: None,
         inline: None,
         file_refs: false,
+        implicit_interfaces: false,
     },
     LanguageSpec {
         name: "cpp",
@@ -697,6 +722,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         manifest: None,
         inline: None,
         file_refs: false,
+        implicit_interfaces: false,
     },
     LanguageSpec {
         name: "javascript",
@@ -712,6 +738,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         manifest: None,
         inline: None,
         file_refs: false,
+        implicit_interfaces: false,
     },
     LanguageSpec {
         name: "c",
@@ -727,6 +754,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         manifest: None,
         inline: None,
         file_refs: false,
+        implicit_interfaces: false,
     },
     LanguageSpec {
         name: "java",
@@ -742,6 +770,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         manifest: None,
         inline: None,
         file_refs: false,
+        implicit_interfaces: false,
     },
     LanguageSpec {
         name: "csharp",
@@ -757,6 +786,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         manifest: None,
         inline: None,
         file_refs: false,
+        implicit_interfaces: false,
     },
     LanguageSpec {
         name: "sql",
@@ -772,6 +802,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         manifest: None,
         inline: None,
         file_refs: false,
+        implicit_interfaces: false,
     },
     LanguageSpec {
         name: "markdown",
@@ -787,6 +818,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         manifest: None,
         inline: Some(&MARKDOWN_INLINE),
         file_refs: true,
+        implicit_interfaces: false,
     },
 ];
 

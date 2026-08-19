@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::node::NodeId;
+use crate::node::{NodeId, Span};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Relation {
@@ -85,4 +85,25 @@ pub struct Edge {
     pub relation: Relation,
     pub evidence: Evidence,
     pub confidence: Confidence,
+    /// Byte span of the binding reference in the src node's file (the file
+    /// is derivable from `src`). None when no single site exists:
+    /// containment, dynamic fan-out, implements/extends pairing, declared
+    /// links. When several sites bind the same (src, dst, relation,
+    /// evidence), storage keeps ONE representative site — the field is
+    /// last so identity orders before site.
+    pub site: Option<Span>,
+}
+
+impl Edge {
+    /// Identity without the site: two edges equal here are the same
+    /// dependency fact observed at (possibly) different call sites.
+    pub fn identity(&self) -> (&NodeId, &NodeId, Relation, Evidence, Confidence) {
+        (
+            &self.src,
+            &self.dst,
+            self.relation,
+            self.evidence,
+            self.confidence,
+        )
+    }
 }

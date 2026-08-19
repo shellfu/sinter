@@ -17,6 +17,14 @@
   module_name: [(dotted_name) (relative_import)] @import.module
   (wildcard_import) @import.star)
 
+; base classes: reference + inherited-member promotion (@embed, Go-style)
+; + dispatch pairing (@trait/@trait.impl) so overridden methods fan out
+; with dynamic evidence. Plain-identifier bases only; keyword arguments
+; (metaclass=...) are their own nodes and never match.
+(class_definition
+  superclasses: (argument_list
+    (identifier) @ref.use @embed @trait)) @trait.impl
+
 ; docstrings are the doc, overriding preceding # comments
 (function_definition
   body: (block . (expression_statement (string (string_content) @doc))))

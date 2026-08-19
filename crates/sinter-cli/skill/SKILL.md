@@ -39,7 +39,7 @@ integration, ending with a doctor report:
 
 `sinter install enforce --strict` opts into strict enforcement: the first
 raw recursive search (grep/rg or the Grep tool) of a Claude Code session
-is blocked with a redirect to `sinter ask/show/affected/path/impact`;
+is blocked with a redirect to `sinter ask/show/affected/deps/path/impact`;
 running the same search again passes with an advisory nudge, as does
 every later one — sinter-first, grep-second, never grep-never. Strict mode only
 ever denies (it never auto-approves anything); default installs remain
@@ -49,10 +49,13 @@ advisory context injection only.
 
 | Question shape | Command |
 |---|---|
+| Orient in an unfamiliar repo (modules, hubs, doc entry points) | `sinter map --repo <repo>` |
 | Vague/conceptual: "where is the X", "how does Y work" | `sinter ask "<question>" --repo <repo>` |
 | Orient on a found symbol or file | `sinter show <symbol> --repo <repo>` |
 | Exact/fuzzy symbol lookup | `sinter query <symbol> --repo <repo>` |
-| What depends on X / blast radius | `sinter affected <symbol> --repo <repo>` |
+| What depends on X / blast radius (reverse) | `sinter affected <symbol> --repo <repo>` |
+| What does X depend on (forward, before touching X) | `sinter deps <symbol> --repo <repo>` |
+| Where is the graph blind (honesty check, negative proofs) | `sinter unresolved [--file <f>] [--name <n>] --repo <repo>` |
 | How does A reach B | `sinter path <A> <B> --repo <repo>` |
 | What does this commit/diff/PR affect downstream ("what changed recently and what does it touch") | `sinter impact <rev-range> --repo <repo>` (e.g. `HEAD~1..HEAD`) — prefer over `git show`/`git log` archaeology |
 | Where do open PRs collide / merge risk | `sinter overlap <base...prA> <base...prB> ... --repo <repo>` |
@@ -61,16 +64,29 @@ advisory context injection only.
 Ask one topic per `ask` call, phrased with the words you expect in an
 identifier or doc comment — a multi-topic question ("what documentation
 describes X, Y, or Z?") dilutes ranking and earns a weak-match warning.
-Add `--json` to `ask` for structured output. `affected`/`path` accept
-`--evidence scip,import,scope,dynamic` and `--certain` to restrict to stronger
-evidence tiers.
+
+Every read verb takes `--json` (same shape as the MCP tool; repo scope
+only — conflicts with `--workspace`) and exits grep-style: 0 results
+found, 1 valid query with no results, 2 error — branch on the exit code
+instead of parsing. `affected`/`path`/`deps` accept
+`--evidence scip,import,scope,dynamic` and `--certain` (stronger evidence
+tiers) plus `--relations calls,uses,imports,implements,extends` —
+`--relations calls,uses` cuts file-level import noise from a blast
+radius; implements/extends follows interface fan-out.
 
 ## Reading results
 
 - Every `ask` hit shows match provenance (`[name+doc 2/2 terms]`) and
   file:line with signature/doc — usually no file read is needed to answer.
+- Edges carry the call site: dependents and path steps print the
+  `file:line` where the reference occurs (`site` in JSON) — jump straight
+  there instead of re-searching.
 - Edges carry evidence; "unresolved" is a real answer meaning no evidence
-  binds the reference — say so rather than guessing.
+  binds the reference — say so rather than guessing. `affected`/`deps`
+  print an unresolved-refs note when their list may be incomplete;
+  `sinter unresolved` lists the gaps themselves.
+- `affected`/`deps` cap output at `--limit` (default 200) and print a
+  footer with the exact `--limit` rerun that widens it.
 - Symbol ambiguity returns a candidate list; pick the qualified name or
   node id and rerun rather than assuming.
 

@@ -11,6 +11,19 @@ use sinter_store::{EdgeFilter, Store};
 
 use crate::pipeline;
 
+/// Valid query, no results. Read commands exit 1 (grep-style) when the
+/// error chain carries this; every other error is exit 2.
+#[derive(Debug)]
+pub struct NoMatch(pub String);
+
+impl std::fmt::Display for NoMatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for NoMatch {}
+
 pub fn open_store(repo: &Path) -> Result<Store> {
     let repo = pipeline::discover_root(repo);
     let repo = repo
@@ -25,7 +38,16 @@ pub fn open_store(repo: &Path) -> Result<Store> {
     // commits (hooks cover commit-time; this covers uncommitted edits).
     // A fresh corpus is a scan-floor no-op.
     pipeline::build(&repo, None)?;
-    Ok(Store::open(&path)?)
+    let store = Store::open(&path)?;
+    // A 0-node graph answers every query with "no match" — say what is
+    // actually wrong instead.
+    if store.node_count()? == 0 {
+        bail!(
+            "graph at {} is empty — was `sinter build` run in the right directory?",
+            path.display()
+        );
+    }
+    Ok(store)
 }
 
 /// Nodes matching a symbol argument: full node id, exact name, or qualified
@@ -73,16 +95,20 @@ pub fn unique_symbol(store: &Store, symbol: &str) -> Result<Node> {
                 list.join("\n")
             )
         }
-        Found::Suggestions(nodes) if nodes.is_empty() => bail!("no symbol matches `{symbol}`"),
+        Found::Suggestions(nodes) if nodes.is_empty() => Err(NoMatch(format!(
+            "no symbol matches `{symbol}` — try `sinter ask \"{symbol}\"` for concept search"
+        ))
+        .into()),
         Found::Suggestions(nodes) => {
             let list: Vec<String> = nodes
                 .iter()
                 .map(|n| format!("  {}", qualified_of(n.id.as_str())))
                 .collect();
-            bail!(
+            Err(NoMatch(format!(
                 "no exact match for `{symbol}`; close names:\n{}",
                 list.join("\n")
-            )
+            ))
+            .into())
         }
     }
 }
@@ -155,7 +181,29 @@ pub fn edge_filter(evidence: &[String], certain: bool) -> Result<EdgeFilter> {
     Ok(EdgeFilter {
         evidence,
         min_confidence: certain.then_some(Confidence::Certain),
+        relations: None,
     })
+}
+
+/// --relations names to the traversal's relation set; empty = all.
+pub fn relation_set(relations: &[String]) -> Result<Option<BTreeSet<sinter_core::Relation>>> {
+    if relations.is_empty() {
+        return Ok(None);
+    }
+    let mut set = BTreeSet::new();
+    for r in relations {
+        set.insert(match r.as_str() {
+            "calls" => sinter_core::Relation::Calls,
+            "uses" => sinter_core::Relation::Uses,
+            "imports" => sinter_core::Relation::Imports,
+            "implements" => sinter_core::Relation::Implements,
+            "extends" => sinter_core::Relation::Extends,
+            other => {
+                bail!("unknown relation `{other}` (calls, uses, imports, implements, extends)")
+            }
+        });
+    }
+    Ok(Some(set))
 }
 
 /// Content-bearing one-node listing (R3): the reader should not need to

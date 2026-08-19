@@ -1,0 +1,161 @@
+//! Surface gate for the forward-traversal and gap-listing verbs: deps,
+//! unresolved, and --relations filtering on the traversal verbs.
+
+use std::path::Path;
+use std::process::Command;
+
+fn sinter(repo: &Path, args: &[&str]) -> (bool, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
+        .args(args)
+        .env("HOME", repo)
+        .env("USERPROFILE", repo)
+        .current_dir(repo)
+        .output()
+        .expect("run sinter");
+    (
+        out.status.success(),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )
+}
+
+fn build_fixture(repo: &Path) {
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(
+        repo.join("src/lib.rs"),
+        "mod util;\nuse crate::util::core_fn;\n\n/// Entry point.\npub fn entry() -> u32 {\n    core_fn()\n}\n\npub fn unrelated() -> u32 {\n    missing_fn()\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("src/util.rs"),
+        "/// The core.\npub fn core_fn() -> u32 {\n    helper()\n}\n\n/// The helper.\npub fn helper() -> u32 {\n    41\n}\n",
+    )
+    .unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+}
+
+#[test]
+fn deps_walks_forward_transitively() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    build_fixture(repo);
+
+    // entry -> core_fn -> helper, cross-file, depth-annotated.
+    let (ok, out) = sinter(repo, &["deps", "entry"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("dependencies of"), "{out}");
+    assert!(out.contains("core_fn"), "{out}");
+    assert!(out.contains("helper"), "{out}");
+
+    // JSON mirrors the MCP shape.
+    let (ok, out) = sinter(repo, &["deps", "entry", "--json"]);
+    assert!(ok, "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+    assert!(v["total"].as_u64().unwrap() >= 2, "{out}");
+    assert!(
+        v["dependencies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["s"].as_str().unwrap().contains("helper"))
+    );
+
+    // Leaf symbol: valid query, no results — grep-style exit 1.
+    let (ok, out) = sinter(repo, &["deps", "helper"]);
+    assert!(!ok, "{out}");
+    assert!(out.contains("0 dependencies"), "{out}");
+
+    // Unknown symbol: exit 1 with suggestions path (NoMatch).
+    let (ok, out) = sinter(repo, &["deps", "no_such_symbol_here"]);
+    assert!(!ok, "{out}");
+
+    // --limit footer names the widening command.
+    let (ok, out) = sinter(repo, &["deps", "entry", "--limit", "1"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("more dependencies below cutoff"), "{out}");
+}
+
+#[test]
+fn relations_filter_restricts_traversal() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    build_fixture(repo);
+
+    // calls-only still reaches the call chain.
+    let (ok, out) = sinter(repo, &["deps", "entry", "--relations", "calls"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("core_fn"), "{out}");
+
+    // affected with calls-only reaches entry.
+    let (ok, out) = sinter(repo, &["affected", "core_fn", "--relations", "calls"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("entry"), "{out}");
+    // The relation column only ever shows admitted relations.
+    assert!(!out.contains("[imports/"), "{out}");
+    assert!(!out.contains("[uses/"), "{out}");
+
+    // An unknown relation is a usage error (exit 2, named in the message).
+    let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
+        .args(["affected", "core_fn", "--relations", "bogus"])
+        .env("HOME", repo)
+        .env("USERPROFILE", repo)
+        .current_dir(repo)
+        .output()
+        .expect("run sinter");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("unknown relation"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // path accepts the flag too.
+    let (ok, out) = sinter(repo, &["path", "entry", "core_fn", "--relations", "calls"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("-[calls/"), "{out}");
+}
+
+#[test]
+fn unresolved_lists_and_filters_gaps() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    build_fixture(repo);
+
+    // missing_fn is extracted but never bound — it must be listed with
+    // its site and enclosing definition.
+    let (ok, out) = sinter(repo, &["unresolved"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("unresolved reference(s)"), "{out}");
+    assert!(out.contains("missing_fn"), "{out}");
+    assert!(out.contains("unrelated"), "{out}");
+
+    // --name narrows; a name with no gaps is exit 1.
+    let (ok, out) = sinter(repo, &["unresolved", "--name", "missing_fn"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("missing_fn"), "{out}");
+    let (ok, _) = sinter(repo, &["unresolved", "--name", "definitely_absent"]);
+    assert!(!ok);
+
+    // --file narrows to one file's gaps.
+    let (ok, out) = sinter(repo, &["unresolved", "--file", "src/util.rs"]);
+    assert!(!ok, "{out}");
+    assert!(out.contains("0 unresolved"), "{out}");
+
+    // JSON carries the same entries.
+    let (ok, out) = sinter(repo, &["unresolved", "--json"]);
+    assert!(ok, "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+    assert!(v["total"].as_u64().unwrap() >= 1, "{out}");
+    assert!(
+        v["unresolved"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["name"].as_str() == Some("missing_fn")),
+        "{out}"
+    );
+}

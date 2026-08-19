@@ -1,0 +1,21 @@
+{
+  "nodes": [
+    ["file", "acme.go", "acme.go"],
+    ["function", "Version", "acme.go", "Version reports the library version."],
+    ["file", "cmd/tool/main.go", "cmd/tool/main.go"],
+    ["function", "Run", "cmd/tool/main.go", "Run prints the version."]
+  ],
+  "contains": [
+    ["acme.go", "Version"],
+    ["cmd/tool/main.go", "Run"]
+  ],
+  "references": [
+    ["imports", "example.com/acme"],
+    ["calls", "Version"]
+  ],
+  "resolved": [
+    ["import", "imports", "cmd/tool/main.go", "acme.go"],
+    ["import", "calls", "Run", "Version", "cmd/tool/main.go", "acme.go"]
+  ],
+  "unresolved_count": 0
+}

@@ -56,12 +56,16 @@ fn serve(repo: &Path, requests: &[String]) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn call(id: u64, args: serde_json::Value) -> String {
+fn call_tool(id: u64, name: &str, args: serde_json::Value) -> String {
     serde_json::json!({
         "jsonrpc": "2.0", "id": id, "method": "tools/call",
-        "params": {"name": "affected", "arguments": args}
+        "params": {"name": name, "arguments": args}
     })
     .to_string()
+}
+
+fn call(id: u64, args: serde_json::Value) -> String {
+    call_tool(id, "affected", args)
 }
 
 fn body(response: &serde_json::Value) -> &str {
@@ -112,4 +116,106 @@ fn affected_is_terse_capped_and_batchable() {
     let results = v["results"].as_array().unwrap();
     assert_eq!(results.len(), 2, "{v}");
     assert!(results.iter().all(|r| r.get("error").is_none()), "{v}");
+}
+
+/// The repo surface lists map and overlap; map is a real orientation card;
+/// unknown-symbol errors carry a recovery hint; overlap validates arity.
+#[test]
+fn map_tool_and_error_hints() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = build_repo(dir.path());
+    let responses = serve(
+        &repo,
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.to_string(),
+            call_tool(2, "map", serde_json::json!({})),
+            call_tool(3, "show", serde_json::json!({"symbol": "NoSuchThingZz"})),
+            call_tool(4, "overlap", serde_json::json!({"ranges": ["only-one"]})),
+        ],
+    );
+
+    let names: Vec<&str> = responses[0]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    for expected in [
+        "map", "ask", "show", "query", "affected", "path", "impact", "overlap",
+    ] {
+        assert!(names.contains(&expected), "missing {expected}: {names:?}");
+    }
+
+    // map: totals, modules, and hubs (Base has four dependents).
+    let v: serde_json::Value = serde_json::from_str(body(&responses[1])).unwrap();
+    assert!(v["nodes"].as_u64().unwrap() > 0, "{v}");
+    assert!(!v["modules"].as_array().unwrap().is_empty(), "{v}");
+    assert!(
+        v["hubs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["name"].as_str().unwrap().contains("Base")),
+        "{v}"
+    );
+
+    // Unknown symbol with no close names: point at concept search —
+    // the MCP hint, and only that one (no leftover CLI-flavored hint).
+    let msg = responses[2]["error"]["message"].as_str().unwrap();
+    assert!(msg.contains("ask tool"), "no recovery hint: {msg}");
+    assert!(
+        !msg.contains("sinter ask"),
+        "CLI hint should be replaced, not doubled: {msg}"
+    );
+
+    // Overlap needs at least two ranges.
+    let msg = responses[3]["error"]["message"].as_str().unwrap();
+    assert!(msg.contains("two rev-ranges"), "{msg}");
+}
+
+/// Two identical rev ranges collide on every touched symbol: risk high.
+#[test]
+fn overlap_ranks_pairwise_risk() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = build_repo(dir.path());
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["add", "."]);
+    git(&["commit", "-qm", "base"]);
+    let lib = std::fs::read_to_string(repo.join("lib.go")).unwrap();
+    std::fs::write(repo.join("lib.go"), lib.replace("return 1", "return 10")).unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "change Base"]);
+
+    let responses = serve(
+        &repo,
+        &[call_tool(
+            1,
+            "overlap",
+            serde_json::json!({"ranges": ["a=HEAD~1..HEAD", "b=HEAD~1..HEAD"]}),
+        )],
+    );
+    let v: serde_json::Value = serde_json::from_str(body(&responses[0])).unwrap();
+    assert_eq!(v["changes"].as_array().unwrap().len(), 2, "{v}");
+    let pair = &v["pairs"].as_array().unwrap()[0];
+    assert_eq!(pair["risk"], "high", "{v}");
+    assert!(
+        pair["direct"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s.as_str().unwrap().contains("Base")),
+        "{v}"
+    );
 }

@@ -316,11 +316,21 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
 
     // Derive: replace per-file state, then re-resolve the invalidated set.
     let delta = store.update_files(&changed_facts, &removed)?;
-    let mut affected: BTreeSet<String> = store.ref_files(&delta.def_names)?;
+    // Only file names are needed past this point; the full facts (gigabytes
+    // on large corpora) drop here instead of living to end of build.
+    let changed_names: Vec<String> = changed_facts.iter().map(|f| f.file.clone()).collect();
+    drop(changed_facts);
+    // Crash residue: deltas from a build that died before its resolution
+    // pass committed. Their dependent files' in-edges are already gone and
+    // cannot be recomputed this pass — replaying the persisted set is the
+    // only way those bindings come back without a forced full rebuild.
+    let residue = store.pending_delta()?;
+    let mut invalidated_names = delta.def_names;
+    invalidated_names.extend(residue.def_names);
+    let mut affected: BTreeSet<String> = store.ref_files(&invalidated_names)?;
     affected.extend(delta.dependent_files.iter().cloned());
-    for facts in &changed_facts {
-        affected.insert(facts.file.clone());
-    }
+    affected.extend(residue.dependent_files);
+    affected.extend(changed_names.iter().cloned());
     for file in &removed {
         affected.remove(file);
     }
@@ -363,9 +373,13 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
     let mut dep_packages = 0usize;
     if !affected.is_empty() {
         // Dynamic fan-out edges are re-derived from their dst files' facts;
-        // any such file losing edges here must join the set (its unchanged
-        // refs re-resolve to identical edges — a set-semantics no-op).
-        let dynamic_dst = store.remove_resolution_edges(&affected)?;
+        // any such file losing edges must join the set (its unchanged refs
+        // re-resolve to identical edges — a set-semantics no-op). Read-only
+        // lookahead: the actual edge teardown commits atomically with the
+        // re-derived edges in apply_resolution below, so no crash window
+        // exists between losing old bindings and gaining new ones.
+        let teardown_files = affected.clone();
+        let dynamic_dst = store.dynamic_edge_dst_files(&affected)?;
         affected.extend(dynamic_dst);
         // Stored dep-surface nodes (D29) are scip output, never internal-
         // evidence input: feeding them back would let scope/import bind to
@@ -394,9 +408,12 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
         }
 
         // Internal evidence first; SCIP then binds what is left, moving
-        // each hit out of its unresolved bucket.
+        // each hit out of its unresolved bucket. One index serves both
+        // the reference pass and the dynamic fan-out pass.
+        let resolve_index =
+            sinter_resolve::Index::build(&nodes, &all_imports, &locals, &embeds, &module_roots);
         let (bindings, resolved_stats, internal_indices) =
-            sinter_resolve::resolve(&nodes, &refs, &locals, &all_imports, &embeds, &module_roots);
+            sinter_resolve::resolve(&resolve_index, &refs);
         stats = resolved_stats;
         let internal_set: HashSet<usize> = internal_indices.into_iter().collect();
         let mut resolved_idx: HashSet<usize> = HashSet::new();
@@ -408,10 +425,9 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
             edges.push(binding.edge);
         }
         edges.extend(sinter_resolve::dynamic_edges(
+            &resolve_index,
             &nodes,
             &trait_impls,
-            &all_imports,
-            &module_roots,
         ));
         // Dep-surface facts derived this pass: pseudo-file -> its nodes.
         let mut dep_derived: HashMap<String, Vec<sinter_core::Node>> = HashMap::new();
@@ -547,8 +563,8 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
         if !dep_changed.is_empty() || !dep_removed.is_empty() {
             // update_files tears down every in-edge of a replaced file's
             // nodes, including binds from files outside this pass. Snapshot
-            // those and re-insert them below; affected files' binds were
-            // already torn (remove_resolution_edges) and re-derived above.
+            // those and re-insert them below; affected files' binds are
+            // torn down inside apply_resolution and re-derived above.
             for facts in &dep_changed {
                 for node in dep_stored.get(&facts.file).into_iter().flatten() {
                     for edge in store.in_edges(&node.id)? {
@@ -571,11 +587,13 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
             .filter(|(i, _)| !resolved_idx.contains(i))
             .map(|(_, r)| r.clone())
             .collect();
-        store.insert_edges(&edges)?;
-        store.replace_unresolved(&affected, &unresolved)?;
+        // One transaction: resolution-edge teardown + re-derived edge
+        // insert + unresolved replace. The lethal crash window (teardown
+        // committed, edges not) is gone by construction.
+        store.apply_resolution(&teardown_files, &edges, &affected, &unresolved)?;
     }
 
-    if !failures.is_empty() && changed_facts.is_empty() && changed_files.len() == failures.len() {
+    if !failures.is_empty() && changed_names.is_empty() && changed_files.len() == failures.len() {
         bail!(
             "every changed file failed extraction; first: {:?}",
             failures[0]
@@ -588,7 +606,7 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
     // files (same hash, new mtime/len) whose stamp must refresh or every
     // future scan would re-hash them forever. One write per real touch;
     // a fully clean build commits nothing and opens no write transaction.
-    let derived: HashSet<&str> = changed_facts.iter().map(|f| f.file.as_str()).collect();
+    let derived: HashSet<&str> = changed_names.iter().map(String::as_str).collect();
     let stamp_rows: Vec<(String, FileStamp)> = hashes
         .iter()
         .filter(|(f, s)| {
@@ -602,18 +620,22 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
     store.commit_stamps(&stamp_rows)?;
     store.set_resolve_fingerprint("scip", scip_fingerprint.as_deref())?;
     store.set_resolve_fingerprint("module_roots", roots_fingerprint.as_deref())?;
+    // Everything above is committed; the crash-recovery intent has served
+    // its purpose. (A crash between the stamps and here replays some files
+    // redundantly next build — idempotent, same edges.)
+    store.clear_pending_delta()?;
 
     // Reclaim free pages after bulk (re)builds; never on incremental
     // updates — compaction rewrites the file and would blow the <1s
     // one-file-edit budget. Half the redb file was page slack on the
     // benchmark corpus before this.
-    if changed_facts.len() * 2 >= hashes.len() && !changed_facts.is_empty() {
+    if changed_names.len() * 2 >= hashes.len() && !changed_names.is_empty() {
         store.compact()?;
     }
 
     Ok(BuildReport {
         scanned: hashes.len(),
-        changed: changed_facts.len(),
+        changed: changed_names.len(),
         removed: removed.len(),
         reresolved_files: affected.len(),
         syntax_error_files,
