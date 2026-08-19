@@ -46,7 +46,7 @@ test-golden: ## Golden corpus only: extraction + resolution accuracy (P/R 1.0 ga
 .PHONY: test-scale
 test-scale: ## 500k-node scale exercise + incremental gate, release mode (nightly CI job)
 	cargo test --release -p sinter-store --test scale -- --ignored --nocapture
-	cargo test --release -p sinter-cli --test incremental_build -- --nocapture
+	cargo test --release -p sinter-io --test incremental_build -- --nocapture
 
 # ------------------------------------------------------------------ hygiene
 
@@ -97,7 +97,7 @@ bench: release ## Manual perf check on REPO: full build, then no-op rebuild timi
 .PHONY: version
 version: ## Print the workspace version (source of truth: Cargo.toml [workspace.package])
 	@cargo metadata --no-deps --format-version 1 \
-		| grep -o '"name":"sinter-cli","version":"[^"]*"' \
+		| grep -o '"name":"sinter-io","version":"[^"]*"' \
 		| head -1 | sed 's/.*"version":"\([^"]*\)"/\1/'
 
 .PHONY: bump

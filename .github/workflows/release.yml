@@ -34,7 +34,7 @@ jobs:
       - run: rustup target add ${{ matrix.target }}
       - if: contains(matrix.target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - run: cargo build --release --target ${{ matrix.target }} -p sinter-cli
+      - run: cargo build --release --target ${{ matrix.target }} -p sinter-io
       - name: package
         if: runner.os != 'Windows'
         run: |
