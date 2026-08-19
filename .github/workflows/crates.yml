@@ -1,0 +1,37 @@
+# Publish all five crates to crates.io on release, via Trusted
+# Publishing (OIDC — no long-lived token exists anywhere). Each crate
+# must have this repo+workflow registered as a trusted publisher on
+# crates.io. Already-published versions are skipped so reruns are green.
+name: crates
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - name: publish in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          version="$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
+          for p in sinter-core sinter-store sinter-extract sinter-resolve sinter-io; do
+            status="$(curl -s -o /dev/null -w '%{http_code}' \
+              -A 'sinter-release (github actions)' \
+              "https://crates.io/api/v1/crates/$p/$version")"
+            if [ "$status" = "200" ]; then
+              echo "$p $version already published — skipping"
+              continue
+            fi
+            cargo publish -p "$p"
+          done
