@@ -3,6 +3,7 @@ name = "sinter-extract"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Language-agnostic tree-sitter extraction: languages are data, the engine never forks"
 
 [dependencies]
