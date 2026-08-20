@@ -39,6 +39,7 @@ pub fn run(repo: &Path, from: &str, to: &str, filter: &EdgeFilter, json: bool) -
                 qualified_of(from_node.id.as_str()),
                 qualified_of(to_node.id.as_str())
             );
+            explain_miss(&store, &root, &from_node, &to_node, filter)?;
             if let Some(note) = crate::scip::stale_note(repo) {
                 println!("{note}");
             }
@@ -104,4 +105,61 @@ pub fn run_workspace(
             Ok(true)
         }
     }
+}
+
+/// Why a path search came up empty, in the two numbers an agent needs
+/// next: how far the forward search got, and which edges actually reach
+/// the target (so the query can be rerun from the gap). Dynamic edges
+/// excluded by the filter are named, since trait dispatch is the usual
+/// missing hop.
+fn explain_miss(
+    store: &sinter_store::Store,
+    root: &Path,
+    from: &sinter_core::Node,
+    to: &sinter_core::Node,
+    filter: &EdgeFilter,
+) -> Result<()> {
+    let forward = store.dependencies(&from.id, filter, usize::MAX)?;
+    println!(
+        "  forward search from {} reached {} symbol(s)",
+        qualified_of(from.id.as_str()),
+        forward.len()
+    );
+    let inn = store.in_edges(&to.id)?;
+    let mut reaching: Vec<&sinter_core::Edge> = inn
+        .iter()
+        .filter(|e| e.relation != sinter_core::Relation::Contains)
+        .collect();
+    let excluded = reaching.iter().filter(|e| !filter.admits(e)).count();
+    reaching.retain(|e| filter.admits(e));
+    if reaching.is_empty() {
+        println!(
+            "  nothing reaches {} under this filter",
+            qualified_of(to.id.as_str())
+        );
+    } else {
+        println!(
+            "  {} is reached by ({}):",
+            qualified_of(to.id.as_str()),
+            reaching.len()
+        );
+        for e in reaching.iter().take(8) {
+            let site = crate::render::site_location(root, e)
+                .map(|s| format!(" at {s}"))
+                .unwrap_or_default();
+            println!(
+                "    {} [{}/{}]{site}",
+                qualified_of(e.src.as_str()),
+                e.relation.as_str(),
+                e.evidence.as_str()
+            );
+        }
+        if reaching.len() > 8 {
+            println!("    … (+{})", reaching.len() - 8);
+        }
+    }
+    if excluded > 0 {
+        println!("  {excluded} incoming edge(s) excluded by --evidence/--certain");
+    }
+    Ok(())
 }

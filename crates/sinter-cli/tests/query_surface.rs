@@ -484,4 +484,24 @@ fn show_lists_implementations_and_dispatch() {
     );
     let (_, out) = sinter(repo, &["show", "Dog"]);
     assert!(out.contains("implements       Speak"), "{out}");
+
+    // A miss explains itself: forward reach, and who does reach the target.
+    let (_, out) = sinter(repo, &["path", "Dog::speak", "announce"]);
+    assert!(out.contains("no path Dog::speak -> announce"), "{out}");
+    assert!(
+        out.contains("forward search from Dog::speak reached 0 symbol(s)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("nothing reaches announce under this filter"),
+        "{out}"
+    );
+    let (_, out) = sinter(repo, &["path", "Dog", "Dog::speak"]);
+    assert!(out.contains("Dog::speak is reached by (1):"), "{out}");
+    assert!(out.contains("Speak::speak [calls/dynamic]"), "{out}");
+    let (_, out) = sinter(repo, &["path", "announce", "Dog::speak", "--certain"]);
+    assert!(
+        out.contains("1 incoming edge(s) excluded by --evidence/--certain"),
+        "{out}"
+    );
 }
