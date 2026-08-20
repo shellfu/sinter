@@ -52,6 +52,16 @@ pub struct Reached {
     pub via: Edge,
 }
 
+/// Depth-1 dependents and the distinct files they live in — the "who
+/// actually calls this" number, distinct from the transitive total that
+/// otherwise reads as a caller count.
+pub fn direct_summary(reached: &[Reached]) -> (usize, usize) {
+    let direct: Vec<&Reached> = reached.iter().filter(|r| r.depth == 1).collect();
+    let files: std::collections::HashSet<&str> =
+        direct.iter().map(|r| r.node.file.as_str()).collect();
+    (direct.len(), files.len())
+}
+
 impl Store {
     /// Reverse blast radius: everything transitively depending on `id`
     /// (incoming non-Contains edges), breadth-first, deduplicated.

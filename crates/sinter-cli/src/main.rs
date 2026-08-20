@@ -242,8 +242,8 @@ enum Command {
         /// Traverse across the workspace (path to manifest)
         #[arg(long)]
         workspace: Option<PathBuf>,
-        /// Maximum traversal depth
-        #[arg(long, default_value_t = 10)]
+        /// Maximum traversal depth (1 = direct dependents only)
+        #[arg(long, visible_alias = "depth", default_value_t = 10)]
         max_depth: usize,
         /// Maximum dependents to print
         #[arg(long, default_value_t = 200)]

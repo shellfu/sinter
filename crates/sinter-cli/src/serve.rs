@@ -189,11 +189,14 @@ fn affected_json(
     entries: Vec<Value>,
     files: Value,
     total: usize,
+    direct: (usize, usize),
     limit: usize,
 ) -> Value {
     let mut out = json!({
         "symbol": symbol,
         "total": total,
+        "direct": direct.0,
+        "direct_files": direct.1,
         "unresolved_refs_matching_name": unresolved,
         "by_file": files,
         "dependents": entries,
@@ -275,6 +278,7 @@ fn affected_one(
         entries,
         by_file(reached.iter().map(|r| r.node.file.clone())),
         reached.len(),
+        sinter_store::direct_summary(&reached),
         limit,
     ))
 }
@@ -847,6 +851,15 @@ fn ws_call_tool(manifest: &Path, name: &str, args: &Value) -> Result<Value> {
                     }
                 })
                 .collect();
+            let direct: Vec<_> = reached
+                .iter()
+                .filter(|r| r.parent.0 == member && r.parent.1 == node.id.as_str())
+                .collect();
+            let direct_files = direct
+                .iter()
+                .map(|r| (r.member.as_str(), r.node.file.as_str()))
+                .collect::<std::collections::HashSet<_>>()
+                .len();
             Ok(affected_json(
                 member_node(&node, &member),
                 json!(unresolved),
@@ -854,6 +867,7 @@ fn ws_call_tool(manifest: &Path, name: &str, args: &Value) -> Result<Value> {
                 entries,
                 by_file(reached.iter().map(|r| r.node.file.clone())),
                 reached.len(),
+                (direct.len(), direct_files),
                 limit,
             ))
         }

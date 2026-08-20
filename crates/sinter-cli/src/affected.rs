@@ -63,6 +63,7 @@ pub fn run(
     };
     let mut reached = store.dependents(&node.id, filter, max_depth)?;
     let total = reached.len();
+    let (direct, direct_files) = sinter_store::direct_summary(&reached);
     let unresolved = store.unresolved_named(&node.name)?;
     let root = crate::pipeline::discover_root(repo);
     if json {
@@ -95,6 +96,8 @@ pub fn run(
         let mut out = serde_json::json!({
             "symbol": node_json(&node),
             "total": total,
+            "direct": direct,
+            "direct_files": direct_files,
             "unresolved_refs_matching_name": unresolved,
             "scip_evidence_available": crate::pipeline::scip_index_path(&root).is_some(),
             "by_file": pairs,
@@ -108,10 +111,11 @@ pub fn run(
     }
     reached.truncate(limit);
     println!(
-        "{} dependents of {} ({})",
+        "{} dependents of {} ({}): {direct} direct in {direct_files} file(s), {} transitive",
         total,
         qualified_of(node.id.as_str()),
-        node.file
+        node.file,
+        total - direct,
     );
     // Render as a real tree: each dependent indents under the node it
     // actually reaches (via.dst), not under whatever BFS printed last.

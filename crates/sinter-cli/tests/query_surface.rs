@@ -70,6 +70,26 @@ fn query_affected_path_impact() {
     assert!(ok, "{out}");
     assert!(out.contains("entry"), "{out}");
     assert!(out.contains("test_entry"), "{out}");
+    // Direct callers are stated apart from the transitive total, so a
+    // blast radius never reads as a caller count.
+    assert!(out.contains("3 dependents of core_fn"), "{out}");
+    assert!(out.contains("2 direct in 1 file(s), 1 transitive"), "{out}");
+    let (_, out) = sinter(repo, &["affected", "core_fn", "--depth", "1"]);
+    assert!(
+        out.contains("2 dependents of core_fn") && !out.contains("test_entry"),
+        "{out}"
+    );
+    let (_, out) = sinter(repo, &["affected", "core_fn", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        (
+            v["total"].as_u64(),
+            v["direct"].as_u64(),
+            v["direct_files"].as_u64()
+        ),
+        (Some(3), Some(2), Some(1)),
+        "{out}"
+    );
 
     // evidence filter: scip-only finds nothing (no index present) —
     // grep-style exit 1 for a valid query with no results.
