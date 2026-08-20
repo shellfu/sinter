@@ -331,3 +331,62 @@ fn empty_graph_says_so() {
     assert!(out.contains("graph") && out.contains("is empty"), "{out}");
     assert!(out.contains("right directory"), "{out}");
 }
+
+/// A negative answer over a stale SCIP index is inconclusive, and says so;
+/// over a fresh (or absent) index it stays a plain miss.
+#[test]
+fn negative_answers_flag_stale_scip() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(
+        repo.join("src/lib.rs"),
+        "pub fn entry() -> u32 {\n    core_fn()\n}\n\npub fn core_fn() -> u32 {\n    41\n}\n\npub fn orphan() {}\n",
+    )
+    .unwrap();
+    git(repo, &["init", "-q"]);
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "init"]);
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+
+    // No index: plain miss.
+    let (_, out) = sinter(repo, &["path", "core_fn", "entry"]);
+    assert!(
+        out.contains("no path") && !out.contains("SCIP index stale"),
+        "{out}"
+    );
+
+    // Index older than the source: inconclusive.
+    let index = repo.join(".sinter/index.scip");
+    std::fs::write(&index, b"").unwrap();
+    let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+    std::fs::File::open(&index)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    let (_, out) = sinter(repo, &["path", "core_fn", "entry"]);
+    assert!(
+        out.contains("no path") && out.contains("SCIP index stale"),
+        "{out}"
+    );
+    let (_, out) = sinter(repo, &["affected", "orphan"]);
+    assert!(
+        out.contains("0 dependents") && out.contains("SCIP index stale"),
+        "{out}"
+    );
+    // A hit never carries the note.
+    let (_, out) = sinter(repo, &["path", "entry", "core_fn"]);
+    assert!(!out.contains("SCIP index stale"), "{out}");
+
+    // Index newer than the source: plain miss again.
+    std::fs::File::open(&index)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now())
+        .unwrap();
+    let (_, out) = sinter(repo, &["path", "core_fn", "entry"]);
+    assert!(
+        out.contains("no path") && !out.contains("SCIP index stale"),
+        "{out}"
+    );
+}

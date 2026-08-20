@@ -397,6 +397,10 @@ fn resolution_rust_struct_fn_same_name() {
 fn resolution_rust_multi_impl() {
     check("rust-multi-impl");
 }
+#[test]
+fn resolution_rust_self_method_call() {
+    check("rust-self-method-call");
+}
 
 #[test]
 fn resolution_rust_macro_generated() {

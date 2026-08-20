@@ -1,0 +1,33 @@
+{
+  "nodes": [
+    ["file", "src/lib.rs", "src/lib.rs"],
+    ["module", "types", "src/lib.rs"],
+    ["function", "Engine::run", "src/lib.rs"],
+    ["function", "Engine::run_impl", "src/lib.rs"],
+    ["struct", "Local", "src/lib.rs"],
+    ["function", "Local::outer", "src/lib.rs"],
+    ["function", "Local::inner", "src/lib.rs"],
+    ["file", "src/types.rs", "src/types.rs"],
+    ["struct", "Engine", "src/types.rs"]
+  ],
+  "contains": [
+    ["src/lib.rs", "types"],
+    ["src/lib.rs", "Engine::run"],
+    ["src/lib.rs", "Engine::run_impl"],
+    ["src/lib.rs", "Local"],
+    ["src/lib.rs", "Local::outer"],
+    ["src/lib.rs", "Local::inner"],
+    ["src/types.rs", "Engine"]
+  ],
+  "references": [
+    ["imports", "types::Engine"],
+    ["calls", "run_impl"],
+    ["calls", "inner"]
+  ],
+  "resolved": [
+    ["import", "imports", "src/lib.rs", "Engine", "src/lib.rs", "src/types.rs"],
+    ["scope", "calls", "Engine::run", "Engine::run_impl"],
+    ["scope", "calls", "Local::outer", "Local::inner"]
+  ],
+  "unresolved_count": 0
+}

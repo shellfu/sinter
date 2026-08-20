@@ -809,10 +809,21 @@ fn resolve_one<'a>(
         if spec.receivers.contains(&prefix.as_str())
             && let Some(enclosing) = &r.enclosing
             && let Some((type_prefix, _)) = qualified_of(enclosing.as_str()).rsplit_once("::")
-            && let Some(ty) = index.by_file_qualified.get(&(r.file.as_str(), type_prefix))
         {
-            // Receiver type is in the corpus: any miss is internal.
-            return (index.member_of(ty, &r.name, 4), Evidence::Scope, true);
+            // Sibling method in the same impl block's file: `self.m()`
+            // inside `impl T` binds `T::m` without needing T's definition
+            // in this file (struct in types.rs, impl in lib.rs).
+            let sibling = format!("{type_prefix}::{}", r.name);
+            if let Some(node) = index
+                .by_file_qualified
+                .get(&(r.file.as_str(), sibling.as_str()))
+            {
+                return (Some(node), Evidence::Scope, true);
+            }
+            if let Some(ty) = index.by_file_qualified.get(&(r.file.as_str(), type_prefix)) {
+                // Receiver type is in the corpus: any miss is internal.
+                return (index.member_of(ty, &r.name, 4), Evidence::Scope, true);
+            }
         }
         match index.local_at(&r.file, &prefix, r.span.start) {
             Some(Some(type_name)) => {

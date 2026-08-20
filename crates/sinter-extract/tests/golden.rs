@@ -371,6 +371,10 @@ fn golden_rust_struct_fn_same_name() {
 fn golden_rust_multi_impl() {
     check("rust-multi-impl");
 }
+#[test]
+fn golden_rust_self_method_call() {
+    check("rust-self-method-call");
+}
 
 #[test]
 fn golden_rust_macro_generated() {

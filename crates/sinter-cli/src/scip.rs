@@ -57,7 +57,7 @@ const INDEXERS: &[(&str, &[&str], &str)] = &[
     // sql/bash/proto/markdown: no SCIP indexers exist.
 ];
 
-enum Staleness {
+pub enum Staleness {
     Fresh,
     Missing,
     /// How many source files are newer than the index.
@@ -67,7 +67,7 @@ enum Staleness {
 /// The doctor's staleness notion, reimplemented here so `check` needs
 /// neither a graph nor an indexer: mtime of every language file vs the
 /// index's mtime.
-fn staleness(repo: &Path) -> Staleness {
+pub fn staleness(repo: &Path) -> Staleness {
     let Some(index) = pipeline::scip_index_path(repo) else {
         return Staleness::Missing;
     };
@@ -96,6 +96,18 @@ fn staleness(repo: &Path) -> Staleness {
         Staleness::Fresh
     } else {
         Staleness::Stale(newer)
+    }
+}
+
+/// Footer for a negative query answer (no path, zero dependents): when
+/// the SCIP index is stale the miss is inconclusive, not authoritative —
+/// edges through files newer than the index may simply be unbound.
+pub fn stale_note(repo: &Path) -> Option<String> {
+    match staleness(repo) {
+        Staleness::Stale(n) => Some(format!(
+            "  note: SCIP index stale ({n} source file(s) newer) — edges through those files may be missing; run `sinter scip`"
+        )),
+        Staleness::Fresh | Staleness::Missing => None,
     }
 }
 

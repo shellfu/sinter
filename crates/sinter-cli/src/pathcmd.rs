@@ -39,6 +39,9 @@ pub fn run(repo: &Path, from: &str, to: &str, filter: &EdgeFilter, json: bool) -
                 qualified_of(from_node.id.as_str()),
                 qualified_of(to_node.id.as_str())
             );
+            if let Some(note) = crate::scip::stale_note(repo) {
+                println!("{note}");
+            }
             Ok(false)
         }
         Some(edges) => {

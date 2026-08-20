@@ -387,45 +387,21 @@ pub fn run(repo: &Path, fix: bool) -> Result<bool> {
             ),
         }
     }
-    match crate::pipeline::scip_index_path(&repo) {
-        Some(index) => match stale_since_index(&repo, &index) {
-            0 => r.ok("SCIP index present and fresh (compiler-grade evidence tier active)"),
-            n => r.warn(
-                &format!("SCIP index stale ({n} source files newer than the index)"),
-                "run `sinter scip` (newer files fall back to import/scope evidence until then)",
-            ),
-        },
-        None => r.ok("no SCIP index (optional; `sinter scip` would bind external/method refs)"),
+    match crate::scip::staleness(&repo) {
+        crate::scip::Staleness::Fresh => {
+            r.ok("SCIP index present and fresh (compiler-grade evidence tier active)")
+        }
+        crate::scip::Staleness::Stale(n) => r.warn(
+            &format!("SCIP index stale ({n} source files newer than the index)"),
+            "run `sinter scip` (newer files fall back to import/scope evidence until then)",
+        ),
+        crate::scip::Staleness::Missing => {
+            r.ok("no SCIP index (optional; `sinter scip` would bind external/method refs)")
+        }
     }
 
     r.summary();
     Ok(r.problems == 0)
-}
-
-/// How many language files were modified after the SCIP index was written.
-fn stale_since_index(repo: &Path, index: &Path) -> usize {
-    let Ok(index_mtime) = std::fs::metadata(index).and_then(|m| m.modified()) else {
-        return 0;
-    };
-    let mut newer = 0;
-    for entry in ignore::WalkBuilder::new(repo).build().flatten() {
-        if !entry.file_type().is_some_and(|t| t.is_file()) {
-            continue;
-        }
-        let rel = sinter_core::rel_display(entry.path().strip_prefix(repo).unwrap_or(entry.path()));
-        if rel.starts_with(".sinter/") || sinter_extract::spec_for_path(&rel).is_none() {
-            continue;
-        }
-        if entry
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .is_some_and(|m| m > index_mtime)
-        {
-            newer += 1;
-        }
-    }
-    newer
 }
 
 /// Spawn this binary as the MCP server (registrations say `sinter`; this

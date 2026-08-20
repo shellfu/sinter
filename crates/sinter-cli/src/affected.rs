@@ -159,6 +159,11 @@ pub fn run(
             node.name
         );
     }
+    if total == 0
+        && let Some(note) = crate::scip::stale_note(repo)
+    {
+        println!("{note}");
+    }
     Ok(total > 0)
 }
 
