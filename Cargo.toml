@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.40.0"
+version = "0.40.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/shellfu/sinter"
@@ -25,7 +25,7 @@ proptest = "1"
 tempfile = "3"
 # version alongside path so the crates are publishable to crates.io;
 # `make bump` rewrites these version strings together with the workspace one.
-sinter-core = { version = "0.40.0", path = "crates/sinter-core" }
-sinter-store = { version = "0.40.0", path = "crates/sinter-store" }
-sinter-extract = { version = "0.40.0", path = "crates/sinter-extract" }
-sinter-resolve = { version = "0.40.0", path = "crates/sinter-resolve" }
+sinter-core = { version = "0.40.1", path = "crates/sinter-core" }
+sinter-store = { version = "0.40.1", path = "crates/sinter-store" }
+sinter-extract = { version = "0.40.1", path = "crates/sinter-extract" }
+sinter-resolve = { version = "0.40.1", path = "crates/sinter-resolve" }
