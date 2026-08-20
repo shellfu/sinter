@@ -361,7 +361,9 @@ fn negative_answers_flag_stale_scip() {
     let index = repo.join(".sinter/index.scip");
     std::fs::write(&index, b"").unwrap();
     let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
-    std::fs::File::open(&index)
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&index)
         .unwrap()
         .set_modified(old)
         .unwrap();
@@ -380,7 +382,9 @@ fn negative_answers_flag_stale_scip() {
     assert!(!out.contains("SCIP index stale"), "{out}");
 
     // Index newer than the source: plain miss again.
-    std::fs::File::open(&index)
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&index)
         .unwrap()
         .set_modified(std::time::SystemTime::now())
         .unwrap();
