@@ -82,6 +82,7 @@ fn affected_is_terse_capped_and_batchable() {
             call(1, serde_json::json!({"symbol": "Base"})),
             call(2, serde_json::json!({"symbol": "Base", "limit": 2})),
             call(3, serde_json::json!({"symbols": ["Base", "Helper"]})),
+            call_tool(4, "path", serde_json::json!({"from": "Base", "to": "A3"})),
         ],
     );
 
@@ -105,6 +106,9 @@ fn affected_is_terse_capped_and_batchable() {
     }
     // Root symbol keeps its full node.
     assert!(v["symbol"]["doc"].is_string(), "{text}");
+    // Direct callers stated apart from the transitive total (CLI parity).
+    assert!(v["direct"].as_u64().unwrap() >= 1, "{text}");
+    assert!(v["direct_files"].as_u64().unwrap() >= 1, "{text}");
 
     // (2) limit caps dependents and reports the omission.
     let v: serde_json::Value = serde_json::from_str(body(&responses[1])).unwrap();
@@ -116,6 +120,15 @@ fn affected_is_terse_capped_and_batchable() {
     let results = v["results"].as_array().unwrap();
     assert_eq!(results.len(), 2, "{v}");
     assert!(results.iter().all(|r| r.get("error").is_none()), "{v}");
+
+    // (4) A missed path explains itself (CLI parity): Base never reaches
+    // A3, so the answer carries forward reach, who reaches A3, and the
+    // filter-excluded count.
+    let v: serde_json::Value = serde_json::from_str(body(&responses[3])).unwrap();
+    assert_eq!(v["found"], false, "{v}");
+    assert!(v["miss"]["forward_reached"].is_u64(), "{v}");
+    assert!(v["miss"]["reached_by"].is_array(), "{v}");
+    assert!(v["miss"]["excluded_by_filter"].is_u64(), "{v}");
 }
 
 /// The repo surface lists map and overlap; map is a real orientation card;

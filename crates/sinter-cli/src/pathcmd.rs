@@ -17,19 +17,20 @@ pub fn run(repo: &Path, from: &str, to: &str, filter: &EdgeFilter, json: bool) -
     let root = crate::pipeline::discover_root(repo);
     if json {
         // Same shape as the MCP `path` tool.
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "found": path.is_some(),
-                "steps": path.iter().flatten().map(|e| serde_json::json!({
-                    "from": qualified_of(e.src.as_str()),
-                    "to": qualified_of(e.dst.as_str()),
-                    "relation": e.relation.as_str(),
-                    "evidence": e.evidence.as_str(),
-                    "site": crate::render::site_json(&root, e),
-                })).collect::<Vec<_>>(),
-            }))?
-        );
+        let mut out = serde_json::json!({
+            "found": path.is_some(),
+            "steps": path.iter().flatten().map(|e| serde_json::json!({
+                "from": qualified_of(e.src.as_str()),
+                "to": qualified_of(e.dst.as_str()),
+                "relation": e.relation.as_str(),
+                "evidence": e.evidence.as_str(),
+                "site": crate::render::site_json(&root, e),
+            })).collect::<Vec<_>>(),
+        });
+        if path.is_none() {
+            out["miss"] = miss_json(&root, &explain_miss(&store, &from_node, &to_node, filter)?);
+        }
+        println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(path.is_some());
     }
     match path {
@@ -39,7 +40,12 @@ pub fn run(repo: &Path, from: &str, to: &str, filter: &EdgeFilter, json: bool) -
                 qualified_of(from_node.id.as_str()),
                 qualified_of(to_node.id.as_str())
             );
-            explain_miss(&store, &root, &from_node, &to_node, filter)?;
+            print_miss(
+                &root,
+                &from_node,
+                &to_node,
+                &explain_miss(&store, &from_node, &to_node, filter)?,
+            );
             if let Some(note) = crate::scip::stale_note(repo) {
                 println!("{note}");
             }
@@ -110,29 +116,60 @@ pub fn run_workspace(
 /// Why a path search came up empty, in the two numbers an agent needs
 /// next: how far the forward search got, and which edges actually reach
 /// the target (so the query can be rerun from the gap). Dynamic edges
-/// excluded by the filter are named, since trait dispatch is the usual
+/// excluded by the filter are counted, since trait dispatch is the usual
 /// missing hop.
-fn explain_miss(
+pub struct Miss {
+    pub forward_reached: usize,
+    pub reached_by: Vec<sinter_core::Edge>,
+    pub excluded_by_filter: usize,
+}
+
+pub fn explain_miss(
     store: &sinter_store::Store,
-    root: &Path,
     from: &sinter_core::Node,
     to: &sinter_core::Node,
     filter: &EdgeFilter,
-) -> Result<()> {
-    let forward = store.dependencies(&from.id, filter, usize::MAX)?;
-    println!(
-        "  forward search from {} reached {} symbol(s)",
-        qualified_of(from.id.as_str()),
-        forward.len()
-    );
+) -> Result<Miss> {
+    let forward_reached = store.dependencies(&from.id, filter, usize::MAX)?.len();
     let inn = store.in_edges(&to.id)?;
-    let mut reaching: Vec<&sinter_core::Edge> = inn
+    let candidates: Vec<&sinter_core::Edge> = inn
         .iter()
         .filter(|e| e.relation != sinter_core::Relation::Contains)
         .collect();
-    let excluded = reaching.iter().filter(|e| !filter.admits(e)).count();
-    reaching.retain(|e| filter.admits(e));
-    if reaching.is_empty() {
+    let excluded_by_filter = candidates.iter().filter(|e| !filter.admits(e)).count();
+    let reached_by = candidates
+        .into_iter()
+        .filter(|e| filter.admits(e))
+        .cloned()
+        .collect();
+    Ok(Miss {
+        forward_reached,
+        reached_by,
+        excluded_by_filter,
+    })
+}
+
+/// Same shape for `--json` and the MCP `path` tool.
+pub fn miss_json(root: &Path, miss: &Miss) -> serde_json::Value {
+    serde_json::json!({
+        "forward_reached": miss.forward_reached,
+        "reached_by": miss.reached_by.iter().map(|e| serde_json::json!({
+            "from": qualified_of(e.src.as_str()),
+            "relation": e.relation.as_str(),
+            "evidence": e.evidence.as_str(),
+            "site": crate::render::site_json(root, e),
+        })).collect::<Vec<_>>(),
+        "excluded_by_filter": miss.excluded_by_filter,
+    })
+}
+
+fn print_miss(root: &Path, from: &sinter_core::Node, to: &sinter_core::Node, miss: &Miss) {
+    println!(
+        "  forward search from {} reached {} symbol(s)",
+        qualified_of(from.id.as_str()),
+        miss.forward_reached
+    );
+    if miss.reached_by.is_empty() {
         println!(
             "  nothing reaches {} under this filter",
             qualified_of(to.id.as_str())
@@ -141,9 +178,9 @@ fn explain_miss(
         println!(
             "  {} is reached by ({}):",
             qualified_of(to.id.as_str()),
-            reaching.len()
+            miss.reached_by.len()
         );
-        for e in reaching.iter().take(8) {
+        for e in miss.reached_by.iter().take(8) {
             let site = crate::render::site_location(root, e)
                 .map(|s| format!(" at {s}"))
                 .unwrap_or_default();
@@ -154,12 +191,14 @@ fn explain_miss(
                 e.evidence.as_str()
             );
         }
-        if reaching.len() > 8 {
-            println!("    … (+{})", reaching.len() - 8);
+        if miss.reached_by.len() > 8 {
+            println!("    … (+{})", miss.reached_by.len() - 8);
         }
     }
-    if excluded > 0 {
-        println!("  {excluded} incoming edge(s) excluded by --evidence/--certain");
+    if miss.excluded_by_filter > 0 {
+        println!(
+            "  {} incoming edge(s) excluded by --evidence/--certain",
+            miss.excluded_by_filter
+        );
     }
-    Ok(())
 }

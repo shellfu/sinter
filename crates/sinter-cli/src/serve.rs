@@ -449,16 +449,21 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
             let from = unique_symbol(store, &symbol("from")?)?;
             let to = unique_symbol(store, &symbol("to")?)?;
             let path = store.shortest_path(&from.id, &to.id, &filter)?;
-            Ok(json!({
+            let mut out = json!({
                 "found": path.is_some(),
-                "steps": path.unwrap_or_default().iter().map(|e| json!({
+                "steps": path.iter().flatten().map(|e| json!({
                     "from": qualified_of(e.src.as_str()),
                     "to": qualified_of(e.dst.as_str()),
                     "relation": e.relation.as_str(),
                     "evidence": e.evidence.as_str(),
                     "site": crate::render::site_json(repo, e),
                 })).collect::<Vec<_>>(),
-            }))
+            });
+            if path.is_none() {
+                let miss = crate::pathcmd::explain_miss(store, &from, &to, &filter)?;
+                out["miss"] = crate::pathcmd::miss_json(repo, &miss);
+            }
+            Ok(out)
         }
         other => anyhow::bail!("unknown tool {other}"),
     }
