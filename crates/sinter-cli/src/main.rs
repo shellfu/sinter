@@ -435,18 +435,20 @@ fn main() -> ExitCode {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
     let cli = Cli::parse();
-    // Stale-artifact nudge on every human-facing command: one stderr line
+    // Stale-artifact nudge on maintenance commands only: one stderr line
     // per installed artifact that differs from this binary's embedded
-    // copy. Skipped where stdout/stderr is machine-consumed or the
-    // command is itself the fix.
-    if !matches!(
+    // copy. Query verbs stay clean — agents read stderr with stdout, and
+    // a nag beside every answer obscures the answer. `doctor` owns the
+    // full diagnosis.
+    if matches!(
         cli.command,
-        Command::Completion { .. }
-            | Command::Serve { .. }
-            | Command::Install { .. }
-            | Command::Doctor { .. }
-            | Command::Update { .. }
-            | Command::Uninit { .. }
+        Command::Init { .. }
+            | Command::Build { .. }
+            | Command::Watch { .. }
+            | Command::Hooks { .. }
+            | Command::Scip { .. }
+            | Command::Workspace { .. }
+            | Command::Version
     ) && let Ok(cwd) = std::env::current_dir()
         && update::nudge_due()
     {

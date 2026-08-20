@@ -394,3 +394,41 @@ fn negative_answers_flag_stale_scip() {
         "{out}"
     );
 }
+
+/// Installation drift is reported by maintenance verbs, never beside a
+/// query answer: agents read stderr with stdout, and a nag on every
+/// `show` obscures the result it decorates.
+#[test]
+fn query_verbs_never_nag_about_stale_artifacts() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(
+        repo.join("src/lib.rs"),
+        "pub fn entry() -> u32 {\n    41\n}\n",
+    )
+    .unwrap();
+    // A managed AGENTS.md block with stale contents.
+    std::fs::write(
+        repo.join("AGENTS.md"),
+        "<!-- BEGIN sinter (managed by `sinter install`; edits inside are overwritten) -->\nold\n<!-- END sinter -->\n",
+    )
+    .unwrap();
+    git(repo, &["init", "-q"]);
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "init"]);
+
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("AGENTS.md sinter block is stale"), "{out}");
+
+    for verb in [
+        &["show", "entry"][..],
+        &["ask", "entry"],
+        &["affected", "entry"],
+        &["path", "entry", "entry"],
+    ] {
+        let (_, out) = sinter(repo, verb);
+        assert!(!out.contains("is stale"), "{verb:?} nagged: {out}");
+    }
+}
