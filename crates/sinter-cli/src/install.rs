@@ -157,6 +157,7 @@ pub fn default_dir() -> Option<PathBuf> {
 /// applications and are never edited here.
 pub fn mcp(repo: &Path) -> Result<()> {
     let repo = repo.canonicalize()?;
+    let command = mcp_command()?;
     for path in [repo.join(".mcp.json"), repo.join(".cursor/mcp.json")] {
         std::fs::create_dir_all(path.parent().unwrap())?;
         let mut root: Value = match std::fs::read_to_string(&path) {
@@ -169,7 +170,7 @@ pub fn mcp(repo: &Path) -> Result<()> {
             .entry("mcpServers")
             .or_insert(json!({}));
         root["mcpServers"]["sinter"] = json!({
-            "command": "sinter",
+            "command": command,
             "args": ["serve", "--repo", "."],
         });
         std::fs::write(
@@ -182,8 +183,20 @@ pub fn mcp(repo: &Path) -> Result<()> {
         )?;
         println!("registered sinter MCP server in {}", path.display());
     }
-    codex_mcp(&repo)?;
+    codex_mcp(&repo, &command)?;
     Ok(())
+}
+
+/// The MCP client may be a GUI or background service whose PATH differs
+/// from the shell that installed Sinter. Pin the executable used for this
+/// registration so a required server does not make the client fail at
+/// startup merely because a user-level bin directory is absent from PATH.
+fn mcp_command() -> Result<String> {
+    std::env::current_exe()
+        .context("locate the current sinter executable")?
+        .into_os_string()
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("the current sinter executable path is not valid UTF-8"))
 }
 
 pub(crate) const CODEX_BEGIN: &str =
@@ -193,19 +206,24 @@ pub(crate) const CODEX_END: &str = "# END sinter";
 /// Merge a managed sinter server block into `.codex/config.toml` (marker
 /// replacement, same convention as the AGENTS.md block — no TOML parser
 /// needed for an append-or-replace of our own block).
-fn codex_mcp(repo: &Path) -> Result<()> {
+fn codex_mcp(repo: &Path, command: &str) -> Result<()> {
     let dir = repo.join(".codex");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("config.toml");
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let block = format!(
-        "{CODEX_BEGIN}
-[mcp_servers.sinter]
-command = \"sinter\"
-args = [\"serve\", \"--repo\", \".\"]
-required = true
-{CODEX_END}"
-    );
+    #[derive(serde::Serialize)]
+    struct Server<'a> {
+        command: &'a str,
+        args: [&'static str; 3],
+        required: bool,
+    }
+    let server = toml::to_string(&Server {
+        command,
+        args: ["serve", "--repo", "."],
+        required: true,
+    })
+    .context("serialize the Codex MCP registration")?;
+    let block = format!("{CODEX_BEGIN}\n[mcp_servers.sinter]\n{server}{CODEX_END}");
     let merged = match (existing.find(CODEX_BEGIN), existing.find(CODEX_END)) {
         (Some(start), Some(end)) if end > start => {
             let after = existing[end + CODEX_END.len()..].to_string();

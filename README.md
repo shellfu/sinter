@@ -147,6 +147,10 @@ is auditable, in the same spirit as the edges.
 | `sinter completion <shell>` | Shell completions |
 | `sinter version` | Version, graph schema, language packs |
 
+MCP registrations pin the currently running Sinter executable so desktop
+and background clients do not depend on an interactive shell PATH. Rerun
+`sinter install --mcp` after moving or reinstalling the binary at a new path.
+
 `affected`, `deps`, and `path` accept `--evidence scip,import,scope,dynamic`
 and `--certain` to restrict traversal to stronger evidence tiers, and
 `--relations calls,uses,imports,implements,extends` to restrict which edge
