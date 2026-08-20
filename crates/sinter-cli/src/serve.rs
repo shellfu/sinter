@@ -188,15 +188,16 @@ fn affected_json(
     scip: Option<bool>,
     entries: Vec<Value>,
     files: Value,
-    total: usize,
-    direct: (usize, usize),
+    // (total, direct, files containing a direct dependent)
+    counts: (usize, usize, usize),
     limit: usize,
 ) -> Value {
+    let (total, direct, direct_files) = counts;
     let mut out = json!({
         "symbol": symbol,
         "total": total,
-        "direct": direct.0,
-        "direct_files": direct.1,
+        "direct": direct,
+        "direct_files": direct_files,
         "unresolved_refs_matching_name": unresolved,
         "by_file": files,
         "dependents": entries,
@@ -277,8 +278,10 @@ fn affected_one(
         Some(crate::pipeline::scip_index_path(repo).is_some()),
         entries,
         by_file(reached.iter().map(|r| r.node.file.clone())),
-        reached.len(),
-        sinter_store::direct_summary(&reached),
+        {
+            let (d, f) = sinter_store::direct_summary(&reached);
+            (reached.len(), d, f)
+        },
         limit,
     ))
 }
@@ -866,8 +869,7 @@ fn ws_call_tool(manifest: &Path, name: &str, args: &Value) -> Result<Value> {
                 None,
                 entries,
                 by_file(reached.iter().map(|r| r.node.file.clone())),
-                reached.len(),
-                (direct.len(), direct_files),
+                (reached.len(), direct.len(), direct_files),
                 limit,
             ))
         }

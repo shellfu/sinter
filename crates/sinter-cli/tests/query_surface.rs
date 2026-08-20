@@ -452,3 +452,36 @@ fn query_verbs_never_nag_about_stale_artifacts() {
         assert!(!out.contains("is stale"), "{verb:?} nagged: {out}");
     }
 }
+
+/// `show` names trait implementors and dynamic fan-out explicitly rather
+/// than folding them into used-by / calls tallies.
+#[test]
+fn show_lists_implementations_and_dispatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(
+        repo.join("src/lib.rs"),
+        "pub trait Speak {\n    fn speak(&self);\n}\n\npub struct Dog;\npub struct Cat;\n\nimpl Speak for Dog {\n    fn speak(&self) {}\n}\n\nimpl Speak for Cat {\n    fn speak(&self) {}\n}\n\npub fn announce(s: &dyn Speak) {\n    Speak::speak(s);\n}\n",
+    )
+    .unwrap();
+    git(repo, &["init", "-q"]);
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "init"]);
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+
+    let (_, out) = sinter(repo, &["show", "Speak"]);
+    assert!(out.contains("implemented by (2)    Cat, Dog"), "{out}");
+    let (_, out) = sinter(repo, &["show", "Speak::speak"]);
+    assert!(
+        out.contains("dispatches to (2)    Cat::speak, Dog::speak"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("calls ("),
+        "dynamic edges leaked into calls: {out}"
+    );
+    let (_, out) = sinter(repo, &["show", "Dog"]);
+    assert!(out.contains("implements       Speak"), "{out}");
+}

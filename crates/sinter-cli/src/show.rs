@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::Result;
-use sinter_core::{Edge, Relation, SymbolKind};
+use sinter_core::{Edge, Evidence, Relation, SymbolKind};
 use sinter_resolve::qualified_of;
 
 use crate::lookup::{open_store, unique_symbol};
@@ -127,10 +127,34 @@ pub fn run(repo: &Path, symbol: &str, json: bool) -> Result<bool> {
         );
     }
 
-    // used by: incoming non-contains edges grouped by source file.
+    let implements = group(Relation::Implements);
+    if !implements.is_empty() {
+        println!(
+            "implements       {}    [{}]",
+            names(&implements, |e| e.dst.as_str()),
+            evidence_tally(&implements)
+        );
+    }
+    // Implementors are the answer to "who is behind this trait", not
+    // dependents of it — listed by name, kept out of the used-by tally.
+    let implementors: Vec<&Edge> = inn
+        .iter()
+        .filter(|e| e.relation == Relation::Implements)
+        .collect();
+    if !implementors.is_empty() {
+        println!(
+            "implemented by ({})    {}    [{}]",
+            implementors.len(),
+            names(&implementors, |e| e.src.as_str()),
+            evidence_tally(&implementors)
+        );
+    }
+
+    // used by: incoming non-contains, non-implements edges grouped by
+    // source file.
     let dependents: Vec<&Edge> = inn
         .iter()
-        .filter(|e| e.relation != Relation::Contains)
+        .filter(|e| !matches!(e.relation, Relation::Contains | Relation::Implements))
         .collect();
     if !dependents.is_empty() {
         // Per src file: edge count plus one representative call site (the
@@ -164,9 +188,32 @@ pub fn run(repo: &Path, symbol: &str, json: bool) -> Result<bool> {
         }
     }
 
+    // Dynamic call edges fan a trait method out to its implementations.
+    // Short names collide by construction (every impl is `speak`), so
+    // these are listed qualified, apart from the direct calls.
+    let dispatches: Vec<&Edge> = out
+        .iter()
+        .filter(|e| e.relation == Relation::Calls && e.evidence == Evidence::Dynamic)
+        .collect();
+    if !dispatches.is_empty() {
+        let shown: Vec<&str> = dispatches
+            .iter()
+            .take(EXEMPLARS)
+            .map(|e| qualified_of(e.dst.as_str()))
+            .collect();
+        let mut listed = shown.join(", ");
+        if dispatches.len() > EXEMPLARS {
+            listed.push_str(&format!(", … (+{})", dispatches.len() - EXEMPLARS));
+        }
+        println!("dispatches to ({})    {}", dispatches.len(), listed);
+    }
+
     let calls: Vec<&Edge> = out
         .iter()
-        .filter(|e| matches!(e.relation, Relation::Calls | Relation::Uses))
+        .filter(|e| {
+            matches!(e.relation, Relation::Calls | Relation::Uses)
+                && e.evidence != Evidence::Dynamic
+        })
         .collect();
     if !calls.is_empty() {
         // Exemplars carry their call site (`name (file:line)`) so "A calls
