@@ -3,8 +3,9 @@
 //! classes, constructor-like functions named after the base concept, and a
 //! documented controller class that must rank #1.
 
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn sinter(repo: &Path, args: &[&str]) -> (bool, String) {
@@ -463,8 +464,9 @@ fn doctor_diagnoses_and_clears() {
     assert!(out.contains("graph stale: 1 changed"), "{out}");
 }
 
-/// `sinter install --mcp` merges into .mcp.json without clobbering other
-/// servers; doctor reports the registration.
+/// `sinter install --mcp` merges into every project config without
+/// clobbering other servers. The generated command must survive a client
+/// process whose PATH omits the directory that contains Sinter.
 #[test]
 fn install_mcp_merges_project_config() {
     let dir = tempfile::tempdir().unwrap();
@@ -490,7 +492,52 @@ fn install_mcp_merges_project_config() {
         cfg["mcpServers"]["other"].is_object(),
         "clobbered existing server"
     );
-    assert_eq!(cfg["mcpServers"]["sinter"]["command"], "sinter");
+    let command = cfg["mcpServers"]["sinter"]["command"]
+        .as_str()
+        .expect("sinter MCP command");
+    assert!(Path::new(command).is_absolute(), "{command}");
+
+    let cursor: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(repo.join(".cursor/mcp.json")).unwrap())
+            .unwrap();
+    assert_eq!(cursor["mcpServers"]["sinter"]["command"], command);
+
+    let codex: toml::Value =
+        toml::from_str(&std::fs::read_to_string(repo.join(".codex/config.toml")).unwrap()).unwrap();
+    assert_eq!(
+        codex["mcp_servers"]["sinter"]["command"].as_str(),
+        Some(command)
+    );
+    assert_eq!(
+        codex["mcp_servers"]["sinter"]["required"].as_bool(),
+        Some(true)
+    );
+
+    let args = cfg["mcpServers"]["sinter"]["args"]
+        .as_array()
+        .expect("sinter MCP args")
+        .iter()
+        .map(|arg| arg.as_str().expect("string MCP arg"));
+    let mut launched = Command::new(command)
+        .args(args)
+        .env("PATH", "")
+        .current_dir(repo)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("launch generated MCP command without PATH");
+    writeln!(
+        launched.stdin.as_mut().expect("piped stdin"),
+        r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{}}}}"#
+    )
+    .unwrap();
+    drop(launched.stdin.take());
+    let handshake = launched.wait_with_output().unwrap();
+    assert!(handshake.status.success());
+    assert!(
+        String::from_utf8_lossy(&handshake.stdout).contains("\"result\""),
+        "MCP initialize did not return a result"
+    );
 
     sinter(repo, &["build"]);
     let (_, out) = sinter(repo, &["doctor"]);
@@ -669,7 +716,14 @@ fn init_onboards_repo() {
     );
     let mcp: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(repo.join(".mcp.json")).unwrap()).unwrap();
-    assert_eq!(mcp["mcpServers"]["sinter"]["command"], "sinter");
+    assert!(
+        Path::new(
+            mcp["mcpServers"]["sinter"]["command"]
+                .as_str()
+                .expect("sinter MCP command")
+        )
+        .is_absolute()
+    );
     assert!(out.contains("== doctor =="), "{out}");
     // Idempotent: second init changes nothing and still succeeds.
     let (_, again) = init(&["init"]);
