@@ -7,7 +7,8 @@
 use std::collections::HashMap;
 
 use sinter_core::{
-    Edge, Embed, Evidence, LocalBinding, Node, NodeId, Reference, Relation, SymbolKind, TraitImpl,
+    Edge, Embed, Evidence, FieldBinding, LocalBinding, Node, NodeId, Reference, Relation,
+    SymbolKind, TraitImpl,
 };
 use sinter_extract::{LanguageSpec, ModuleRoot, spec_for_path};
 
@@ -22,8 +23,15 @@ pub struct ResolutionStats {
     pub scope: usize,
     pub import: usize,
     pub scip: usize,
+    /// Corpus-anchored misses subsequently resolved by compiler evidence.
+    /// This is a subset of `scip`/`scip_external`, retained so the anchored
+    /// miss denominator does not absorb compiler hits the heuristic had
+    /// classified as external.
+    pub compiler_rescued_internal: usize,
     /// Evidence pointed into the corpus but binding failed (ambiguity,
-    /// member missing on a known module/type). The accuracy gauge.
+    /// member missing on a known module/type). This is an anchored miss,
+    /// not a complete accuracy measure: the anchoring heuristic can still
+    /// classify a compiler-resolvable corpus reference as external.
     pub unresolved_internal: usize,
     /// No corpus-anchored evidence: external imports, builtins, and
     /// value-receiver calls without type evidence. Dependency-index (SCIP)
@@ -59,16 +67,20 @@ impl ResolutionStats {
         }
     }
 
-    /// Internal-unresolved over corpus-anchored references — the number
-    /// that measures resolver accuracy rather than corpus openness.
-    /// Dep-surface binds are excluded from the denominator: they are not
-    /// corpus-anchored, and counting them would flatter the gauge.
-    pub fn internal_unresolved_rate(&self) -> f64 {
-        let total = self.scope + self.import + self.scip + self.unresolved_internal;
+    /// Anchored unresolved references over references the heuristic itself
+    /// classified as corpus-anchored. This is useful without a compiler
+    /// index, but it is not recall: compiler evidence can prove that some
+    /// references classified as external were actually internal.
+    ///
+    /// `None` means no references were resolved in this pass. Reporting
+    /// that state as 0% would make a no-op build look perfectly accurate.
+    pub fn anchored_unresolved_rate(&self) -> Option<f64> {
+        let total =
+            self.scope + self.import + self.compiler_rescued_internal + self.unresolved_internal;
         if total == 0 {
-            0.0
+            None
         } else {
-            self.unresolved_internal as f64 / total as f64
+            Some(self.unresolved_internal as f64 / total as f64)
         }
     }
 }
@@ -169,6 +181,8 @@ pub struct Index<'a> {
     imports: HashMap<&'a str, Vec<Import>>,
     /// (file, name) -> local bindings.
     locals: HashMap<(&'a str, &'a str), Vec<LocalRange<'a>>>,
+    /// declaring type node id -> fields with written types.
+    fields: HashMap<&'a str, Vec<&'a FieldBinding>>,
     /// owner node id -> embedded type names.
     embeds: HashMap<&'a str, Vec<&'a str>>,
     /// Discovered package roots (manifest-declared name <-> directory).
@@ -265,6 +279,7 @@ fn build_index<'a>(
     nodes: &'a [Node],
     all_imports: &'a [Reference],
     locals: &'a [LocalBinding],
+    fields: &'a [FieldBinding],
     embeds: &'a [Embed],
     roots: &[ModuleRoot],
 ) -> Index<'a> {
@@ -280,6 +295,7 @@ fn build_index<'a>(
         module_defs: HashMap::new(),
         imports: HashMap::new(),
         locals: HashMap::new(),
+        fields: HashMap::new(),
         embeds: HashMap::new(),
         roots: roots.to_vec(),
     };
@@ -431,6 +447,13 @@ fn build_index<'a>(
                 type_name: l.type_name.as_deref(),
             });
     }
+    for field in fields {
+        index
+            .fields
+            .entry(field.owner.as_str())
+            .or_default()
+            .push(field);
+    }
     for e in embeds {
         index
             .embeds
@@ -454,11 +477,12 @@ impl<'a> Index<'a> {
         nodes: &'a [Node],
         all_imports: &'a [Reference],
         locals: &'a [LocalBinding],
+        fields: &'a [FieldBinding],
         embeds: &'a [Embed],
         roots: &[ModuleRoot],
     ) -> Index<'a> {
         let t = std::time::Instant::now();
-        let index = build_index(nodes, all_imports, locals, embeds, roots);
+        let index = build_index(nodes, all_imports, locals, fields, embeds, roots);
         if std::env::var_os("SINTER_TIMING").is_some() {
             eprintln!("index build: {:?}", t.elapsed());
         }
@@ -500,6 +524,74 @@ impl<'a> Index<'a> {
             .collect();
         match in_module.as_slice() {
             [node] => Some(node),
+            _ => None,
+        }
+    }
+
+    /// Resolve a written type through wrappers and named imports. The
+    /// extractor intentionally preserves source spelling; this tier turns
+    /// `&Dog` and `Arc<dyn Harness>` into corpus type candidates without
+    /// claiming that arbitrary expressions have known types.
+    fn visible_types(&self, file: &str, module: &[String], written: &str) -> Vec<&'a Node> {
+        let mut found = Vec::new();
+        for candidate in type_candidates(written) {
+            if let Some(node) = self.type_def(file, module, candidate) {
+                found.push(node);
+                continue;
+            }
+            let imported: Vec<&Node> = self
+                .imports
+                .get(file)
+                .into_iter()
+                .flatten()
+                .filter(|imp| !imp.glob && imp.binding == candidate)
+                .filter_map(|imp| self.resolve_path_defs(&imp.segments, 4))
+                .filter(|n| is_member_scope(n.kind))
+                .collect();
+            if let [node] = imported.as_slice() {
+                found.push(*node);
+            }
+        }
+        found.sort_by_key(|node| node.id.as_str());
+        found.dedup_by_key(|node| node.id.as_str());
+        found
+    }
+
+    /// Resolve a member through a written receiver type. Multi-trait
+    /// objects (`dyn Read + Seek`) bind only when exactly one visible trait
+    /// owns the member; ambiguity remains unresolved.
+    fn member_of_written_type(
+        &self,
+        file: &str,
+        module: &[String],
+        written: &str,
+        member: &str,
+    ) -> (Option<&'a Node>, bool) {
+        let types = self.visible_types(file, module, written);
+        let mut members: Vec<&Node> = types
+            .iter()
+            .filter_map(|ty| self.member_of(ty, member, 4))
+            .collect();
+        members.sort_by_key(|node| node.id.as_str());
+        members.dedup_by_key(|node| node.id.as_str());
+        let target = match members.as_slice() {
+            [member] => Some(*member),
+            _ => None,
+        };
+        (target, !types.is_empty())
+    }
+
+    fn field(&self, owner: &Node, name: &str) -> Option<&'a FieldBinding> {
+        let matching: Vec<&FieldBinding> = self
+            .fields
+            .get(owner.id.as_str())
+            .into_iter()
+            .flatten()
+            .filter(|f| f.name == name)
+            .copied()
+            .collect();
+        match matching.as_slice() {
+            [field] => Some(*field),
             _ => None,
         }
     }
@@ -664,6 +756,49 @@ impl<'a> Index<'a> {
     }
 }
 
+/// Plausible type identifiers, inner-most first. Resolution still requires
+/// a unique corpus definition, so a generic with several type arguments
+/// remains unresolved unless exactly one candidate owns the requested
+/// member.
+const TYPE_KEYWORDS: &[&str] = &[
+    "dyn", "impl", "mut", "const", "ref", "crate", "self", "super", "std", "core", "alloc",
+];
+
+fn type_tokens(text: &str) -> impl DoubleEndedIterator<Item = &str> {
+    text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|token| {
+            !token.is_empty()
+                && !token.chars().next().is_some_and(char::is_numeric)
+                && !TYPE_KEYWORDS.contains(token)
+        })
+}
+
+fn type_candidates(written: &str) -> Vec<&str> {
+    // These wrappers implement transparent receiver dereference. Containers
+    // such as Option/Result/Vec/Mutex deliberately stay outer types: binding
+    // their method calls to the element type would create false edges.
+    const DEREF_WRAPPERS: &[&str] = &["Box", "Arc", "Rc", "Pin", "Cow"];
+    let (head_text, arguments) = written
+        .split_once('<')
+        .map_or((written, None), |(head, rest)| (head, Some(rest)));
+    let head = type_tokens(head_text).next_back();
+    if let Some(head) = head
+        && !DEREF_WRAPPERS.contains(&head)
+    {
+        return vec![head];
+    }
+    let mut out = Vec::new();
+    for token in type_tokens(arguments.unwrap_or(written)).rev() {
+        if DEREF_WRAPPERS.contains(&token) {
+            continue;
+        }
+        if !out.contains(&token) {
+            out.push(token);
+        }
+    }
+    out
+}
+
 /// Pick among same-name candidates: a call prefers callables, a use prefers
 /// types (value vs type namespace). Applied only on ambiguity.
 fn namespace_pick(candidates: Vec<&Node>, relation: Relation) -> Option<&Node> {
@@ -806,6 +941,38 @@ fn resolve_one<'a>(
         let Some(prefix) = prefix else {
             return (None, Evidence::Import, false);
         };
+        // Field receiver: `self.harness.check()`. The ordinary receiver
+        // tier sees `harness` as the prefix, so it cannot use the enclosing
+        // impl type. A declared field type provides the missing link.
+        if segments.len() >= 3
+            && spec
+                .receivers
+                .contains(&segments[segments.len() - 3].as_str())
+            && let Some(enclosing) = &r.enclosing
+            && let Some((type_prefix, _)) = qualified_of(enclosing.as_str()).rsplit_once("::")
+        {
+            let owner = index
+                .by_file_qualified
+                .get(&(r.file.as_str(), type_prefix))
+                .copied()
+                .or_else(|| {
+                    let name = type_prefix.rsplit("::").next().unwrap_or(type_prefix);
+                    index.type_def(&r.file, file_module, name)
+                });
+            if let Some(owner) = owner
+                && let Some(field) = index.field(owner, &segments[segments.len() - 2])
+            {
+                let field_spec = spec_for_path(&owner.file).unwrap_or(spec);
+                let field_module = key_of(field_spec, &index.roots, &owner.file);
+                let (target, anchored) = index.member_of_written_type(
+                    &owner.file,
+                    &field_module,
+                    &field.type_name,
+                    &r.name,
+                );
+                return (target, Evidence::Scope, anchored);
+            }
+        }
         if spec.receivers.contains(&prefix.as_str())
             && let Some(enclosing) = &r.enclosing
             && let Some((type_prefix, _)) = qualified_of(enclosing.as_str()).rsplit_once("::")
@@ -827,10 +994,10 @@ fn resolve_one<'a>(
         }
         match index.local_at(&r.file, &prefix, r.span.start) {
             Some(Some(type_name)) => {
-                let ty = index.type_def(&r.file, file_module, type_name);
-                let target = ty.and_then(|ty| index.member_of(ty, &r.name, 4));
+                let (target, anchored) =
+                    index.member_of_written_type(&r.file, file_module, type_name, &r.name);
                 // Known corpus type but missing member -> internal.
-                return (target, Evidence::Scope, ty.is_some());
+                return (target, Evidence::Scope, anchored);
             }
             Some(None) => return (None, Evidence::Scope, false), // shadowed: correctly no edge
             None => {}
@@ -1281,7 +1448,7 @@ pub fn resolve_boundary(
     references: &[Reference],
     owner_imports: &[Reference],
 ) -> Vec<Binding> {
-    let index = build_index(foreign_nodes, owner_imports, &[], &[], &[]);
+    let index = build_index(foreign_nodes, owner_imports, &[], &[], &[], &[]);
     let mut bindings = Vec::new();
     for (i, r) in references.iter().enumerate() {
         let Some(spec) = spec_for_path(&r.file) else {
@@ -1384,5 +1551,38 @@ fn unique_best<'a>(candidates: impl Iterator<Item = (usize, &'a Node)>) -> Optio
     match best {
         Some((_, nodes)) if nodes.len() == 1 => Some(nodes[0]),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod resolution_stats_tests {
+    use super::{ResolutionStats, type_candidates};
+
+    #[test]
+    fn anchored_rate_is_absent_when_the_pass_measured_nothing() {
+        assert_eq!(ResolutionStats::default().anchored_unresolved_rate(), None);
+    }
+
+    #[test]
+    fn anchored_rate_excludes_external_references() {
+        let stats = ResolutionStats {
+            scope: 4,
+            import: 3,
+            scip: 42,
+            compiler_rescued_internal: 2,
+            unresolved_internal: 1,
+            unresolved_external: 90,
+            ..ResolutionStats::default()
+        };
+
+        assert_eq!(stats.anchored_unresolved_rate(), Some(0.1));
+    }
+
+    #[test]
+    fn written_type_unwraps_only_receiver_transparent_wrappers() {
+        assert_eq!(type_candidates("&Dog"), ["Dog"]);
+        assert_eq!(type_candidates("std::sync::Arc<dyn Harness>"), ["Harness"]);
+        assert_eq!(type_candidates("Option<Dog>"), ["Option"]);
+        assert_eq!(type_candidates("Result<Dog, Error>"), ["Result"]);
     }
 }

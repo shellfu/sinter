@@ -180,6 +180,8 @@ fn score_candidates(store: &Store, terms: &[String]) -> Result<Vec<Hit>> {
         close_ids.push(close);
     }
     nodes.sort_by(|a, b| a.id.cmp(&b.id));
+    let candidate_ids: Vec<sinter_core::NodeId> = nodes.iter().map(|n| n.id.clone()).collect();
+    let incoming = store.in_edges_many(&candidate_ids)?;
 
     let mut hits = Vec::new();
     for node in nodes {
@@ -240,7 +242,10 @@ fn score_candidates(store: &Store, terms: &[String]) -> Result<Vec<Hit>> {
         let t = matched.len() as i64;
         let total = terms.len() as i64;
         let mut score = base * t * kn * pn / (total * kd * pd);
-        let in_edges = store.in_edges(&node.id)?;
+        let in_edges = incoming
+            .get(&node.id)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
         score += (in_edges.len() as i64).min(HUB_CAP);
         let parent = in_edges
             .iter()
@@ -466,12 +471,31 @@ fn hit_json(repo: &Path, h: &Hit) -> serde_json::Value {
 pub fn ask_json(repo: &Path, question: &str, limit: usize) -> Result<Vec<serde_json::Value>> {
     let repo = repo.canonicalize()?;
     let store = open_store(&repo)?;
+    ask_json_with_store(&repo, &store, question, limit)
+}
+
+pub(crate) fn ask_json_current(
+    repo: &Path,
+    question: &str,
+    limit: usize,
+) -> Result<Vec<serde_json::Value>> {
+    let repo = repo.canonicalize()?;
+    let store = crate::lookup::open_current(&repo)?;
+    ask_json_with_store(&repo, &store, question, limit)
+}
+
+fn ask_json_with_store(
+    repo: &Path,
+    store: &Store,
+    question: &str,
+    limit: usize,
+) -> Result<Vec<serde_json::Value>> {
     let clauses = clauses_of(question);
     if clauses.len() >= 2 {
         let mut out = Vec::new();
-        for (topic, hits) in multi_hits(&store, &clauses, limit)? {
+        for (topic, hits) in multi_hits(store, &clauses, limit)? {
             for h in &hits {
-                let mut v = hit_json(&repo, h);
+                let mut v = hit_json(repo, h);
                 v["topic"] = json!(topic);
                 out.push(v);
             }
@@ -482,12 +506,8 @@ pub fn ask_json(repo: &Path, question: &str, limit: usize) -> Result<Vec<serde_j
     if terms.is_empty() {
         bail!("no searchable terms in {question:?} — try naming the thing you're looking for");
     }
-    let hits = score_candidates(&store, &terms)?;
-    Ok(hits
-        .iter()
-        .take(limit)
-        .map(|h| hit_json(&repo, h))
-        .collect())
+    let hits = score_candidates(store, &terms)?;
+    Ok(hits.iter().take(limit).map(|h| hit_json(repo, h)).collect())
 }
 
 fn print_hit(repo: &Path, store: &Store, rank: usize, hit: &Hit) -> Result<()> {

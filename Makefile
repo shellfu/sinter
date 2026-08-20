@@ -46,6 +46,7 @@ test-golden: ## Golden corpus only: extraction + resolution accuracy (P/R 1.0 ga
 .PHONY: test-scale
 test-scale: ## 500k-node scale exercise + incremental gate, release mode (nightly CI job)
 	cargo test --release -p sinter-store --test scale -- --ignored --nocapture
+	cargo test --release -p sinter-resolve --test scale -- --ignored --nocapture
 	cargo test --release -p sinter-io --test incremental_build -- --nocapture
 
 # ------------------------------------------------------------------ hygiene

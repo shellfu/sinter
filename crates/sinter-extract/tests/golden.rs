@@ -2,7 +2,6 @@
 //! against hand-verified expectations; any change that moves the metric
 //! fails here with the delta (missing/extra) printed.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use sinter_extract::{Extractor, spec_for_path};
@@ -35,11 +34,10 @@ fn source_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn extract_fixture(root: &Path) -> (BTreeSet<Tuple>, BTreeSet<Tuple>, BTreeSet<Tuple>) {
+fn extract_fixture(root: &Path) -> (Vec<Tuple>, Vec<Tuple>, Vec<Tuple>) {
     let mut files = Vec::new();
     source_files(root, &mut files);
-    let (mut nodes, mut contains, mut references) =
-        (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+    let (mut nodes, mut contains, mut references) = (Vec::new(), Vec::new(), Vec::new());
     for path in files {
         let rel = sinter_core::rel_display(path.strip_prefix(root).unwrap());
         assert!(!rel.contains('\\'), "path separator leaked into {rel}");
@@ -59,7 +57,7 @@ fn extract_fixture(root: &Path) -> (BTreeSet<Tuple>, BTreeSet<Tuple>, BTreeSet<T
             "fixture {rel} has syntax errors"
         );
         for n in &facts.nodes {
-            nodes.insert(vec![
+            nodes.push(vec![
                 n.kind.as_str().to_string(),
                 qualified_of(n.id.as_str()),
                 n.file.clone(),
@@ -68,18 +66,35 @@ fn extract_fixture(root: &Path) -> (BTreeSet<Tuple>, BTreeSet<Tuple>, BTreeSet<T
                     .and_then(|d| d.lines().next())
                     .unwrap_or("")
                     .to_string(),
+                n.span.start.to_string(),
+                n.span.end.to_string(),
             ]);
         }
         for e in &facts.contains {
-            contains.insert(vec![
+            contains.push(vec![
                 qualified_of(e.src.as_str()),
                 qualified_of(e.dst.as_str()),
             ]);
         }
         for r in &facts.references {
-            references.insert(vec![r.relation.as_str().to_string(), r.name.clone()]);
+            references.push(vec![
+                r.relation.as_str().to_string(),
+                r.name.clone(),
+                r.file.clone(),
+                r.enclosing
+                    .as_ref()
+                    .map(|id| qualified_of(id.as_str()))
+                    .unwrap_or_default(),
+                r.path.clone().unwrap_or_default(),
+                r.alias.clone().unwrap_or_default(),
+                r.span.start.to_string(),
+                r.span.end.to_string(),
+            ]);
         }
     }
+    nodes.sort();
+    contains.sort();
+    references.sort();
     (nodes, contains, references)
 }
 
@@ -90,16 +105,29 @@ fn tuple_matches(expected: &Tuple, found: &Tuple) -> bool {
 }
 
 fn deltas<'a>(
-    found: &'a BTreeSet<Tuple>,
-    expected: &'a BTreeSet<Tuple>,
+    found: &'a [Tuple],
+    expected: &'a [Tuple],
 ) -> (Vec<&'a Tuple>, Vec<&'a Tuple>, f64, f64) {
-    let missing: Vec<&Tuple> = expected
-        .iter()
-        .filter(|e| !found.iter().any(|f| tuple_matches(e, f)))
-        .collect();
+    // Multiset matching: duplicate references and edges are observable
+    // regressions, not facts a set may silently collapse.
+    let mut used = vec![false; found.len()];
+    let mut missing = Vec::new();
+    for expected_row in expected {
+        if let Some((index, _)) = found
+            .iter()
+            .enumerate()
+            .find(|(index, found_row)| !used[*index] && tuple_matches(expected_row, found_row))
+        {
+            used[index] = true;
+        } else {
+            missing.push(expected_row);
+        }
+    }
     let extra: Vec<&Tuple> = found
         .iter()
-        .filter(|f| !expected.iter().any(|e| tuple_matches(e, f)))
+        .enumerate()
+        .filter(|(index, _)| !used[*index])
+        .map(|(_, row)| row)
         .collect();
     let p = if found.is_empty() {
         1.0
@@ -140,16 +168,16 @@ fn check_inner(fixture: &str) {
 
     let mut ok = true;
     for (category, found, expected) in [
-        ("nodes", &nodes, &expected.nodes.iter().cloned().collect()),
+        ("nodes", nodes.as_slice(), expected.nodes.as_slice()),
         (
             "contains",
-            &contains,
-            &expected.contains.iter().cloned().collect(),
+            contains.as_slice(),
+            expected.contains.as_slice(),
         ),
         (
             "references",
-            &references,
-            &expected.references.iter().cloned().collect(),
+            references.as_slice(),
+            expected.references.as_slice(),
         ),
     ] {
         let (missing, extra, p, r) = deltas(found, expected);
@@ -616,4 +644,19 @@ fn golden_cpp_inheritance() {
 #[test]
 fn golden_go_module_import() {
     check("go-module-import");
+}
+
+#[test]
+fn golden_rust_typed_local_receiver() {
+    check("rust-typed-local-receiver");
+}
+
+#[test]
+fn golden_rust_field_receiver() {
+    check("rust-field-receiver");
+}
+
+#[test]
+fn golden_rust_async_trait_cross_crate() {
+    check("rust-async-trait-cross-crate");
 }

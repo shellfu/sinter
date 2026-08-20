@@ -15,6 +15,7 @@
   ],
   "references": [
     ["imports", "util.start"],
+    ["calls", "start"],
     ["calls", "start"]
   ],
   "resolved": [

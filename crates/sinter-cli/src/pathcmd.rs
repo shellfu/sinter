@@ -29,6 +29,7 @@ pub fn run(repo: &Path, from: &str, to: &str, filter: &EdgeFilter, json: bool) -
         });
         if path.is_none() {
             out["miss"] = miss_json(&root, &explain_miss(&store, &from_node, &to_node, filter)?);
+            out["coverage"] = crate::coverage::negative_json(&root, &store)?;
         }
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(path.is_some());
@@ -46,9 +47,7 @@ pub fn run(repo: &Path, from: &str, to: &str, filter: &EdgeFilter, json: bool) -
                 &to_node,
                 &explain_miss(&store, &from_node, &to_node, filter)?,
             );
-            if let Some(note) = crate::scip::stale_note(repo) {
-                println!("{note}");
-            }
+            crate::coverage::print_negative(&root, &store)?;
             Ok(false)
         }
         Some(edges) => {
@@ -95,6 +94,7 @@ pub fn run_workspace(
                 qualified_of(from_node.id.as_str()),
                 qualified_of(to_node.id.as_str())
             );
+            crate::coverage::print_workspace_negative(&ws)?;
             Ok(false)
         }
         Some(steps) => {

@@ -51,6 +51,37 @@ pub fn load_index(path: &Path) -> Result<Index, ScipError> {
     })
 }
 
+/// Rewrite document paths from an index produced in a nested project so
+/// they remain repo-relative after indexes from several project roots are
+/// merged. Indexers generally emit paths relative to their working
+/// directory, while Sinter's nodes are always relative to the repository.
+pub fn prefix_index_paths(path: &Path, prefix: &str) -> Result<(), ScipError> {
+    if prefix.is_empty() {
+        return Ok(());
+    }
+    let mut index = load_index(path)?;
+    let prefix = prefix.trim_end_matches('/');
+    for document in &mut index.documents {
+        let relative = document.relative_path.replace('\\', "/");
+        if !Path::new(&relative).is_absolute()
+            && relative != prefix
+            && !relative.starts_with(&format!("{prefix}/"))
+        {
+            document.relative_path = format!("{prefix}/{relative}");
+        } else {
+            document.relative_path = relative;
+        }
+    }
+    let bytes = index.write_to_bytes().map_err(|source| ScipError::Parse {
+        path: path.display().to_string(),
+        source,
+    })?;
+    std::fs::write(path, bytes).map_err(|source| ScipError::Io {
+        path: path.display().to_string(),
+        source,
+    })
+}
+
 /// Merge several on-disk indexes into one file: documents and external
 /// symbols concatenate, metadata comes from the first. Per-language
 /// indexers cover disjoint files, so concatenation is the whole merge.

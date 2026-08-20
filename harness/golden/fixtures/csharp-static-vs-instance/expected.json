@@ -20,12 +20,15 @@
     ["calls", "Prepare"],
     ["calls", "Step"],
     ["calls", "Helper"],
+    ["calls", "Helper"],
+    ["calls", "Assist"],
     ["calls", "Assist"]
   ],
   "resolved": [
     ["scope", "calls", "Worker::Run", "Worker::Prepare"],
     ["scope", "calls", "Worker::Run", "Worker::Step"],
     ["scope", "calls", "Worker::Run", "Helper"],
+    ["scope", "calls", "Worker::Run", "Helper", "Worker.cs", "Worker.cs", "237", "243"],
     ["scope", "calls", "Worker::Run", "Helper::Assist"]
   ],
   "unresolved_count": 1

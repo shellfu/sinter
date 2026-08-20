@@ -20,10 +20,12 @@
   ],
   "references": [
     ["uses", "Speak"],
+    ["uses", "Speak"],
     ["calls", "speak"]
   ],
   "resolved": [
     ["scope", "uses", "src/lib.rs", "Speak"],
+    ["scope", "uses", "src/lib.rs", "Speak", "src/lib.rs", "src/lib.rs", "80", "85"],
     ["scope", "calls", "announce", "Speak::speak"],
     ["dynamic", "calls", "Speak::speak", "Dog::speak"],
     ["dynamic", "calls", "Speak::speak", "Cat::speak"],

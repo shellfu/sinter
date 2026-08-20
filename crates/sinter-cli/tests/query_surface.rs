@@ -352,8 +352,8 @@ fn empty_graph_says_so() {
     assert!(out.contains("right directory"), "{out}");
 }
 
-/// A negative answer over a stale SCIP index is inconclusive, and says so;
-/// over a fresh (or absent) index it stays a plain miss.
+/// Every negative answer is not-proven; missing/stale SCIP adds the precise
+/// compiler-coverage gap while a fresh index keeps the generic limitation.
 #[test]
 fn negative_answers_flag_stale_scip() {
     let dir = tempfile::tempdir().unwrap();
@@ -370,10 +370,12 @@ fn negative_answers_flag_stale_scip() {
     let (ok, out) = sinter(repo, &["build"]);
     assert!(ok, "{out}");
 
-    // No index: plain miss.
+    // No index: explicit syntax-only coverage gap.
     let (_, out) = sinter(repo, &["path", "core_fn", "entry"]);
     assert!(
-        out.contains("no path") && !out.contains("SCIP index stale"),
+        out.contains("no path")
+            && out.contains("status: not proven")
+            && out.contains("compiler index missing for rust"),
         "{out}"
     );
 
@@ -389,19 +391,19 @@ fn negative_answers_flag_stale_scip() {
         .unwrap();
     let (_, out) = sinter(repo, &["path", "core_fn", "entry"]);
     assert!(
-        out.contains("no path") && out.contains("SCIP index stale"),
+        out.contains("no path") && out.contains("compiler index is stale"),
         "{out}"
     );
     let (_, out) = sinter(repo, &["affected", "orphan"]);
     assert!(
-        out.contains("0 dependents") && out.contains("SCIP index stale"),
+        out.contains("0 dependents") && out.contains("compiler index is stale"),
         "{out}"
     );
     // A hit never carries the note.
     let (_, out) = sinter(repo, &["path", "entry", "core_fn"]);
-    assert!(!out.contains("SCIP index stale"), "{out}");
+    assert!(!out.contains("status: not proven"), "{out}");
 
-    // Index newer than the source: plain miss again.
+    // Index newer than the source: still not-proven, without stale/missing.
     std::fs::OpenOptions::new()
         .write(true)
         .open(&index)
@@ -410,7 +412,10 @@ fn negative_answers_flag_stale_scip() {
         .unwrap();
     let (_, out) = sinter(repo, &["path", "core_fn", "entry"]);
     assert!(
-        out.contains("no path") && !out.contains("SCIP index stale"),
+        out.contains("no path")
+            && out.contains("status: not proven")
+            && !out.contains("compiler index is stale")
+            && !out.contains("compiler index missing"),
         "{out}"
     );
 }

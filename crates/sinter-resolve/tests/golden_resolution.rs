@@ -2,10 +2,9 @@
 //! against hand-verified expectations. A change that moves the metric fails
 //! here with the delta printed.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use sinter_core::{Embed, LocalBinding, Node, Reference, Relation, TraitImpl};
+use sinter_core::{Embed, FieldBinding, LocalBinding, Node, Reference, Relation, TraitImpl};
 use sinter_extract::{Extractor, spec_for_path};
 use sinter_resolve::{dynamic_edges, qualified_of, resolve};
 
@@ -32,6 +31,7 @@ type Extracted = (
     Vec<Node>,
     Vec<Reference>,
     Vec<LocalBinding>,
+    Vec<FieldBinding>,
     Vec<Embed>,
     Vec<TraitImpl>,
 );
@@ -39,8 +39,14 @@ type Extracted = (
 fn extract_all(root: &Path) -> Extracted {
     let mut files = Vec::new();
     source_files(root, &mut files);
-    let (mut nodes, mut references, mut locals, mut embeds, mut trait_impls) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut nodes, mut references, mut locals, mut fields, mut embeds, mut trait_impls) = (
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
     for path in files {
         let rel = sinter_core::rel_display(path.strip_prefix(root).unwrap());
         assert!(!rel.contains('\\'), "path separator leaked into {rel}");
@@ -55,10 +61,11 @@ fn extract_all(root: &Path) -> Extracted {
         nodes.extend(facts.nodes);
         references.extend(facts.references);
         locals.extend(facts.locals);
+        fields.extend(facts.fields);
         embeds.extend(facts.embeds);
         trait_impls.extend(facts.trait_impls);
     }
-    (nodes, references, locals, embeds, trait_impls)
+    (nodes, references, locals, fields, embeds, trait_impls)
 }
 
 /// Fixtures with known engine gaps. CI gates on everything else; a listed
@@ -105,14 +112,15 @@ fn check_inner(fixture: &str) {
     let expected: Expected =
         serde_json::from_str(&std::fs::read_to_string(root.join("expected.json")).unwrap())
             .unwrap();
-    let (nodes, references, locals, embeds, trait_impls) = extract_all(&root);
+    let (nodes, references, locals, fields, embeds, trait_impls) = extract_all(&root);
     let all_imports: Vec<Reference> = references
         .iter()
         .filter(|r| r.relation == Relation::Imports)
         .cloned()
         .collect();
     let roots: Vec<sinter_extract::ModuleRoot> = walk_manifests(&root);
-    let index = sinter_resolve::Index::build(&nodes, &all_imports, &locals, &embeds, &roots);
+    let index =
+        sinter_resolve::Index::build(&nodes, &all_imports, &locals, &fields, &embeds, &roots);
     let (bindings, stats, _) = resolve(&index, &references);
     let dynamic = dynamic_edges(&index, &nodes, &trait_impls);
 
@@ -129,11 +137,11 @@ fn check_inner(fixture: &str) {
     }
 
     // Found tuples are fully qualified: [evidence, relation, src, dst,
-    // src_file, dst_file]. Expected tuples may be the 4-element legacy form
-    // (prefix match) or the full 6-element form — same-named symbols in
-    // different files need the latter to be distinguishable (D16).
+    // src_file, dst_file, site_start, site_end]. Expected tuples may use
+    // a shorter prefix, but the full 8-element form distinguishes both
+    // same-named symbols and repeated call sites (D16).
     let file_of = |id: &str| id.split_once('#').map_or(id, |(f, _)| f).to_string();
-    let found: BTreeSet<Tuple> = bindings
+    let mut found: Vec<Tuple> = bindings
         .iter()
         .map(|b| &b.edge)
         .chain(dynamic.iter())
@@ -145,29 +153,48 @@ fn check_inner(fixture: &str) {
                 qualified_of(edge.dst.as_str()).to_string(),
                 file_of(edge.src.as_str()),
                 file_of(edge.dst.as_str()),
+                edge.site
+                    .map(|site| site.start.to_string())
+                    .unwrap_or_default(),
+                edge.site
+                    .map(|site| site.end.to_string())
+                    .unwrap_or_default(),
             ]
         })
         .collect();
-    let expected_set: BTreeSet<Tuple> = expected.resolved.into_iter().collect();
+    found.sort();
+    let mut expected_rows = expected.resolved;
+    expected_rows.sort();
     let matches = |e: &Tuple, f: &Tuple| f.len() >= e.len() && f[..e.len()] == e[..];
 
-    let missing: Vec<&Tuple> = expected_set
-        .iter()
-        .filter(|e| !found.iter().any(|f| matches(e, f)))
-        .collect();
+    let mut used = vec![false; found.len()];
+    let mut missing = Vec::new();
+    for expected_row in &expected_rows {
+        if let Some((index, _)) = found
+            .iter()
+            .enumerate()
+            .find(|(index, found_row)| !used[*index] && matches(expected_row, found_row))
+        {
+            used[index] = true;
+        } else {
+            missing.push(expected_row);
+        }
+    }
     let extra: Vec<&Tuple> = found
         .iter()
-        .filter(|f| !expected_set.iter().any(|e| matches(e, f)))
+        .enumerate()
+        .filter(|(index, _)| !used[*index])
+        .map(|(_, row)| row)
         .collect();
     let p = if found.is_empty() {
         1.0
     } else {
         (found.len() - extra.len()) as f64 / found.len() as f64
     };
-    let r = if expected_set.is_empty() {
+    let r = if expected_rows.is_empty() {
         1.0
     } else {
-        (expected_set.len() - missing.len()) as f64 / expected_set.len() as f64
+        (expected_rows.len() - missing.len()) as f64 / expected_rows.len() as f64
     };
     println!(
         "{fixture}/resolved: precision {p:.3} recall {r:.3}, unresolved {} (expected {}), rate {:.1}%",
@@ -643,4 +670,19 @@ fn resolution_cpp_inheritance() {
 #[test]
 fn resolution_go_module_import() {
     check("go-module-import");
+}
+
+#[test]
+fn resolution_rust_typed_local_receiver() {
+    check("rust-typed-local-receiver");
+}
+
+#[test]
+fn resolution_rust_field_receiver() {
+    check("rust-field-receiver");
+}
+
+#[test]
+fn resolution_rust_async_trait_cross_crate() {
+    check("rust-async-trait-cross-crate");
 }

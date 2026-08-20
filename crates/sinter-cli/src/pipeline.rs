@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
-use sinter_core::{FileFacts, Graph, Reference};
+use sinter_core::{FileFacts, Graph, Reference, UnresolvedReason, UnresolvedReference};
 use sinter_extract::{Extractor, LanguageSpec, ModuleRoot, manifest_root, spec_for_path};
 use sinter_store::{FileStamp, Store};
 
@@ -17,8 +17,9 @@ pub struct BuildReport {
     pub changed: usize,
     pub removed: usize,
     pub reresolved_files: usize,
-    pub syntax_error_files: usize,
+    pub syntax_error_files: Vec<String>,
     pub failures: Vec<(String, String)>,
+    pub scip_disagreements: Vec<ScipDisagreement>,
     pub stats: sinter_resolve::ResolutionStats,
     /// Distinct dependency-surface symbols bound this pass (D29).
     pub dep_symbols: usize,
@@ -28,6 +29,18 @@ pub struct BuildReport {
     pub total_edges: u64,
     pub total_unresolved: u64,
     pub elapsed: std::time::Duration,
+}
+
+/// One reference for which internal evidence and compiler evidence chose
+/// different targets. Kept in the report so disagreements are actionable
+/// without rerunning the build under a diagnostic environment variable.
+pub struct ScipDisagreement {
+    pub file: String,
+    pub start: u64,
+    pub end: u64,
+    pub name: String,
+    pub internal: sinter_core::NodeId,
+    pub scip: sinter_core::NodeId,
 }
 
 pub fn db_path(repo: &Path) -> PathBuf {
@@ -112,12 +125,11 @@ pub struct Scan {
     pub roots: Vec<ModuleRoot>,
 }
 
-/// mtime-gated hashing (the `make` trick): a file whose stat (mtime, len)
-/// matches its stored stamp reuses the stored hash without being read, so
-/// a clean scan is O(stat), not O(corpus bytes). Standard make caveat: a
-/// rewrite that preserves both mtime and length with different content is
-/// invisible. Set SINTER_FULL_SCAN=1 to force content hashing (escape
-/// hatch for filesystems with untrustworthy mtimes).
+/// Stat-gated hashing (the `make` trick): a file whose identity and length
+/// match its stored stamp reuses the stored hash without being read, so a
+/// clean scan is O(stat), not O(corpus bytes). Unix identity includes ctime
+/// as well as mtime, catching rewrites that restore mtime; other platforms
+/// use mtime. Set SINTER_FULL_SCAN=1 to force content hashing.
 pub fn scan(repo: &Path, stored: &HashMap<String, FileStamp>) -> Result<Scan> {
     let mut current: Vec<String> = Vec::new();
     let mut roots: Vec<ModuleRoot> = Vec::new();
@@ -127,7 +139,7 @@ pub fn scan(repo: &Path, stored: &HashMap<String, FileStamp>) -> Result<Scan> {
             continue;
         }
         let rel = sinter_core::rel_display(entry.path().strip_prefix(repo).unwrap_or(entry.path()));
-        if rel.starts_with(".sinter/") {
+        if rel.starts_with(".sinter/") || crate::corpus::excluded(&rel) {
             continue;
         }
         if spec_for_path(&rel).is_none() {
@@ -146,50 +158,95 @@ pub fn scan(repo: &Path, stored: &HashMap<String, FileStamp>) -> Result<Scan> {
     }
     roots.sort_by(|a, b| (&a.dir, &a.name).cmp(&(&b.dir, &b.name)));
     let full_scan = std::env::var_os("SINTER_FULL_SCAN").is_some();
-    let hashes = current
-        .par_iter()
-        .filter_map(|rel| {
-            let path = repo.join(rel);
-            // Stat identity of this file right now; (0, 0) when the stat
-            // fails or the mtime predates the epoch — matches no stored
-            // stamp (empty files are never stamped), so the file is read.
-            let (mtime_nanos, len) = std::fs::metadata(&path)
-                .ok()
-                .map(|m| {
-                    let nanos = m
-                        .modified()
-                        .ok()
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map_or(0, |d| d.as_nanos());
-                    (nanos, m.len())
-                })
-                .unwrap_or((0, 0));
-            if !full_scan
-                && len > 0
-                && let Some(stamp) = stored.get(rel)
-                && stamp.mtime_nanos == mtime_nanos
-                && stamp.len == len
-            {
-                return Some((rel.clone(), stamp.clone()));
-            }
-            match std::fs::read(&path) {
-                Ok(bytes) if bytes.is_empty() => None,
-                Ok(bytes) => Some((
-                    rel.clone(),
-                    FileStamp {
-                        hash: blake3::hash(&bytes).to_hex().to_string(),
-                        mtime_nanos,
-                        len: bytes.len() as u64,
-                    },
-                )),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-                // Transient read error (permissions, editor race): keep the
-                // stored state instead of tearing the file down as removed.
-                Err(_) => stored.get(rel).map(|s| (rel.clone(), s.clone())),
-            }
-        })
-        .collect();
+    let scan_one = |rel: &String| scan_file(repo, stored, rel, full_scan);
+    // Starting Rayon is a net loss for the small repositories that dominate
+    // interactive queries. Large corpora still parallelize stat/read work.
+    const PARALLEL_SCAN_THRESHOLD: usize = 512;
+    let hashes = if current.len() < PARALLEL_SCAN_THRESHOLD {
+        current.iter().filter_map(scan_one).collect()
+    } else {
+        current.par_iter().filter_map(scan_one).collect()
+    };
     Ok(Scan { hashes, roots })
+}
+
+fn modified_nanos(metadata: &std::fs::Metadata) -> u128 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos())
+}
+
+fn metadata_identity(metadata: &std::fs::Metadata) -> u128 {
+    let modified = modified_nanos(metadata);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let changed = u128::try_from(metadata.ctime())
+            .unwrap_or(0)
+            .saturating_mul(1_000_000_000)
+            .saturating_add(u128::try_from(metadata.ctime_nsec()).unwrap_or(0));
+        ((modified & u64::MAX as u128) << 64) | (changed & u64::MAX as u128)
+    }
+    #[cfg(not(unix))]
+    {
+        modified
+    }
+}
+
+fn scan_file(
+    repo: &Path,
+    stored: &HashMap<String, FileStamp>,
+    rel: &String,
+    full_scan: bool,
+) -> Option<(String, FileStamp)> {
+    let path = repo.join(rel);
+    // (0, 0) on stat failure never matches a stored non-empty stamp.
+    let (identity_nanos, len) = std::fs::metadata(&path)
+        .ok()
+        .map(|m| (metadata_identity(&m), m.len()))
+        .unwrap_or((0, 0));
+    if !full_scan
+        && len > 0
+        && let Some(stamp) = stored.get(rel)
+        && stamp.identity_nanos == identity_nanos
+        && stamp.len == len
+    {
+        return Some((rel.clone(), stamp.clone()));
+    }
+    match std::fs::read(&path) {
+        Ok(bytes) if bytes.is_empty() => None,
+        Ok(bytes) => Some((
+            rel.clone(),
+            FileStamp {
+                hash: blake3::hash(&bytes).to_hex().to_string(),
+                identity_nanos,
+                len: bytes.len() as u64,
+            },
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        // Transient read error (permissions, editor race): keep the stored
+        // state instead of tearing the file down as removed.
+        Err(_) => stored.get(rel).map(|s| (rel.clone(), s.clone())),
+    }
+}
+
+fn read_repo_source(repo: &Path, rel: &str) -> Option<String> {
+    let path = Path::new(rel);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return None;
+    }
+    std::fs::read_to_string(repo.join(path)).ok()
 }
 
 /// One incremental build pass. `only` narrows the scan to an explicit
@@ -269,7 +326,7 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
     }
     let mut changed_facts: Vec<FileFacts> = Vec::new();
     let mut failures: Vec<(String, String)> = Vec::new();
-    let mut syntax_error_files = 0usize;
+    let mut syntax_error_files = Vec::new();
     for (spec, files) in &by_lang {
         let results: Vec<(String, Result<FileFacts, String>)> = files
             .par_iter()
@@ -292,7 +349,7 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
             match result {
                 Ok(facts) => {
                     if facts.has_syntax_errors {
-                        syntax_error_files += 1;
+                        syntax_error_files.push(rel.clone());
                     }
                     changed_facts.push(facts);
                 }
@@ -369,6 +426,7 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
     }
 
     let mut stats = sinter_resolve::ResolutionStats::default();
+    let mut scip_disagreements = Vec::new();
     let mut dep_symbols = 0usize;
     let mut dep_packages = 0usize;
     if !affected.is_empty() {
@@ -396,12 +454,14 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
         let all_imports = store.all_imports()?;
         let mut refs: Vec<Reference> = Vec::new();
         let mut locals: Vec<sinter_core::LocalBinding> = Vec::new();
+        let mut fields: Vec<sinter_core::FieldBinding> = Vec::new();
         let mut embeds: Vec<sinter_core::Embed> = Vec::new();
         let mut trait_impls: Vec<sinter_core::TraitImpl> = Vec::new();
         for file in &affected {
             if let Some(facts) = store.facts(file)? {
                 refs.extend(facts.references);
                 locals.extend(facts.locals);
+                fields.extend(facts.fields);
                 embeds.extend(facts.embeds);
                 trait_impls.extend(facts.trait_impls);
             }
@@ -410,8 +470,14 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
         // Internal evidence first; SCIP then binds what is left, moving
         // each hit out of its unresolved bucket. One index serves both
         // the reference pass and the dynamic fan-out pass.
-        let resolve_index =
-            sinter_resolve::Index::build(&nodes, &all_imports, &locals, &embeds, &module_roots);
+        let resolve_index = sinter_resolve::Index::build(
+            &nodes,
+            &all_imports,
+            &locals,
+            &fields,
+            &embeds,
+            &module_roots,
+        );
         let (bindings, resolved_stats, internal_indices) =
             sinter_resolve::resolve(&resolve_index, &refs);
         stats = resolved_stats;
@@ -434,12 +500,13 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
         if let Some(scip_path) = scip_index_path(&repo) {
             let index = sinter_resolve::load_index(&scip_path)?;
             let resolution = sinter_resolve::resolve_with_index(&index, &nodes, &refs, |rel| {
-                std::fs::read_to_string(repo.join(rel)).ok()
+                read_repo_source(&repo, rel)
             });
             for binding in resolution.bindings {
                 if resolved_idx.insert(binding.reference) {
                     stats.scip += 1;
                     if internal_set.contains(&binding.reference) {
+                        stats.compiler_rescued_internal += 1;
                         stats.unresolved_internal -= 1;
                     } else {
                         stats.unresolved_external -= 1;
@@ -465,16 +532,15 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
                         stats.scip_agree += 1;
                     } else {
                         stats.scip_disagree += 1;
-                        // Each disagreement is a defect with an unknown
-                        // owner (resolver or cross-check); dump enough to
-                        // classify it.
-                        if std::env::var_os("SINTER_SCIP_DIFF").is_some() {
-                            let r = &refs[binding.reference];
-                            eprintln!(
-                                "SCIP-DIFF {}:{}..{} `{}` internal={} scip={}",
-                                r.file, r.span.start, r.span.end, r.name, dst, binding.edge.dst,
-                            );
-                        }
+                        let r = &refs[binding.reference];
+                        scip_disagreements.push(ScipDisagreement {
+                            file: r.file.clone(),
+                            start: r.span.start,
+                            end: r.span.end,
+                            name: r.name.clone(),
+                            internal: dst.clone(),
+                            scip: binding.edge.dst.clone(),
+                        });
                     }
                 }
             }
@@ -486,6 +552,7 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
                 if resolved_idx.insert(binding.reference) {
                     stats.scip_external += 1;
                     if internal_set.contains(&binding.reference) {
+                        stats.compiler_rescued_internal += 1;
                         stats.unresolved_internal -= 1;
                     } else {
                         stats.unresolved_external -= 1;
@@ -547,6 +614,7 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
                 contains: Vec::new(),
                 references: Vec::new(),
                 locals: Vec::new(),
+                fields: Vec::new(),
                 embeds: Vec::new(),
                 trait_impls: Vec::new(),
             });
@@ -581,11 +649,21 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
             }
             store.update_files(&dep_changed, &dep_removed)?;
         }
-        let unresolved: Vec<Reference> = refs
+        let compiler_indexed = scip_fingerprint.is_some();
+        let unresolved: Vec<UnresolvedReference> = refs
             .iter()
             .enumerate()
             .filter(|(i, _)| !resolved_idx.contains(i))
-            .map(|(_, r)| r.clone())
+            .map(|(i, r)| UnresolvedReference {
+                reference: r.clone(),
+                reason: if compiler_indexed {
+                    UnresolvedReason::CompilerUnresolved
+                } else if internal_set.contains(&i) {
+                    UnresolvedReason::SyntaxAnchoredMiss
+                } else {
+                    UnresolvedReason::SyntaxOnly
+                },
+            })
             .collect();
         // One transaction: resolution-edge teardown + re-derived edge
         // insert + unresolved replace. The lethal crash window (teardown
@@ -603,7 +681,7 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
     // Hashes commit only now: every derived table is consistent, so a crash
     // anywhere above re-runs these files as changed on the next build.
     // Two kinds of rows: freshly derived files, and touched-but-unchanged
-    // files (same hash, new mtime/len) whose stamp must refresh or every
+    // files (same hash, new stat identity) whose stamp must refresh or every
     // future scan would re-hash them forever. One write per real touch;
     // a fully clean build commits nothing and opens no write transaction.
     let derived: HashSet<&str> = changed_names.iter().map(String::as_str).collect();
@@ -612,7 +690,7 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
         .filter(|(f, s)| {
             derived.contains(f.as_str())
                 || stored.get(f).is_some_and(|st| {
-                    st.hash == s.hash && (st.mtime_nanos, st.len) != (s.mtime_nanos, s.len)
+                    st.hash == s.hash && (st.identity_nanos, st.len) != (s.identity_nanos, s.len)
                 })
         })
         .cloned()
@@ -624,6 +702,14 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
     // its purpose. (A crash between the stamps and here replays some files
     // redundantly next build — idempotent, same edges.)
     store.clear_pending_delta()?;
+
+    crate::coverage::record_health(
+        &repo,
+        &changed_files,
+        &removed,
+        &syntax_error_files,
+        &failures,
+    )?;
 
     // Reclaim free pages after bulk (re)builds; never on incremental
     // updates — compaction rewrites the file and would blow the <1s
@@ -640,6 +726,7 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
         reresolved_files: affected.len(),
         syntax_error_files,
         failures,
+        scip_disagreements,
         stats,
         dep_symbols,
         dep_packages,
@@ -657,7 +744,7 @@ pub fn print_report(report: &BuildReport) {
         report.changed,
         report.removed,
         report.reresolved_files,
-        report.syntax_error_files,
+        report.syntax_error_files.len(),
         report.failures.len(),
         report.elapsed,
     );
@@ -671,10 +758,15 @@ pub fn print_report(report: &BuildReport) {
         report.stats.unresolved_internal,
         report.stats.unresolved_external,
     );
-    println!(
-        "  accuracy gauge: {:.1}% internal-unresolved (external refs need dependency indexes, not resolver fixes)",
-        report.stats.internal_unresolved_rate() * 100.0,
-    );
+    match report.stats.anchored_unresolved_rate() {
+        Some(rate) => println!(
+            "  anchored miss rate (this pass): {:.1}% (heuristic classification, not compiler-relative recall)",
+            rate * 100.0,
+        ),
+        None => {
+            println!("  anchored miss rate (this pass): not measured (no references re-resolved)")
+        }
+    }
     let both = report.stats.scip_agree + report.stats.scip_disagree;
     if both > 0 {
         println!(
@@ -688,7 +780,7 @@ pub fn print_report(report: &BuildReport) {
     // so every scip-only bind is a ref internal evidence could have found
     // and didn't. Precision (above) without this number flatters.
     let compiler_bound = both + report.stats.scip;
-    if compiler_bound > 0 && report.stats.scip > 0 {
+    if compiler_bound > 0 {
         println!(
             "  internal recall vs compiler: {:.1}% ({} of {} compiler-bound refs found without scip)",
             both as f64 / compiler_bound as f64 * 100.0,
@@ -706,7 +798,45 @@ pub fn print_report(report: &BuildReport) {
         "  totals: {} nodes, {} edges, {} unresolved refs",
         report.total_nodes, report.total_edges, report.total_unresolved,
     );
+    for file in &report.syntax_error_files {
+        eprintln!("  SYNTAX {file}");
+    }
+    const DEFAULT_DIFF_LIMIT: usize = 10;
+    let diff_limit = if std::env::var_os("SINTER_SCIP_DIFF").is_some() {
+        usize::MAX
+    } else {
+        DEFAULT_DIFF_LIMIT
+    };
+    for diff in report.scip_disagreements.iter().take(diff_limit) {
+        eprintln!(
+            "  SCIP-DIFF {}:{}..{} `{}` internal={} scip={}",
+            diff.file, diff.start, diff.end, diff.name, diff.internal, diff.scip,
+        );
+    }
+    if report.scip_disagreements.len() > diff_limit {
+        eprintln!(
+            "  SCIP-DIFF {} more disagreement(s); set SINTER_SCIP_DIFF=1 to print all",
+            report.scip_disagreements.len() - diff_limit,
+        );
+    }
     for (rel, message) in &report.failures {
         eprintln!("  FAILED {rel}: {message}");
+    }
+}
+
+#[cfg(test)]
+mod source_path_tests {
+    use super::read_repo_source;
+
+    #[test]
+    fn scip_source_reads_stay_inside_the_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("inside.rs"), "inside").unwrap();
+        assert_eq!(
+            read_repo_source(dir.path(), "inside.rs").as_deref(),
+            Some("inside")
+        );
+        assert_eq!(read_repo_source(dir.path(), "../outside.rs"), None);
+        assert_eq!(read_repo_source(dir.path(), "/etc/passwd"), None);
     }
 }

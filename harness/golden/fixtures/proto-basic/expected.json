@@ -151,6 +151,16 @@
       "uses",
       "LedgerEntry",
       "Money"
+    ],
+    [
+      "import",
+      "uses",
+      "LedgerEntry",
+      "Money",
+      "contracts/ledger.proto",
+      "contracts/common.proto",
+      "215",
+      "220"
     ]
   ],
   "unresolved_count": 0

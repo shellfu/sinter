@@ -1,6 +1,7 @@
+use protobuf::Message;
 use scip::types::{Document, Index, Occurrence};
 use sinter_core::{Evidence, Node, NodeId, Reference, Relation, Span, SymbolKind};
-use sinter_resolve::resolve_with_index;
+use sinter_resolve::{load_index, prefix_index_paths, resolve_with_index};
 
 fn node(id: &str, file: &str, name: &str, span: Span) -> Node {
     Node {
@@ -12,6 +13,39 @@ fn node(id: &str, file: &str, name: &str, span: Span) -> Node {
         signature: format!("fn {name}()"),
         doc: None,
     }
+}
+
+#[test]
+fn nested_project_document_paths_are_rebased_to_the_repository() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("index.scip");
+    let index = Index {
+        documents: vec![
+            Document {
+                relative_path: "src/lib.rs".to_string(),
+                ..Default::default()
+            },
+            Document {
+                relative_path: "packages/core/src/already.rs".to_string(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    std::fs::write(&path, index.write_to_bytes().unwrap()).unwrap();
+
+    prefix_index_paths(&path, "packages/core").unwrap();
+
+    let paths: Vec<String> = load_index(&path)
+        .unwrap()
+        .documents
+        .into_iter()
+        .map(|document| document.relative_path)
+        .collect();
+    assert_eq!(
+        paths,
+        ["packages/core/src/lib.rs", "packages/core/src/already.rs"]
+    );
 }
 
 /// A SCIP reference occurrence overlapping one of our reference spans binds

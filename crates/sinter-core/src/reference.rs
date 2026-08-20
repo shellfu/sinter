@@ -47,6 +47,51 @@ pub struct LocalBinding {
     pub type_name: Option<String>,
 }
 
+/// A declared field and its written type. Resolution uses this fact for
+/// receiver chains such as `self.harness.check()` without pretending that
+/// the field access itself is a symbol definition.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct FieldBinding {
+    /// Type/class/struct that declares the field.
+    pub owner: NodeId,
+    pub name: String,
+    /// Type exactly as written (`Arc<dyn Harness>`, `&Dog`, ...).
+    pub type_name: String,
+}
+
+/// Why a reference remained outside the graph. These are deliberately
+/// outcome descriptions, not guesses at a compiler diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnresolvedReason {
+    /// Source evidence pointed into the corpus, but did not identify one
+    /// target (missing member, ambiguity, or incomplete type facts).
+    SyntaxAnchoredMiss,
+    /// Source extraction had no corpus anchor and no compiler index was
+    /// available to distinguish an external/builtin from a missed edge.
+    SyntaxOnly,
+    /// A compiler index was present but supplied no in-corpus target.
+    CompilerUnresolved,
+}
+
+impl UnresolvedReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SyntaxAnchoredMiss => "syntax_anchored_miss",
+            Self::SyntaxOnly => "syntax_only",
+            Self::CompilerUnresolved => "compiler_unresolved",
+        }
+    }
+}
+
+/// Persisted unresolved outcome: the reference plus the coverage context
+/// that produced the miss.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct UnresolvedReference {
+    pub reference: Reference,
+    pub reason: UnresolvedReason,
+}
+
 /// A type embedding another (Go embedded struct field): member lookup on
 /// the owner falls through to the embedded type. Lookup fact, not an edge.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

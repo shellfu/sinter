@@ -68,6 +68,9 @@ pub fn run(
         if total > limit {
             out["truncated"] = serde_json::json!(total - limit);
         }
+        if total == 0 {
+            out["coverage"] = crate::coverage::negative_json(&root, &store)?;
+        }
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(total > 0);
     }
@@ -134,6 +137,9 @@ pub fn run(
             "  note: {unresolved} unresolved ref(s) inside {} — dependencies may be missing; `sinter scip` would bind them",
             node.name
         );
+    }
+    if total == 0 {
+        crate::coverage::print_negative(&root, &store)?;
     }
     Ok(total > 0)
 }

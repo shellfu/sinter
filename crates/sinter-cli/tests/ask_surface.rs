@@ -196,6 +196,41 @@ export class CharacterControllerShim {
     );
 }
 
+/// Analysis products are outside the semantic corpus. A generated memory
+/// graph can repeat the query terms thousands of times; it must never
+/// become an `ask` candidate or affect source navigation.
+#[test]
+fn ask_excludes_derived_analysis_corpora() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::create_dir_all(repo.join("graphify-out")).unwrap();
+    std::fs::create_dir_all(repo.join("memory")).unwrap();
+    std::fs::write(
+        repo.join("src/harness.rs"),
+        "/// Runtime policy harness.\npub struct CedarPolicyHarness;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("graphify-out/harness.md"),
+        "# Runtime Policy Harness\n\nGenerated analysis memory.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("memory/harness.md"),
+        "# Runtime Policy Harness\n\nDerived agent memory.\n",
+    )
+    .unwrap();
+
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+    let (ok, out) = sinter(repo, &["ask", "runtime policy harness", "--limit", "20"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("CedarPolicyHarness"), "{out}");
+    assert!(!out.contains("graphify-out"), "{out}");
+    assert!(!out.contains("memory/harness.md"), "{out}");
+}
+
 /// Skaffold-trial finding #3: weak verbs ("work") are soft stopwords —
 /// dropped when real terms remain, so they cannot inflate term coverage on
 /// unrelated symbols.
@@ -742,6 +777,11 @@ fn init_runs_indexers_only_with_consent() {
     let bin = tempfile::tempdir().unwrap();
     let repo = dir.path();
     std::fs::write(repo.join("a.rs"), "pub fn f() {}\n").unwrap();
+    std::fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
     // Fake rust-analyzer first on PATH: records execution, produces nothing.
     let marker = bin.path().join("executed");
     std::fs::write(

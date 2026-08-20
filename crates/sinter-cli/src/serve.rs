@@ -11,16 +11,21 @@ use serde_json::{Value, json};
 use sinter_core::Node;
 use sinter_resolve::qualified_of;
 
-use crate::lookup::{Found, edge_filter, find_symbol, open_store, unique_symbol};
+use crate::lookup::{Found, edge_filter, find_symbol, open_current, open_store, unique_symbol};
 
 /// One server owns one scope (D28): a repository, or a whole workspace.
 enum Scope {
-    Repo(PathBuf),
+    Repo {
+        repo: PathBuf,
+        freshness: crate::freshness::RepoFreshness,
+    },
     Workspace(PathBuf),
 }
 
 pub fn run(repo: &Path) -> Result<()> {
-    serve(Scope::Repo(repo.canonicalize()?))
+    let repo = repo.canonicalize()?;
+    let freshness = crate::freshness::RepoFreshness::new(&repo)?;
+    serve(Scope::Repo { repo, freshness })
 }
 
 pub fn run_workspace(manifest: &Path) -> Result<()> {
@@ -92,7 +97,7 @@ fn handle(scope: &Scope, method: &str, params: &Value) -> Result<Value> {
         // The list is the scope's honest surface: workspace mode serves
         // only the tools that genuinely cross repositories.
         "tools/list" => Ok(match scope {
-            Scope::Repo(_) => tools_list(),
+            Scope::Repo { .. } => tools_list(),
             Scope::Workspace(_) => ws_tools_list(),
         }),
         "tools/call" => {
@@ -103,7 +108,10 @@ fn handle(scope: &Scope, method: &str, params: &Value) -> Result<Value> {
             // pin a stale snapshot. Freshness itself is enforced inside
             // open_store (repo scope) or the per-member sync (workspace).
             let result = match scope {
-                Scope::Repo(repo) => call_tool(repo, name, &args)?,
+                Scope::Repo { repo, freshness } => {
+                    freshness.sync()?;
+                    call_tool(repo, name, &args)?
+                }
                 Scope::Workspace(manifest) => ws_call_tool(manifest, name, &args)?,
             };
             // Compact encoding: the consumer is an agent, not a human;
@@ -272,7 +280,7 @@ fn affected_one(
             }
         })
         .collect();
-    Ok(affected_json(
+    let mut out = affected_json(
         node_json(&node),
         json!(unresolved),
         Some(crate::pipeline::scip_index_path(repo).is_some()),
@@ -283,7 +291,11 @@ fn affected_one(
             (reached.len(), d, f)
         },
         limit,
-    ))
+    );
+    if reached.is_empty() {
+        out["coverage"] = crate::coverage::negative_json(repo, store)?;
+    }
+    Ok(out)
 }
 
 fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
@@ -308,13 +320,13 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
     if name == "impact" {
         // compute opens the store itself; redb forbids a second in-process
         // open, so no shared handle may be alive here.
-        let report = crate::impact::compute(repo, &symbol("rev_range")?)?;
+        let report = crate::impact::compute_current(repo, &symbol("rev_range")?)?;
         return Ok(crate::impact::to_json(&report));
     }
     if name == "ask" {
         // ask_json opens the store itself — same constraint as impact.
         let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(5) as usize;
-        let hits = crate::ask::ask_json(repo, &symbol("question")?, limit)?;
+        let hits = crate::ask::ask_json_current(repo, &symbol("question")?, limit)?;
         return Ok(json!({ "hits": hits }));
     }
     if name == "overlap" {
@@ -329,9 +341,9 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
                     .collect()
             })
             .unwrap_or_default();
-        return overlap_json(repo, &ranges);
+        return overlap_json_current(repo, &ranges);
     }
-    let store = &open_store(repo)?;
+    let store = &open_current(repo)?;
     match name {
         "map" => map_json(repo, store),
         "show" => {
@@ -440,6 +452,9 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
             if reached.len() > limit {
                 out["truncated"] = json!(reached.len() - limit);
             }
+            if reached.is_empty() {
+                out["coverage"] = crate::coverage::negative_json(repo, store)?;
+            }
             Ok(out)
         }
         "path" => {
@@ -462,6 +477,7 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
             if path.is_none() {
                 let miss = crate::pathcmd::explain_miss(store, &from, &to, &filter)?;
                 out["miss"] = crate::pathcmd::miss_json(repo, &miss);
+                out["coverage"] = crate::coverage::negative_json(repo, store)?;
             }
             Ok(out)
         }
@@ -550,8 +566,8 @@ fn map_json(repo: &Path, store: &sinter_store::Store) -> Result<Value> {
 /// Pairwise merge risk between rev ranges — `sinter overlap`'s compute,
 /// with per-range summaries as counts, not full sets (agent context
 /// budget).
-fn overlap_json(repo: &Path, ranges: &[String]) -> Result<Value> {
-    let (maps, pairs) = crate::overlap::compute(repo, ranges)?;
+fn overlap_json_current(repo: &Path, ranges: &[String]) -> Result<Value> {
+    let (maps, pairs) = crate::overlap::compute_current(repo, ranges)?;
     Ok(json!({
         "changes": maps.iter().map(|p| json!({
             "label": p.label,
@@ -605,7 +621,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "affected",
-            "description": "Reverse blast radius: everything transitively depending on a symbol, cross-file. Summary-first: total, by_file (top files by dependent count), then dependents capped at `limit` (default 50; `truncated` reports how many were omitted). Terse dependent keys: s=qualified symbol, k=kind, f=file, e=relation/evidence, d=depth, site=file:line of the referencing site when known. Pass detail:true for full nodes within the limit. Pass `symbols` (array) to batch many symbols in one call — response is {results:[...]}, per-symbol errors inline. unresolved_refs_matching_name > 0 means the list may be incomplete — refine, or run `sinter scip`.",
+            "description": "Reverse blast radius: everything transitively depending on a symbol, cross-file. Summary-first: total, by_file (top files by dependent count), then dependents capped at `limit` (default 50; `truncated` reports how many were omitted). Terse dependent keys: s=qualified symbol, k=kind, f=file, e=relation/evidence, d=depth, site=file:line of the referencing site when known. Pass detail:true for full nodes within the limit. Pass `symbols` (array) to batch many symbols in one call — response is {results:[...]}, per-symbol errors inline. A zero result carries `coverage.status=not_proven` with snapshot and graph gaps; it is never absence proof.",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": {"type": "string"},
                 "symbols": {"type": "array", "items": {"type": "string"},
@@ -622,7 +638,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "deps",
-            "description": "Forward blast radius: everything a symbol transitively depends on (calls, uses, imports), cross-file. Summary-first: total, by_file, then dependencies capped at `limit` (default 50; `truncated` reports how many were omitted). Terse keys: s=qualified symbol, k=kind, f=file, e=relation/evidence, d=depth, site=file:line of the referencing site when known. unresolved_refs_in_symbol > 0 means the list may be incomplete — run `sinter scip`.",
+            "description": "Forward blast radius: everything a symbol transitively depends on (calls, uses, imports), cross-file. Summary-first: total, by_file, then dependencies capped at `limit` (default 50; `truncated` reports how many were omitted). Terse keys: s=qualified symbol, k=kind, f=file, e=relation/evidence, d=depth, site=file:line of the referencing site when known. A zero result carries `coverage.status=not_proven` with snapshot and graph gaps; it is never absence proof.",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": {"type": "string"},
                 "max_depth": {"type": "integer"},
@@ -635,7 +651,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "path",
-            "description": "Shortest dependency path from one symbol to another, with the relation, evidence, and call site (`site`: file:line) of every step.",
+            "description": "Shortest dependency path from one symbol to another, with the relation, evidence, and call site (`site`: file:line) of every step. A miss carries diagnostics plus `coverage.status=not_proven`; `found:false` is never absence proof.",
             "inputSchema": {"type": "object", "properties": {
                 "from": {"type": "string"},
                 "to": {"type": "string"},

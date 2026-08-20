@@ -11,13 +11,18 @@
   ],
   "references": [
     ["uses", "users"],
+    ["uses", "users"],
+    ["uses", "users"],
+    ["uses", "orders"],
     ["uses", "orders"],
     ["uses", "audit_log"]
   ],
   "resolved": [
     ["scope", "uses", "orders", "users", "schema.sql", "schema.sql"],
     ["scope", "uses", "queries.sql", "users", "queries.sql", "schema.sql"],
-    ["scope", "uses", "queries.sql", "orders", "queries.sql", "schema.sql"]
+    ["scope", "uses", "queries.sql", "users", "queries.sql", "schema.sql", "28", "33"],
+    ["scope", "uses", "queries.sql", "orders", "queries.sql", "schema.sql"],
+    ["scope", "uses", "queries.sql", "orders", "queries.sql", "schema.sql", "84", "90"]
   ],
   "unresolved_count": 1
 }

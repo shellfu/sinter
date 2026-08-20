@@ -51,8 +51,14 @@ fn parse_arg(arg: &str) -> (String, String) {
     }
 }
 
-fn map_one(repo: &Path, label: String, range: String) -> Result<PrMap> {
-    let report = impact::compute(repo, &range)?;
+fn map_one(
+    repo: &Path,
+    store: &sinter_store::Store,
+    label: String,
+    range: String,
+) -> Result<PrMap> {
+    let report =
+        impact::compute_with_store(repo, &range, &sinter_store::EdgeFilter::default(), store)?;
     let key = |s: &impact::SymbolRef| format!("{}:{}", s.file, s.qualified);
     Ok(PrMap {
         touched: report.changed_symbols.iter().map(key).collect(),
@@ -108,13 +114,27 @@ fn pair(a: &PrMap, b: &PrMap) -> Pair {
 
 /// Parse, map, pair, rank — shared by the CLI verb and the MCP tool.
 pub fn compute(repo: &Path, args: &[String]) -> Result<(Vec<PrMap>, Vec<Pair>)> {
+    let store = crate::lookup::open_store(repo)?;
+    compute_with_store(repo, &store, args)
+}
+
+pub(crate) fn compute_current(repo: &Path, args: &[String]) -> Result<(Vec<PrMap>, Vec<Pair>)> {
+    let store = crate::lookup::open_current(repo)?;
+    compute_with_store(repo, &store, args)
+}
+
+fn compute_with_store(
+    repo: &Path,
+    store: &sinter_store::Store,
+    args: &[String],
+) -> Result<(Vec<PrMap>, Vec<Pair>)> {
     if args.len() < 2 {
         bail!("need at least two rev-ranges (e.g. `sinter overlap main...pr-1 main...pr-2`)");
     }
     let mut maps = Vec::new();
     for arg in args {
         let (label, range) = parse_arg(arg);
-        maps.push(map_one(repo, label, range)?);
+        maps.push(map_one(repo, store, label, range)?);
     }
     let mut pairs = Vec::new();
     for i in 0..maps.len() {

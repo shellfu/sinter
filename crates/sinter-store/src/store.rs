@@ -1,10 +1,11 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use redb::{
     Database, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable, ReadableTable,
     ReadableTableMetadata, TableDefinition,
 };
-use sinter_core::{Edge, FileFacts, Graph, Node, NodeId, Reference};
+use sinter_core::{Edge, FileFacts, Graph, Node, NodeId, Reference, UnresolvedReference};
 
 use crate::error::StoreError;
 
@@ -63,24 +64,24 @@ pub(crate) const RESOLVE_META: TableDefinition<&str, &str> = TableDefinition::ne
 /// `Store::clear_pending_delta`). Additive table — absent in older dbs,
 /// read as empty.
 pub(crate) const PENDING: TableDefinition<&str, &[u8]> = TableDefinition::new("pending_delta");
-// v8: Edge gained `site` (call-site span); postcard wire format changed.
-const SCHEMA_VERSION: u32 = 8;
+// v9: FileFacts gained declared fields and unresolved rows gained reasons.
+const SCHEMA_VERSION: u32 = 9;
 
-/// Per-file freshness record: content hash plus the stat identity
-/// (mtime, len) it was hashed at. A scan whose stat matches reuses the
-/// hash without reading the file (the `make` trick). Encoded in
-/// FILE_HASH as `hash|mtime_nanos|len`; a bare hash (no stamp) never
-/// matches a stat, forcing a re-hash.
+/// Per-file freshness record: content hash plus the stat identity it was
+/// hashed at. On Unix the identity combines modification and change time,
+/// so rewriting bytes while restoring mtime cannot hide an edit. Encoded
+/// in FILE_HASH as `hash|identity_nanos|len`; old mtime-only rows decode
+/// but miss once against the new identity and are refreshed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileStamp {
     pub hash: String,
-    pub mtime_nanos: u128,
+    pub identity_nanos: u128,
     pub len: u64,
 }
 
 impl FileStamp {
     pub(crate) fn encode(&self) -> String {
-        format!("{}|{}|{}", self.hash, self.mtime_nanos, self.len)
+        format!("{}|{}|{}", self.hash, self.identity_nanos, self.len)
     }
 
     pub(crate) fn decode(value: &str) -> Self {
@@ -88,7 +89,7 @@ impl FileStamp {
         let hash = parts.next().unwrap_or_default().to_string();
         Self {
             hash,
-            mtime_nanos: parts.next().and_then(|p| p.parse().ok()).unwrap_or(0),
+            identity_nanos: parts.next().and_then(|p| p.parse().ok()).unwrap_or(0),
             // len 0 never matches: scan only stamps non-empty files.
             len: parts.next().and_then(|p| p.parse().ok()).unwrap_or(0),
         }
@@ -252,6 +253,17 @@ impl Store {
     /// Every stored unresolved reference — cross-repo boundary resolution
     /// input (a workspace resolves these against other members' symbols).
     pub fn all_unresolved(&self) -> Result<Vec<Reference>, StoreError> {
+        Ok(self
+            .all_unresolved_details()?
+            .into_iter()
+            .map(|u| u.reference)
+            .collect())
+    }
+
+    /// Every unresolved outcome including why the graph could not prove a
+    /// target. Query surfaces use this; workspace linking consumes the raw
+    /// references through [`Store::all_unresolved`].
+    pub fn all_unresolved_details(&self) -> Result<Vec<UnresolvedReference>, StoreError> {
         let txn = self.db.begin_read()?;
         let table = match txn.open_multimap_table(UNRESOLVED) {
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
@@ -285,8 +297,34 @@ impl Store {
         Ok(refs)
     }
 
+    pub fn unresolved_details(
+        &self,
+        file: Option<&str>,
+        name: Option<&str>,
+    ) -> Result<Vec<UnresolvedReference>, StoreError> {
+        let mut refs = match file {
+            Some(file) => self.unresolved_details_in(file)?,
+            None => self.all_unresolved_details()?,
+        };
+        if let Some(name) = name {
+            refs.retain(|u| name_tail_matches(&u.reference.name, name));
+        }
+        Ok(refs)
+    }
+
     /// Unresolved references recorded for one file.
     pub fn references_in(&self, file: &str) -> Result<Vec<Reference>, StoreError> {
+        Ok(self
+            .unresolved_details_in(file)?
+            .into_iter()
+            .map(|u| u.reference)
+            .collect())
+    }
+
+    pub fn unresolved_details_in(
+        &self,
+        file: &str,
+    ) -> Result<Vec<UnresolvedReference>, StoreError> {
         let txn = self.db.begin_read()?;
         let table = match txn.open_multimap_table(UNRESOLVED) {
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
@@ -382,6 +420,22 @@ impl Store {
         self.adjacent(IN_EDGES, id)
     }
 
+    /// Incoming edges for several nodes under one read transaction. Query
+    /// ranking uses this instead of opening one redb snapshot per candidate.
+    pub fn in_edges_many(&self, ids: &[NodeId]) -> Result<HashMap<NodeId, Vec<Edge>>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_multimap_table(IN_EDGES)?;
+        let mut found = HashMap::with_capacity(ids.len());
+        for id in ids {
+            let mut edges = Vec::new();
+            for guard in table.get(id.as_str())? {
+                edges.push(postcard::from_bytes(guard?.value())?);
+            }
+            found.insert(id.clone(), edges);
+        }
+        Ok(found)
+    }
+
     fn adjacent(
         &self,
         table: MultimapTableDefinition<&str, &[u8]>,
@@ -415,6 +469,24 @@ impl Store {
             Some(guard) => Ok(Some(crate::update::decode_facts(guard.value())?)),
             None => Ok(None),
         }
+    }
+
+    /// Files whose most recently extracted syntax tree contained errors.
+    /// Coverage reporting uses the complete persisted set, not only files
+    /// changed by the latest incremental pass.
+    pub fn syntax_error_files(&self) -> Result<Vec<String>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(FILE_FACTS)?;
+        let mut files = Vec::new();
+        for entry in table.iter()? {
+            let (file, bytes) = entry?;
+            let facts = crate::update::decode_facts(bytes.value())?;
+            if facts.has_syntax_errors {
+                files.push(file.value().to_string());
+            }
+        }
+        files.sort();
+        Ok(files)
     }
 
     /// Reclaim free pages. Worth running after bulk rebuilds; skipped on

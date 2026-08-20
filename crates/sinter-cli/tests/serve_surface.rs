@@ -1,7 +1,7 @@
 //! `sinter serve` (repo scope) response shape: summary-first, terse,
 //! capped, batchable, compact-encoded — agent context is a budget.
 
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -129,6 +129,9 @@ fn affected_is_terse_capped_and_batchable() {
     assert!(v["miss"]["forward_reached"].is_u64(), "{v}");
     assert!(v["miss"]["reached_by"].is_array(), "{v}");
     assert!(v["miss"]["excluded_by_filter"].is_u64(), "{v}");
+    assert_eq!(v["coverage"]["status"], "not_proven", "{v}");
+    assert_eq!(v["coverage"]["conclusive"], false, "{v}");
+    assert_eq!(v["coverage"]["compiler_index"]["state"], "missing", "{v}");
 }
 
 /// The repo surface lists map and overlap; map is a real orientation card;
@@ -231,4 +234,51 @@ fn overlap_ranks_pairwise_risk() {
             .any(|s| s.as_str().unwrap().contains("Base")),
         "{v}"
     );
+}
+
+/// A long-lived MCP process must reuse a clean generation and still ingest
+/// an uncommitted edit once its watcher marks the repository dirty.
+#[test]
+fn server_refreshes_after_source_event() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = build_repo(dir.path());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sinter"))
+        .args(["serve", "--repo", repo.to_str().unwrap()])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let request = |id| call_tool(id, "query", serde_json::json!({"symbol": "FreshSymbol"}));
+
+    writeln!(stdin, "{}", request(1)).unwrap();
+    stdin.flush().unwrap();
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let first: serde_json::Value = serde_json::from_str(&line).unwrap();
+    let first_body: serde_json::Value = serde_json::from_str(body(&first)).unwrap();
+    assert_eq!(first_body["exact"], false);
+
+    let mut source = std::fs::read_to_string(repo.join("lib.go")).unwrap();
+    source.push_str("\nfunc FreshSymbol() int { return 7 }\n");
+    std::fs::write(repo.join("lib.go"), source).unwrap();
+
+    let mut found = false;
+    for id in 2..42 {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        writeln!(stdin, "{}", request(id)).unwrap();
+        stdin.flush().unwrap();
+        line.clear();
+        stdout.read_line(&mut line).unwrap();
+        let response: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let value: serde_json::Value = serde_json::from_str(body(&response)).unwrap();
+        if value["exact"] == true {
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "server never ingested the watched source edit");
+    drop(stdin);
+    child.wait().unwrap();
 }

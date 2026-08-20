@@ -11,6 +11,7 @@
     ["main.py", "run"]
   ],
   "references": [
+    ["calls", "handler"],
     ["calls", "handler"]
   ],
   "resolved": [],

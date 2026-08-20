@@ -17,6 +17,7 @@
     ["LoudGreeter", "LoudGreeter::volume"]
   ],
   "references": [
+    ["uses", "Greeter"],
     ["uses", "Greeter"]
   ],
   "resolved": [

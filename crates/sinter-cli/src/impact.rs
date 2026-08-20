@@ -12,7 +12,7 @@ use sinter_core::{Node, SymbolKind};
 use sinter_resolve::qualified_of;
 use sinter_store::EdgeFilter;
 
-use crate::lookup::open_store;
+use crate::lookup::{open_current, open_store};
 
 #[derive(Serialize)]
 pub struct ImpactReport {
@@ -64,10 +64,24 @@ pub fn compute(repo: &Path, rev_range: &str) -> Result<ImpactReport> {
 pub fn compute_filtered(repo: &Path, rev_range: &str, filter: &EdgeFilter) -> Result<ImpactReport> {
     let repo = repo.canonicalize()?;
     let store = open_store(&repo)?;
+    compute_with_store(&repo, rev_range, filter, &store)
+}
 
+pub(crate) fn compute_current(repo: &Path, rev_range: &str) -> Result<ImpactReport> {
+    let repo = repo.canonicalize()?;
+    let store = open_current(&repo)?;
+    compute_with_store(&repo, rev_range, &EdgeFilter::default(), &store)
+}
+
+pub(crate) fn compute_with_store(
+    repo: &Path,
+    rev_range: &str,
+    filter: &EdgeFilter,
+    store: &sinter_store::Store,
+) -> Result<ImpactReport> {
     let working_tree_dirty = Command::new("git")
         .args(["status", "--porcelain"])
-        .current_dir(&repo)
+        .current_dir(repo)
         .output()
         .is_ok_and(|s| s.status.success() && !s.stdout.is_empty());
 
@@ -82,7 +96,7 @@ pub fn compute_filtered(repo: &Path, rev_range: &str, filter: &EdgeFilter) -> Re
             "--no-color",
             rev_range,
         ])
-        .current_dir(&repo)
+        .current_dir(repo)
         .output()
         .context("run git diff")?;
     if !output.status.success() {

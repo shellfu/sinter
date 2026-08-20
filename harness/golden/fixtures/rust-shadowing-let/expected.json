@@ -15,6 +15,7 @@
   ],
   "references": [
     ["imports", "crate::util::double"],
+    ["calls", "double"],
     ["calls", "double"]
   ],
   "resolved": [

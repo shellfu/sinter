@@ -1,0 +1,29 @@
+{
+  "nodes": [
+    ["file", "src/lib.rs", "src/lib.rs"],
+    ["struct", "Arc", "src/lib.rs"],
+    ["trait", "Harness", "src/lib.rs"],
+    ["function", "Harness::check", "src/lib.rs"],
+    ["struct", "CedarPolicyHarness", "src/lib.rs"],
+    ["function", "CedarPolicyHarness::check", "src/lib.rs"],
+    ["struct", "HarnessGrpcService", "src/lib.rs"],
+    ["function", "HarnessGrpcService::handle", "src/lib.rs"]
+  ],
+  "contains": [
+    ["src/lib.rs", "Arc"],
+    ["src/lib.rs", "Harness"],
+    ["Harness", "Harness::check"],
+    ["src/lib.rs", "CedarPolicyHarness"],
+    ["src/lib.rs", "CedarPolicyHarness::check"],
+    ["src/lib.rs", "HarnessGrpcService"],
+    ["src/lib.rs", "HarnessGrpcService::handle"]
+  ],
+  "references": [["uses", "Harness"], ["calls", "check"]],
+  "resolved": [
+    ["scope", "uses", "src/lib.rs", "Harness"],
+    ["scope", "calls", "HarnessGrpcService::handle", "Harness::check"],
+    ["dynamic", "calls", "Harness::check", "CedarPolicyHarness::check"],
+    ["scope", "implements", "CedarPolicyHarness", "Harness"]
+  ],
+  "unresolved_count": 0
+}

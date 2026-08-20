@@ -76,6 +76,7 @@ fn facts(file: &str, hash: &str, defs: &[&str], ref_names: &[&str]) -> FileFacts
         contains: edges,
         references,
         locals: Vec::new(),
+        fields: Vec::new(),
         embeds: Vec::new(),
         trait_impls: Vec::new(),
     }

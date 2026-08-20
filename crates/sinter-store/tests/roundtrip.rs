@@ -63,6 +63,11 @@ fn hand_built_roundtrip() {
     assert_eq!(store.out_edges(&main).unwrap().len(), 3);
     assert_eq!(store.in_edges(&NodeId::new("Config")).unwrap().len(), 2);
     assert_eq!(store.in_edges(&NodeId::new("config")).unwrap().len(), 1);
+    let batch = store
+        .in_edges_many(&[NodeId::new("Config"), NodeId::new("config")])
+        .unwrap();
+    assert_eq!(batch[&NodeId::new("Config")].len(), 2);
+    assert_eq!(batch[&NodeId::new("config")].len(), 1);
 }
 
 /// Sites persist, and several call sites for one dependency fact keep a

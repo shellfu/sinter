@@ -12,4 +12,6 @@ pub use facts::FileFacts;
 pub use graph::Graph;
 pub use node::{Node, NodeId, Span, SymbolKind};
 pub use paths::rel_display;
-pub use reference::{Embed, LocalBinding, Reference, TraitImpl};
+pub use reference::{
+    Embed, FieldBinding, LocalBinding, Reference, TraitImpl, UnresolvedReason, UnresolvedReference,
+};

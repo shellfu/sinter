@@ -91,12 +91,14 @@ changed, the sync is a stat-only walk (no file reads, no write
 transactions) — and the git hooks refresh eagerly on commit;
 `sinter build` stays available for CI and scripting. Commands also work
 from any subdirectory, discovering the graph root the way git does. The
-build report ends with the honesty line — how much of the graph is
-evidence-bound, and how much would need a dependency index:
+build report distinguishes the heuristic's anchored miss rate from
+compiler-relative accuracy. The anchored rate is useful without SCIP but
+is not recall: the heuristic can classify a compiler-resolvable reference
+as external.
 
 ```
 resolution (this pass): ... resolved (scip 0, import 118, scope 189), ... unresolved (105 internal, 3193 external)
-accuracy gauge: 3.1% internal-unresolved (external refs need dependency indexes, not resolver fixes)
+anchored miss rate (this pass): 25.5% (heuristic classification, not compiler-relative recall)
 ```
 
 When a SCIP index is present, the report also prints the compiler
@@ -117,6 +119,15 @@ $ sinter ask "where is the trigram search"
 
 Every hit shows its match provenance (`[doc+name 2/2 terms]`) — the ranking
 is auditable, in the same spirit as the edges.
+
+Negative traversal answers are deliberately non-authoritative. A missed
+`path`, or zero-result `affected`/`deps`, is printed as **not proven**. JSON
+and MCP responses include a `coverage` object with the indexed Git HEAD,
+dirty-worktree state, graph schema, SCIP freshness, unresolved-reference
+reason counts, partial-syntax files, and extraction failures. When a
+compiler index is missing or stale, the response names the languages and
+the `sinter scip` repair. Node IDs are canonical and byte-exact within that
+reported snapshot; they are not durable IDs across source edits.
 
 ## Commands
 
@@ -174,6 +185,11 @@ and a spec row — consumed by a single engine that never
 branches on language. Adding a language requires no engine code; if it
 ever does, the capture contract is wrong, not the language.
 
+Top-level `graphify-out/`, `memory/`, and `.memory/` are excluded from the
+semantic corpus and SCIP freshness inventory. These are derived analysis
+products; indexing them would feed generated summaries back into `ask` and
+dependency answers.
+
 If a compiler-produced SCIP index (`index.scip`) is present at the repo
 root or at `.sinter/index.scip`, sinter ingests it as the highest
 evidence tier. `sinter scip` runs the matching indexer for every language
@@ -193,9 +209,9 @@ automatically. Recipe, cache-key guidance, and a copy-paste workflow:
 
 ## Accuracy and performance are measured, not asserted
 
-- **Golden corpus**: hand-verified fixtures (78 at time of writing) across all thirteen languages,
+- **Golden corpus**: hand-verified fixtures (79 at time of writing) across all thirteen languages,
   mined from real-world extraction idioms. Extraction and resolution both
-  gate CI at precision/recall 1.0; any change that moves the metric fails
+  gate CI at precision/recall 1.0 for the enumerated contract facts; any change that moves the metric fails
   with the exact missing/extra tuples printed. Expectations derive from
   language semantics, never from engine output (`harness/golden/`).
 - **Budgets** (measured on a ~2M-LOC Go repository, 271k nodes, before

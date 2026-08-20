@@ -4,10 +4,10 @@
 use std::collections::{BTreeSet, HashMap};
 
 use redb::ReadableDatabase;
-use sinter_core::{Node, NodeId};
+use sinter_core::Node;
 
 use crate::error::StoreError;
-use crate::store::{INTERN, NAME_NODES, Store, TOKENS_WORDS};
+use crate::store::{INTERN, NAME_NODES, NODES, Store, TOKENS_WORDS};
 
 /// Lowercased character trigrams of a name; names shorter than 3 chars
 /// index as one whole-name gram.
@@ -130,20 +130,20 @@ impl Store {
     /// Interned ids -> nodes, in id order (deterministic).
     fn decode_ids(&self, interned: BTreeSet<u32>) -> Result<Vec<Node>, StoreError> {
         let txn = self.db.begin_read()?;
-        let table = txn.open_table(INTERN)?;
+        let intern = txn.open_table(INTERN)?;
         let mut ids = Vec::new();
         for i in interned {
-            if let Some(guard) = table.get(i)? {
+            if let Some(guard) = intern.get(i)? {
                 ids.push(guard.value().to_string());
             }
         }
-        drop(table);
-        drop(txn);
+        drop(intern);
         ids.sort();
+        let table = txn.open_table(NODES)?;
         let mut nodes = Vec::new();
         for id in ids {
-            if let Some(node) = self.node(&NodeId::new(id))? {
-                nodes.push(node);
+            if let Some(guard) = table.get(id.as_str())? {
+                nodes.push(postcard::from_bytes(guard.value())?);
             }
         }
         Ok(nodes)
@@ -172,15 +172,15 @@ impl Store {
             }
         }
         drop(intern);
-        drop(txn);
         ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let table = txn.open_table(NODES)?;
         let mut nodes = Vec::new();
         for (id, shared) in ranked.into_iter().take(limit.max(1)) {
             // Require a majority of query trigrams to appear in the name.
             if shared * 2 >= query_grams.len()
-                && let Some(node) = self.node(&NodeId::new(id))?
+                && let Some(guard) = table.get(id.as_str())?
             {
-                nodes.push(node);
+                nodes.push(postcard::from_bytes(guard.value())?);
             }
         }
         Ok(nodes)

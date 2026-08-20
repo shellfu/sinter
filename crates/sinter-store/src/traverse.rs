@@ -3,10 +3,11 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
+use redb::ReadableDatabase;
 use sinter_core::{Confidence, Edge, Evidence, Node, NodeId, Relation};
 
 use crate::error::StoreError;
-use crate::store::Store;
+use crate::store::{IN_EDGES, NODES, OUT_EDGES, Store};
 
 /// Which edges a traversal may walk. Containment is structure, not
 /// dependency, so it never participates.
@@ -71,6 +72,9 @@ impl Store {
         filter: &EdgeFilter,
         max_depth: usize,
     ) -> Result<Vec<Reached>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let nodes = txn.open_table(NODES)?;
+        let incoming = txn.open_multimap_table(IN_EDGES)?;
         let mut seen: HashSet<NodeId> = HashSet::from([id.clone()]);
         let mut queue: VecDeque<(NodeId, usize)> = VecDeque::from([(id.clone(), 0)]);
         let mut out = Vec::new();
@@ -78,11 +82,13 @@ impl Store {
             if depth >= max_depth {
                 continue;
             }
-            for edge in self.in_edges(&current)? {
+            for guard in incoming.get(current.as_str())? {
+                let edge: Edge = postcard::from_bytes(guard?.value())?;
                 if !filter.admits(&edge) || !seen.insert(edge.src.clone()) {
                     continue;
                 }
-                if let Some(node) = self.node(&edge.src)? {
+                if let Some(guard) = nodes.get(edge.src.as_str())? {
+                    let node = postcard::from_bytes(guard.value())?;
                     queue.push_back((edge.src.clone(), depth + 1));
                     out.push(Reached {
                         node,
@@ -105,13 +111,19 @@ impl Store {
         filter: &EdgeFilter,
         max_depth: usize,
     ) -> Result<Vec<Reached>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let nodes = txn.open_table(NODES)?;
+        let outgoing = txn.open_multimap_table(OUT_EDGES)?;
         let mut seen: HashSet<NodeId> = HashSet::from([id.clone()]);
         let mut queue: VecDeque<(NodeId, usize)> = VecDeque::from([(id.clone(), 0)]);
-        if self
-            .node(id)?
+        if nodes
+            .get(id.as_str())?
+            .map(|guard| postcard::from_bytes::<Node>(guard.value()))
+            .transpose()?
             .is_some_and(|n| n.kind == sinter_core::SymbolKind::File)
         {
-            for edge in self.out_edges(id)? {
+            for guard in outgoing.get(id.as_str())? {
+                let edge: Edge = postcard::from_bytes(guard?.value())?;
                 if edge.relation == Relation::Contains && seen.insert(edge.dst.clone()) {
                     queue.push_back((edge.dst.clone(), 0));
                 }
@@ -122,11 +134,13 @@ impl Store {
             if depth >= max_depth {
                 continue;
             }
-            for edge in self.out_edges(&current)? {
+            for guard in outgoing.get(current.as_str())? {
+                let edge: Edge = postcard::from_bytes(guard?.value())?;
                 if !filter.admits(&edge) || !seen.insert(edge.dst.clone()) {
                     continue;
                 }
-                if let Some(node) = self.node(&edge.dst)? {
+                if let Some(guard) = nodes.get(edge.dst.as_str())? {
+                    let node = postcard::from_bytes(guard.value())?;
                     queue.push_back((edge.dst.clone(), depth + 1));
                     out.push(Reached {
                         node,
@@ -146,17 +160,23 @@ impl Store {
         to: &NodeId,
         filter: &EdgeFilter,
     ) -> Result<Option<Vec<Edge>>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let nodes = txn.open_table(NODES)?;
+        let outgoing = txn.open_multimap_table(OUT_EDGES)?;
         let mut prev: HashMap<NodeId, Edge> = HashMap::new();
         let mut seen: HashSet<NodeId> = HashSet::from([from.clone()]);
         let mut queue: VecDeque<NodeId> = VecDeque::from([from.clone()]);
         // A file's dependencies live in the symbols it contains; a file
         // start seeds through its contains edges (shown as path steps).
         // Containment stays non-traversable everywhere past the start.
-        if self
-            .node(from)?
+        if nodes
+            .get(from.as_str())?
+            .map(|guard| postcard::from_bytes::<Node>(guard.value()))
+            .transpose()?
             .is_some_and(|n| n.kind == sinter_core::SymbolKind::File)
         {
-            for edge in self.out_edges(from)? {
+            for guard in outgoing.get(from.as_str())? {
+                let edge: Edge = postcard::from_bytes(guard?.value())?;
                 if edge.relation == Relation::Contains && seen.insert(edge.dst.clone()) {
                     prev.insert(edge.dst.clone(), edge.clone());
                     queue.push_back(edge.dst.clone());
@@ -175,7 +195,8 @@ impl Store {
                 path.reverse();
                 return Ok(Some(path));
             }
-            for edge in self.out_edges(&current)? {
+            for guard in outgoing.get(current.as_str())? {
+                let edge: Edge = postcard::from_bytes(guard?.value())?;
                 if !filter.admits(&edge) || !seen.insert(edge.dst.clone()) {
                     continue;
                 }

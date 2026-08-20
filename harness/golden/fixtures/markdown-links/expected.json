@@ -114,6 +114,16 @@
   [
    "import",
    "uses",
+   "Index",
+   "docs/guide.md",
+   "README.md",
+   "docs/guide.md",
+   "70",
+   "80"
+  ],
+  [
+   "import",
+   "uses",
    "Guide::Setup",
    "docs/notes.md",
    "docs/guide.md",

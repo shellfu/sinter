@@ -11,6 +11,8 @@
   "references": [
     ["calls", "make"],
     ["calls", "append"],
+    ["calls", "append"],
+    ["calls", "len"],
     ["calls", "len"],
     ["calls", "new"],
     ["calls", "cap"],

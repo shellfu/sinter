@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 
 use redb::{ReadableDatabase, ReadableMultimapTable, ReadableTable};
-use sinter_core::{Edge, Evidence, FileFacts, Reference};
+use sinter_core::{Edge, Evidence, FileFacts, UnresolvedReference};
 
 use crate::error::StoreError;
 use crate::search::{node_tokens, trigrams};
@@ -454,7 +454,7 @@ impl Store {
         teardown: &BTreeSet<String>,
         edges: &[Edge],
         unresolved_files: &BTreeSet<String>,
-        unresolved: &[Reference],
+        unresolved: &[UnresolvedReference],
     ) -> Result<(), StoreError> {
         let txn = self.db.begin_write()?;
         {
@@ -489,8 +489,11 @@ impl Store {
             for file in unresolved_files {
                 table.remove_all(file.as_str())?;
             }
-            for r in unresolved {
-                table.insert(r.file.as_str(), postcard::to_allocvec(r)?.as_slice())?;
+            for unresolved in unresolved {
+                table.insert(
+                    unresolved.reference.file.as_str(),
+                    postcard::to_allocvec(unresolved)?.as_slice(),
+                )?;
             }
         }
         txn.commit()?;

@@ -151,11 +151,9 @@ fn unresolved_lists_and_filters_gaps() {
     let v: serde_json::Value = serde_json::from_str(&out).expect("json");
     assert!(v["total"].as_u64().unwrap() >= 1, "{out}");
     assert!(
-        v["unresolved"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| r["name"].as_str() == Some("missing_fn")),
+        v["unresolved"].as_array().unwrap().iter().any(|r| {
+            r["name"].as_str() == Some("missing_fn") && r["reason"].as_str() == Some("syntax_only")
+        }),
         "{out}"
     );
 }

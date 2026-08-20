@@ -110,6 +110,31 @@ fn touched_but_unchanged_file_stays_clean_and_restamps() {
     assert!(edited.contains("2 scanned, 1 changed"), "{edited}");
 }
 
+/// Unix ctime closes the classic make-style hole: a writer cannot hide a
+/// same-length content change by restoring the old mtime.
+#[cfg(unix)]
+#[test]
+fn preserved_mtime_and_length_still_detects_changed_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    let path = repo.join("src/a.rs");
+    std::fs::write(&path, "pub fn f() -> u32 { 1 }\n").unwrap();
+    sinter(repo, &["build"]);
+
+    let original_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+    std::fs::write(&path, "pub fn f() -> u32 { 9 }\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(original_mtime))
+        .unwrap();
+
+    let rebuilt = sinter(repo, &["build"]);
+    assert!(rebuilt.contains("1 scanned, 1 changed"), "{rebuilt}");
+}
+
 /// A package rename in Cargo.toml changes module roots without touching any
 /// source file. The build must re-resolve the corpus (dropping edges bound
 /// through the old root), not report a no-op that leaves stale dependents.

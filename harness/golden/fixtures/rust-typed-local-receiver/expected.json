@@ -1,0 +1,16 @@
+{
+  "nodes": [
+    ["file", "src/lib.rs", "src/lib.rs"],
+    ["struct", "Dog", "src/lib.rs"],
+    ["function", "Dog::speak", "src/lib.rs"],
+    ["function", "announce", "src/lib.rs"]
+  ],
+  "contains": [
+    ["src/lib.rs", "Dog"],
+    ["src/lib.rs", "Dog::speak"],
+    ["src/lib.rs", "announce"]
+  ],
+  "references": [["calls", "speak"]],
+  "resolved": [["scope", "calls", "announce", "Dog::speak"]],
+  "unresolved_count": 0
+}

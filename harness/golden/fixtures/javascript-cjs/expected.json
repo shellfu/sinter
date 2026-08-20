@@ -15,12 +15,15 @@
     ["imports", "./lib/double"],
     ["imports", "./lib"],
     ["calls", "require"],
+    ["calls", "require"],
+    ["calls", "double"],
     ["calls", "double"]
   ],
   "resolved": [
     ["import", "imports", "main.js", "double"],
     ["import", "imports", "lib", "lib.js"],
-    ["import", "calls", "main", "double"]
+    ["import", "calls", "main", "double"],
+    ["import", "calls", "main", "double", "main.js", "lib.js", "128", "134"]
   ],
   "unresolved_count": 2
 }

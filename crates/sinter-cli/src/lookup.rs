@@ -33,11 +33,23 @@ pub fn open_store(repo: &Path) -> Result<Store> {
     if !path.exists() {
         bail!("no graph at {} — run `sinter build` first", path.display());
     }
-    // Freshness lives at the query boundary: every CLI command and MCP tool
-    // syncs before answering, so agents never read a stale graph between
-    // commits (hooks cover commit-time; this covers uncommitted edits).
-    // A fresh corpus is a scan-floor no-op.
+    // Freshness lives at the one-shot query boundary. The MCP server owns
+    // an event-driven generation and calls open_current after synchronizing.
     pipeline::build(&repo, None)?;
+    open_current(&repo)
+}
+
+/// Open an already-synchronized graph. This is deliberately crate-private:
+/// only the MCP freshness owner may bypass the one-shot query scan.
+pub(crate) fn open_current(repo: &Path) -> Result<Store> {
+    let repo = pipeline::discover_root(repo);
+    let repo = repo
+        .canonicalize()
+        .with_context(|| format!("repo path {}", repo.display()))?;
+    let path = pipeline::db_path(&repo);
+    if !path.exists() {
+        bail!("no graph at {} — run `sinter build` first", path.display());
+    }
     let store = Store::open(&path)?;
     // A 0-node graph answers every query with "no match" — say what is
     // actually wrong instead.

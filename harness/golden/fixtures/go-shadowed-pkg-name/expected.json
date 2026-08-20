@@ -17,6 +17,7 @@
   ],
   "references": [
     ["imports", "example.com/fx/pkg/util"],
+    ["calls", "Reverse"],
     ["calls", "Reverse"]
   ],
   "resolved": [

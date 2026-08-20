@@ -14,4 +14,5 @@ jobs:
       # R8 budgets at scale: 500k-node synthetic graph, cold <100ms,
       # warm <50ms. Release mode — the budgets are runtime promises.
       - run: cargo test --release -p sinter-store --test scale -- --ignored --nocapture
+      - run: cargo test --release -p sinter-resolve --test scale -- --ignored --nocapture
       - run: cargo test --release -p sinter-io --test incremental_build -- --nocapture

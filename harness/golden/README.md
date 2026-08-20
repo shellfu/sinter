@@ -10,9 +10,11 @@ Layout:
 harness/golden/
   fixtures/<name>/        # small hand-verified source (one language each)
     ...source files
-    expected.json         # {nodes: [[kind, qualified, file]],
+    expected.json         # {nodes: [[kind, qualified, file, first_doc_line,
+                          #           span_start, span_end]],
                           #  contains: [[src, dst]],
-                          #  references: [[relation, name]]}
+                          #  references: [[relation, name, file, enclosing,
+                          #                path, alias, span_start, span_end]]}
 ```
 
 Runners:
@@ -20,7 +22,7 @@ Runners:
 - resolution: `cargo test -p sinter-resolve --test golden_resolution -- --nocapture`
   (checks `resolved` tuples and `unresolved_count`; tuples are
   `[evidence, relation, src, dst]` or the fully qualified
-  `[evidence, relation, src, dst, src_file, dst_file]` — use the long form
+  `[evidence, relation, src, dst, src_file, dst_file, site_start, site_end]` — use the long form
   whenever same-named symbols exist in different files)
 
 Rule: `expected.json` is derived from language semantics, never from engine
@@ -28,11 +30,13 @@ output. Correcting an expectation requires a written semantics argument
 recorded in the git design history — a failing test is never by itself a
 reason to edit a fixture.
 
-Current corpus: 78 fixtures across thirteen languages (basics plus idiom
+Current corpus: 82 fixtures across thirteen languages (basics plus idiom
 fixtures mined from the prototype's changelog: shadowing families,
 alias/star/dot/relative imports, re-export chains, receivers, embeddings,
-namespace collisions, macro misparse resilience) —
-extraction and resolution all at P/R 1.0. Both runners carry a `KNOWN_FAIL`
+namespace collisions, macro misparse resilience, Rust typed-local receivers,
+declared field receivers, and cross-crate async trait dispatch) —
+extraction and resolution facts all at P/R 1.0. Runners compare multisets,
+so duplicate facts cannot disappear behind set deduplication. Both runners carry a `KNOWN_FAIL`
 ratchet (currently empty): a listed fixture that starts passing fails the
 suite until delisted, so the list can only shrink. Every new language or
 resolution rule lands with a fixture here before it ships.

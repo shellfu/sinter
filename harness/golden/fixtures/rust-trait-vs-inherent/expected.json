@@ -8,6 +8,7 @@
     ["trait", "Runner", "src/widget.rs"],
     ["function", "Runner::run", "src/widget.rs"],
     ["function", "Widget::new", "src/widget.rs"],
+    ["function", "Widget::run", "src/widget.rs"],
     ["function", "Widget::run", "src/widget.rs"]
   ],
   "contains": [
@@ -17,6 +18,7 @@
     ["src/widget.rs", "Runner"],
     ["Runner", "Runner::run"],
     ["src/widget.rs", "Widget::new"],
+    ["src/widget.rs", "Widget::run"],
     ["src/widget.rs", "Widget::run"]
   ],
   "references": [

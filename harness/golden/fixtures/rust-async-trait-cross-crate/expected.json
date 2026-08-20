@@ -1,0 +1,36 @@
+{
+  "nodes": [
+    ["file", "crates/domain/src/lib.rs", "crates/domain/src/lib.rs"],
+    ["trait", "Harness", "crates/domain/src/lib.rs"],
+    ["function", "Harness::check", "crates/domain/src/lib.rs"],
+    ["file", "crates/service/src/lib.rs", "crates/service/src/lib.rs"],
+    ["struct", "HarnessGrpcService", "crates/service/src/lib.rs"],
+    ["function", "HarnessGrpcService::handle", "crates/service/src/lib.rs"],
+    ["file", "crates/cedar/src/lib.rs", "crates/cedar/src/lib.rs"],
+    ["struct", "CedarPolicyHarness", "crates/cedar/src/lib.rs"],
+    ["function", "CedarPolicyHarness::check", "crates/cedar/src/lib.rs"]
+  ],
+  "contains": [
+    ["crates/domain/src/lib.rs", "Harness"],
+    ["Harness", "Harness::check"],
+    ["crates/service/src/lib.rs", "HarnessGrpcService"],
+    ["crates/service/src/lib.rs", "HarnessGrpcService::handle"],
+    ["crates/cedar/src/lib.rs", "CedarPolicyHarness"],
+    ["crates/cedar/src/lib.rs", "CedarPolicyHarness::check"]
+  ],
+  "references": [
+    ["imports", "harness_domain::Harness", "crates/service/src/lib.rs"],
+    ["calls", "check", "crates/service/src/lib.rs"],
+    ["imports", "harness_domain::Harness", "crates/cedar/src/lib.rs"],
+    ["uses", "Harness", "crates/cedar/src/lib.rs"]
+  ],
+  "resolved": [
+    ["import", "imports", "crates/service/src/lib.rs", "Harness"],
+    ["scope", "calls", "HarnessGrpcService::handle", "Harness::check"],
+    ["import", "imports", "crates/cedar/src/lib.rs", "Harness"],
+    ["import", "uses", "crates/cedar/src/lib.rs", "Harness"],
+    ["dynamic", "calls", "Harness::check", "CedarPolicyHarness::check"],
+    ["import", "implements", "CedarPolicyHarness", "Harness"]
+  ],
+  "unresolved_count": 0
+}

@@ -1,0 +1,7 @@
+[package]
+name = "cedar-harness"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+harness-domain = { path = "../domain" }

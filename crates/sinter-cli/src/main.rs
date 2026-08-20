@@ -1,8 +1,11 @@
 mod affected;
 mod ask;
 mod build;
+mod corpus;
+mod coverage;
 mod deps;
 mod doctor;
+mod freshness;
 mod hooks;
 mod impact;
 mod init;

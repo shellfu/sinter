@@ -17,14 +17,15 @@ pub fn run(
     json: bool,
 ) -> Result<bool> {
     let store = open_store(repo)?;
-    let refs = store.unresolved_refs(file, name)?;
+    let refs = store.unresolved_details(file, name)?;
     let total = refs.len();
     let repo = crate::pipeline::discover_root(repo);
     if json {
         let entries: Vec<serde_json::Value> = refs
             .iter()
             .take(limit)
-            .map(|r| {
+            .map(|u| {
+                let r = &u.reference;
                 serde_json::json!({
                     "name": r.name,
                     "path": r.path,
@@ -32,6 +33,7 @@ pub fn run(
                     "file": r.file,
                     "line": line_of(&repo, &r.file, r.span.start),
                     "enclosing": r.enclosing.as_ref().map(|id| qualified_of(id.as_str())),
+                    "reason": u.reason.as_str(),
                 })
             })
             .collect();
@@ -46,7 +48,8 @@ pub fn run(
         return Ok(total > 0);
     }
     println!("{total} unresolved reference(s)");
-    for r in refs.iter().take(limit) {
+    for u in refs.iter().take(limit) {
+        let r = &u.reference;
         let location =
             crate::render::location(&repo, &r.file, line_of(&repo, &r.file, r.span.start));
         // Written path text can span lines (chained calls); keep one row
@@ -59,7 +62,7 @@ pub fn run(
             .collect::<Vec<_>>()
             .join(" ");
         println!(
-            "  {}  {}  {}  in {}",
+            "  {}  {}  {}  in {}  [{}]",
             written,
             r.relation.as_str(),
             location,
@@ -67,6 +70,7 @@ pub fn run(
                 .as_ref()
                 .map(|id| qualified_of(id.as_str()).to_string())
                 .unwrap_or_else(|| "<file scope>".to_string()),
+            u.reason.as_str(),
         );
     }
     if total > limit {

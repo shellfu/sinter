@@ -41,7 +41,12 @@
 (macro_invocation macro: (identifier) @ref.call)
 
 ; local bindings that shadow outer names
+(let_declaration pattern: (identifier) @local type: (_) @local.type)
+(parameter pattern: (identifier) @local type: (_) @local.type)
 (let_declaration pattern: (identifier) @local)
 (parameter pattern: (identifier) @local)
 (closure_parameters (identifier) @local)
 (for_expression pattern: (identifier) @local)
+
+; declared field types feed `self.field.method()` resolution
+(field_declaration name: (field_identifier) @field.name type: (_) @field.type)

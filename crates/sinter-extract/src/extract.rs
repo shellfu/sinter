@@ -1,4 +1,6 @@
-use sinter_core::{Edge, Evidence, Node, NodeId, Reference, Relation, Span, SymbolKind};
+use sinter_core::{
+    Edge, Evidence, FieldBinding, Node, NodeId, Reference, Relation, Span, SymbolKind,
+};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node as TsNode, Parser, Query, QueryCursor};
 
@@ -65,6 +67,8 @@ struct RawLocal {
 struct Collected {
     refs: Vec<RawRef>,
     locals: Vec<RawLocal>,
+    /// (span, field name, written type) — owner resolved after entries exist.
+    fields: Vec<(usize, usize, String, String)>,
     /// (span, embedded type name) — owner resolved after entries exist.
     embeds: Vec<(usize, usize, String)>,
     /// (impl block span, trait name) — trait-impl pairing facts.
@@ -209,8 +213,9 @@ impl Extractor {
 
         // Containment stack: (end, scope name, node id if a real definition).
         let mut stack: Vec<(usize, String, Option<NodeId>)> = Vec::new();
-        // (start, end, id) of each definition, for enclosing-ref lookup.
-        let mut def_spans: Vec<(usize, usize, NodeId)> = Vec::new();
+        // (start, end, id, kind) of each definition, for enclosure and
+        // declared-field owner lookup.
+        let mut def_spans: Vec<(usize, usize, NodeId, SymbolKind)> = Vec::new();
 
         for entry in &entries {
             while stack.last().is_some_and(|(end, _, _)| *end <= entry.start) {
@@ -256,7 +261,7 @@ impl Extractor {
                     // Containment is structure, not a reference: no site.
                     site: None,
                 });
-                def_spans.push((entry.start, entry.end, id.clone()));
+                def_spans.push((entry.start, entry.end, id.clone(), kind));
                 Some(id)
             } else {
                 None
@@ -270,9 +275,9 @@ impl Extractor {
             .map(|r| {
                 let enclosing = def_spans
                     .iter()
-                    .filter(|(s, e, _)| *s <= r.start && r.end <= *e)
-                    .min_by_key(|(s, e, _)| e - s)
-                    .map(|(_, _, id)| id.clone());
+                    .filter(|(s, e, _, _)| *s <= r.start && r.end <= *e)
+                    .min_by_key(|(s, e, _, _)| e - s)
+                    .map(|(_, _, id, _)| id.clone());
                 Reference {
                     file: file.to_string(),
                     name: r.name,
@@ -298,25 +303,32 @@ impl Extractor {
             .filter_map(|(start, end, type_name)| {
                 let owner = def_spans
                     .iter()
-                    .filter(|(s, e, _)| s <= start && end <= e)
-                    .min_by_key(|(s, e, _)| e - s)
-                    .map(|(_, _, id)| id.clone())?;
+                    .filter(|(s, e, _, _)| s <= start && end <= e)
+                    .min_by_key(|(s, e, _, _)| e - s)
+                    .map(|(_, _, id, _)| id.clone())?;
                 Some(sinter_core::Embed {
                     owner,
                     type_name: type_name.clone(),
                 })
             })
             .collect();
-        let locals = collected
+        let mut raw_locals = collected
             .locals
             .into_iter()
             .filter(|l| !alias_spans.contains(&(l.start, l.end)))
+            .collect::<Vec<_>>();
+        // Typed and untyped query patterns can match the same binding.
+        // Keep exactly one, preferring the typed capture.
+        raw_locals.sort_by_key(|l| (l.start, l.end, l.name.clone(), l.type_name.is_none()));
+        raw_locals.dedup_by(|b, a| a.start == b.start && a.end == b.end && a.name == b.name);
+        let locals = raw_locals
+            .into_iter()
             .map(|l| {
                 let scope_end = def_spans
                     .iter()
-                    .filter(|(s, e, _)| *s <= l.start && l.end <= *e)
-                    .min_by_key(|(s, e, _)| e - s)
-                    .map_or(source.len() as u64, |(_, e, _)| *e as u64);
+                    .filter(|(s, e, _, _)| *s <= l.start && l.end <= *e)
+                    .min_by_key(|(s, e, _, _)| e - s)
+                    .map_or(source.len() as u64, |(_, e, _, _)| *e as u64);
                 sinter_core::LocalBinding {
                     file: file.to_string(),
                     name: l.name,
@@ -327,6 +339,33 @@ impl Extractor {
                     scope_end,
                     type_name: l.type_name,
                 }
+            })
+            .collect();
+
+        let fields = collected
+            .fields
+            .iter()
+            .filter_map(|(start, end, name, type_name)| {
+                let owner = def_spans
+                    .iter()
+                    .filter(|(s, e, _, kind)| {
+                        *s <= *start
+                            && *end <= *e
+                            && matches!(
+                                kind,
+                                SymbolKind::Struct
+                                    | SymbolKind::Class
+                                    | SymbolKind::Trait
+                                    | SymbolKind::Interface
+                            )
+                    })
+                    .min_by_key(|(s, e, _, _)| e - s)
+                    .map(|(_, _, id, _)| id.clone())?;
+                Some(FieldBinding {
+                    owner,
+                    name: name.clone(),
+                    type_name: type_name.clone(),
+                })
             })
             .collect();
 
@@ -350,6 +389,7 @@ impl Extractor {
             contains,
             references,
             locals,
+            fields,
             embeds,
             trait_impls,
         })
@@ -402,6 +442,8 @@ fn collect(
             let mut import_star = false;
             let mut match_locals: Vec<TsNode> = Vec::new();
             let mut local_type: Option<TsNode> = None;
+            let mut field_name: Option<TsNode> = None;
+            let mut field_type: Option<TsNode> = None;
             let mut trait_name: Option<TsNode> = None;
             let mut trait_impl: Option<TsNode> = None;
             for cap in m.captures {
@@ -429,6 +471,8 @@ fn collect(
                         "import.star" => import_star = true,
                         "local" => match_locals.push(cap.node),
                         "local.type" => local_type = Some(cap.node),
+                        "field.name" => field_name = Some(cap.node),
+                        "field.type" => field_type = Some(cap.node),
                         "trait" => trait_name = Some(cap.node),
                         "trait.impl" => trait_impl = Some(cap.node),
                         "doc" => out.docs.push((
@@ -451,6 +495,14 @@ fn collect(
                     block.start_byte(),
                     block.end_byte(),
                     text(t, source).to_string(),
+                ));
+            }
+            if let (Some(name), Some(ty)) = (field_name, field_type) {
+                out.fields.push((
+                    name.start_byte(),
+                    ty.end_byte(),
+                    text(name, source).to_string(),
+                    text(ty, source).to_string(),
                 ));
             }
             if let Some(a) = import_alias {

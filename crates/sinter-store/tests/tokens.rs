@@ -25,6 +25,7 @@ fn facts(file: &str, hash: &str, nodes: Vec<Node>) -> FileFacts {
         contains: Vec::new(),
         references: Vec::new(),
         locals: Vec::new(),
+        fields: Vec::new(),
         embeds: Vec::new(),
         trait_impls: Vec::new(),
     }

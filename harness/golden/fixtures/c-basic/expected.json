@@ -8,6 +8,7 @@
     ["struct", "Value", "foo.c"],
     ["typealias", "Coord", "foo.c"],
     ["function", "foo_run", "foo.c"],
+    ["function", "foo_run", "foo.c"],
     ["file", "bar.c", "bar.c"],
     ["function", "bar_greet", "bar.c"],
     ["file", "bar.h", "bar.h"]
@@ -20,9 +21,11 @@
     ["foo.c", "Value"],
     ["foo.c", "Coord"],
     ["foo.c", "foo_run"],
+    ["foo.c", "foo_run"],
     ["bar.c", "bar_greet"]
   ],
   "references": [
+    ["imports", "bar.h"],
     ["imports", "bar.h"],
     ["imports", "<stdio.h>"],
     ["calls", "printf"],

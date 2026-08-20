@@ -16,7 +16,8 @@
   ],
   "resolved": [
     ["import", "imports", "schema/proto/acme/v1/ledger.proto", "schema/proto/acme/v1/money.proto"],
-    ["import", "uses", "LedgerEntry", "Money"]
+    ["import", "uses", "LedgerEntry", "Money"],
+    ["import", "uses", "LedgerEntry", "Money", "schema/proto/acme/v1/ledger.proto", "schema/proto/acme/v1/money.proto", "203", "208"]
   ],
   "unresolved_count": 0
 }

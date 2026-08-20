@@ -74,6 +74,10 @@
     ],
     [
       "calls",
+      "register"
+    ],
+    [
+      "calls",
       "helper"
     ],
     [

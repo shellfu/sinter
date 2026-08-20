@@ -20,6 +20,7 @@
     ["gauge.go", "ResetAll"]
   ],
   "references": [
+    ["calls", "Reset"],
     ["calls", "Reset"]
   ],
   "resolved": [

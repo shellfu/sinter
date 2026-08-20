@@ -106,6 +106,9 @@ pub fn run(
         if total > limit {
             out["truncated"] = serde_json::json!(total - limit);
         }
+        if total == 0 {
+            out["coverage"] = crate::coverage::negative_json(&root, &store)?;
+        }
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(total > 0);
     }
@@ -163,10 +166,8 @@ pub fn run(
             node.name
         );
     }
-    if total == 0
-        && let Some(note) = crate::scip::stale_note(repo)
-    {
-        println!("{note}");
+    if total == 0 {
+        crate::coverage::print_negative(&root, &store)?;
     }
     Ok(total > 0)
 }
@@ -228,6 +229,9 @@ pub fn run_workspace(
             total - limit,
             total,
         );
+    }
+    if total == 0 {
+        crate::coverage::print_workspace_negative(&ws)?;
     }
     Ok(total > 0)
 }

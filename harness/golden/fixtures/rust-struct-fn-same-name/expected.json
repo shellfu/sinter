@@ -7,6 +7,7 @@
   ],
   "contains": [
     ["src/lib.rs", "Run"],
+    ["src/lib.rs", "Run"],
     ["src/lib.rs", "go"]
   ],
   "references": [
