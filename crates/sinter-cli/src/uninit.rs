@@ -24,7 +24,7 @@ pub fn run(repo: &Path, global: bool) -> Result<bool> {
     // Git hooks: strip only the managed line pair, delete a hook file that
     // was ours alone (shebang + managed lines and nothing else).
     const MARKER: &str = "# managed by `sinter hooks install`";
-    for hook in ["post-commit", "post-checkout", "post-merge"] {
+    for hook in ["post-commit", "post-checkout", "post-merge", "post-rewrite"] {
         let path = repo.join(".git/hooks").join(hook);
         let Ok(content) = std::fs::read_to_string(&path) else {
             continue;

@@ -157,7 +157,15 @@ fn map_tool_and_error_hints() {
         .map(|t| t["name"].as_str().unwrap())
         .collect();
     for expected in [
-        "map", "ask", "show", "query", "affected", "path", "impact", "overlap",
+        "map",
+        "ask",
+        "show",
+        "query",
+        "affected",
+        "path",
+        "impact",
+        "overlap",
+        "unresolved",
     ] {
         assert!(names.contains(&expected), "missing {expected}: {names:?}");
     }

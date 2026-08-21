@@ -56,7 +56,7 @@ function-body behavior.
 | What depends on X / blast radius | `sinter affected <symbol>` |
 | What does X depend on (forward) | `sinter deps <symbol>` |
 | How does A reach B | `sinter path <A> <B>` |
-| What does this commit/diff/PR affect downstream | `sinter impact <rev-range>` (e.g. `HEAD~1..HEAD`) |
+| What does this commit/diff/PR affect downstream | `sinter impact <rev-range>` (e.g. `HEAD~1..HEAD`; `HEAD` = uncommitted tracked edits) |
 
 - Every read verb takes `--json` and exits grep-style (0 results,
   1 none, 2 error) — branch on the code, not the prose. Results carry
@@ -67,11 +67,15 @@ function-body behavior.
   (`sinter build` remains for CI/scripts; git hooks refresh on commit).
 - "unresolved" and candidate lists are real answers — refine and rerun,
   never guess a binding; `sinter unresolved` lists the graph's gaps.
+  Ambiguous symbol? Rerun as `name@file-suffix` (e.g. `run@init.rs`).
 - Spawning subagents? Their prompts must mandate sinter for structure
   claims (callers, dependencies, blast radius, "no usages" proofs) and
   reserve grep/rg for content-only searches.
 - Cross-repo workspace? Add `--workspace <manifest.toml>`; symbols may
   be `member:Symbol`.
+- MCP registered? `mcp__sinter__*` tools (ask/show/query/affected/deps/
+  path/unresolved/impact/overlap/map) answer the same questions as the
+  CLI verbs above — either route is fine.
 - Anything else: `sinter --help`; graph problems: `sinter doctor`.
 "#;
 
@@ -128,6 +132,18 @@ pub fn agents(repo: &Path) -> Result<PathBuf> {
         ),
     };
     std::fs::write(&path, merged)?;
+    // Claude Code reads CLAUDE.md, not AGENTS.md. When the repo has a
+    // CLAUDE.md, make it import the block once (`@AGENTS.md`); the
+    // per-prompt hook already routes Claude when CLAUDE.md is absent.
+    let claude_md = repo.join("CLAUDE.md");
+    if let Ok(existing) = std::fs::read_to_string(&claude_md)
+        && !existing.contains("AGENTS.md")
+    {
+        std::fs::write(
+            &claude_md,
+            format!("{}\n\n@AGENTS.md\n", existing.trim_end()),
+        )?;
+    }
     Ok(path)
 }
 

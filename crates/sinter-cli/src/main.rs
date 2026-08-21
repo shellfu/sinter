@@ -322,7 +322,9 @@ enum Command {
     },
     /// Changed symbols, blast radius, and affected tests for a rev range
     Impact {
-        /// Git rev range (e.g. HEAD~1..HEAD, main...branch)
+        /// Git rev range (e.g. HEAD~1..HEAD, main...branch). A single rev
+        /// (`HEAD`) diffs the working tree against it: uncommitted edits to
+        /// tracked files; untracked files are not included
         rev_range: String,
         /// Repository to query
         #[arg(long, default_value = ".")]

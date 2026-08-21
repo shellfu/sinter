@@ -405,6 +405,11 @@ fn serve_workspace_answers_across_members() {
             r#"{{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{{"name":"show","arguments":{{"symbol":"common:Backoff"}}}}}}"#
         )
         .unwrap();
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{{"name":"unresolved","arguments":{{"limit":5}}}}}}"#
+        )
+        .unwrap();
     }
     drop(child.stdin.take());
     let output = child.wait_with_output().unwrap();
@@ -420,7 +425,15 @@ fn serve_workspace_answers_across_members() {
         .collect();
     assert_eq!(
         names,
-        ["ask", "show", "query", "affected", "path", "impact"],
+        [
+            "ask",
+            "show",
+            "query",
+            "affected",
+            "path",
+            "unresolved",
+            "impact"
+        ],
         "honest ws surface"
     );
 
@@ -459,4 +472,20 @@ fn serve_workspace_answers_across_members() {
         }),
         "boundary links must name the other members: {body}"
     );
+
+    // unresolved spans members; every entry is tagged with its member.
+    let unresolved: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    let body = unresolved["result"]["content"][0]["text"].as_str().unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert!(parsed["total"].is_u64(), "{body}");
+    for e in parsed["unresolved"].as_array().unwrap() {
+        let member = e["member"].as_str().unwrap();
+        assert!(
+            e["file"]
+                .as_str()
+                .unwrap()
+                .starts_with(&format!("{member}:")),
+            "{body}"
+        );
+    }
 }

@@ -346,6 +346,20 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
     let store = &open_current(repo)?;
     match name {
         "map" => map_json(repo, store),
+        "unresolved" => {
+            let opt = |key: &str| {
+                args.get(key)
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+            };
+            let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
+            let refs = store.unresolved_details(opt("file"), opt("name"))?;
+            Ok(crate::unresolved::to_json(
+                &crate::pipeline::discover_root(repo),
+                &refs,
+                limit,
+            ))
+        }
         "show" => {
             let node = unique_symbol(store, &symbol("symbol")?)?;
             let edge_json = |e: &sinter_core::Edge, other: &sinter_core::NodeId| {
@@ -608,14 +622,14 @@ fn tools_list() -> Value {
             "name": "show",
             "description": "Orient on one symbol: signature, doc, file, plus every incoming and outgoing edge with relation, evidence, and call site (`site`: file:line of the reference).",
             "inputSchema": {"type": "object", "properties": {
-                "symbol": {"type": "string"},
+                "symbol": {"type": "string", "description": "name, qualified suffix (Config::new), name@file-suffix (run@init.rs) to disambiguate, or node id"},
             }, "required": ["symbol"]},
         },
         {
             "name": "query",
             "description": "Find symbols by exact name, qualified name, or fuzzy match. Results carry signature, doc comment, file, and byte span.",
             "inputSchema": {"type": "object", "properties": {
-                "symbol": {"type": "string"},
+                "symbol": {"type": "string", "description": "name, qualified suffix (Config::new), name@file-suffix (run@init.rs) to disambiguate, or node id"},
                 "limit": {"type": "integer"},
             }, "required": ["symbol"]},
         },
@@ -623,7 +637,7 @@ fn tools_list() -> Value {
             "name": "affected",
             "description": "Reverse blast radius: everything transitively depending on a symbol, cross-file. Summary-first: total, by_file (top files by dependent count), then dependents capped at `limit` (default 50; `truncated` reports how many were omitted). Terse dependent keys: s=qualified symbol, k=kind, f=file, e=relation/evidence, d=depth, site=file:line of the referencing site when known. Pass detail:true for full nodes within the limit. Pass `symbols` (array) to batch many symbols in one call — response is {results:[...]}, per-symbol errors inline. A zero result carries `coverage.status=not_proven` with snapshot and graph gaps; it is never absence proof.",
             "inputSchema": {"type": "object", "properties": {
-                "symbol": {"type": "string"},
+                "symbol": {"type": "string", "description": "name, qualified suffix (Config::new), name@file-suffix (run@init.rs) to disambiguate, or node id"},
                 "symbols": {"type": "array", "items": {"type": "string"},
                     "description": "batch: blast radius for each; overrides `symbol`"},
                 "max_depth": {"type": "integer"},
@@ -640,7 +654,7 @@ fn tools_list() -> Value {
             "name": "deps",
             "description": "Forward blast radius: everything a symbol transitively depends on (calls, uses, imports), cross-file. Summary-first: total, by_file, then dependencies capped at `limit` (default 50; `truncated` reports how many were omitted). Terse keys: s=qualified symbol, k=kind, f=file, e=relation/evidence, d=depth, site=file:line of the referencing site when known. A zero result carries `coverage.status=not_proven` with snapshot and graph gaps; it is never absence proof.",
             "inputSchema": {"type": "object", "properties": {
-                "symbol": {"type": "string"},
+                "symbol": {"type": "string", "description": "name, qualified suffix (Config::new), name@file-suffix (run@init.rs) to disambiguate, or node id"},
                 "max_depth": {"type": "integer"},
                 "limit": {"type": "integer",
                     "description": "max dependencies returned (default 50)"},
@@ -661,8 +675,18 @@ fn tools_list() -> Value {
             }, "required": ["from", "to"]},
         },
         {
+            "name": "unresolved",
+            "description": "Where the graph is blind: references extraction saw but resolution never bound, each with file:line, enclosing symbol, and reason. Check this before treating an empty affected/deps/path result as a negative proof. Filter by `file` (repo-relative path) and/or `name` (referenced identifier).",
+            "inputSchema": {"type": "object", "properties": {
+                "file": {"type": "string"},
+                "name": {"type": "string"},
+                "limit": {"type": "integer",
+                    "description": "max references returned (default 50)"},
+            }},
+        },
+        {
             "name": "impact",
-            "description": "Changed symbols, blast radius, and affected tests for a git rev range (e.g. HEAD~1..HEAD).",
+            "description": "Changed symbols, blast radius, and affected tests for a git rev range (e.g. HEAD~1..HEAD, main...branch). A single rev (`HEAD`) covers uncommitted edits to tracked files in the working tree; untracked files are not included.",
             "inputSchema": {"type": "object", "properties": {
                 "rev_range": {"type": "string"},
             }, "required": ["rev_range"]},
@@ -838,6 +862,39 @@ fn ws_call_tool(manifest: &Path, name: &str, args: &Value) -> Result<Value> {
             report.blast_radius.extend(cross.into_values());
             Ok(crate::impact::to_json(&report))
         }
+        "unresolved" => {
+            // Per-member stores, opened one at a time (redb forbids two
+            // in-process handles on one file); files prefixed `member:`.
+            let opt = |key: &str| {
+                args.get(key)
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+            };
+            let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
+            let want_member = opt("member");
+            let mut total = 0usize;
+            let mut entries = Vec::new();
+            for (member, repo) in &ws.members {
+                if want_member.is_some_and(|m| m != member) {
+                    continue;
+                }
+                let store = crate::lookup::open_store(repo)?;
+                let refs = store.unresolved_details(opt("file"), opt("name"))?;
+                total += refs.len();
+                let room = limit.saturating_sub(entries.len());
+                let mut part = crate::unresolved::to_json(repo, &refs, room);
+                for e in part["unresolved"].as_array_mut().into_iter().flatten() {
+                    e["member"] = json!(member);
+                    e["file"] = json!(format!("{member}:{}", e["file"].as_str().unwrap_or("")));
+                }
+                entries.extend(part["unresolved"].as_array().cloned().unwrap_or_default());
+            }
+            let mut out = json!({"total": total, "unresolved": entries});
+            if total > limit {
+                out["truncated"] = json!(total - limit);
+            }
+            Ok(out)
+        }
         "query" => {
             let (member, node) = crate::workspace::find_symbol(&ws, &symbol("symbol")?)?;
             Ok(json!({"result": member_node(&node, &member)}))
@@ -951,21 +1008,21 @@ fn ws_tools_list() -> Value {
             "name": "show",
             "description": format!("Orient on one symbol: signature, doc, file, every incoming and outgoing edge inside its member (with relation, evidence, and call site), plus boundary links into and out of the other members. {addressing}"),
             "inputSchema": {"type": "object", "properties": {
-                "symbol": {"type": "string"},
+                "symbol": {"type": "string", "description": "name, qualified suffix (Config::new), name@file-suffix (run@init.rs) to disambiguate, or node id"},
             }, "required": ["symbol"]},
         },
         {
             "name": "query",
             "description": format!("Resolve a symbol across every workspace member. {addressing}"),
             "inputSchema": {"type": "object", "properties": {
-                "symbol": {"type": "string"},
+                "symbol": {"type": "string", "description": "name, qualified suffix (Config::new), name@file-suffix (run@init.rs) to disambiguate, or node id"},
             }, "required": ["symbol"]},
         },
         {
             "name": "affected",
             "description": format!("Cross-repository blast radius: everything transitively depending on a symbol across all workspace members, boundary links included. Summary-first: total, by_file, then dependents capped at `limit` (default 50; `truncated` reports omissions). Terse dependent keys: s=member:qualified symbol, k=kind, f=file, e=relation/evidence, p=parent. Pass detail:true for full nodes within the limit. unresolved_refs_matching_name > 0 means the list may be incomplete. {addressing}"),
             "inputSchema": {"type": "object", "properties": {
-                "symbol": {"type": "string"},
+                "symbol": {"type": "string", "description": "name, qualified suffix (Config::new), name@file-suffix (run@init.rs) to disambiguate, or node id"},
                 "max_depth": {"type": "integer"},
                 "limit": {"type": "integer",
                     "description": "max dependents returned (default 50)"},
@@ -986,6 +1043,17 @@ fn ws_tools_list() -> Value {
                 "min_confidence": filters["min_confidence"],
                 "relations": filters["relations"],
             }, "required": ["from", "to"]},
+        },
+        {
+            "name": "unresolved",
+            "description": "Where the graph is blind across the workspace: references extraction saw but resolution never bound, each tagged with its member (`member`, file as `member:path`). Check before treating an empty affected/deps/path result as a negative proof. Filter by `member`, `file` (member-relative path), and/or `name`.",
+            "inputSchema": {"type": "object", "properties": {
+                "member": {"type": "string"},
+                "file": {"type": "string"},
+                "name": {"type": "string"},
+                "limit": {"type": "integer",
+                    "description": "max references returned (default 50)"},
+            }},
         },
         {
             "name": "impact",

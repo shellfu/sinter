@@ -57,7 +57,7 @@ advisory context injection only.
 | What does X depend on (forward, before touching X) | `sinter deps <symbol> --repo <repo>` |
 | Where is the graph blind (honesty check, negative proofs) | `sinter unresolved [--file <f>] [--name <n>] --repo <repo>` |
 | How does A reach B | `sinter path <A> <B> --repo <repo>` |
-| What does this commit/diff/PR affect downstream ("what changed recently and what does it touch") | `sinter impact <rev-range> --repo <repo>` (e.g. `HEAD~1..HEAD`) — prefer over `git show`/`git log` archaeology |
+| What does this commit/diff/PR affect downstream ("what changed recently and what does it touch") | `sinter impact <rev-range> --repo <repo>` (e.g. `HEAD~1..HEAD`; a single rev such as `HEAD` covers uncommitted tracked edits, not untracked files) — prefer over `git show`/`git log` archaeology |
 | Where do open PRs collide / merge risk | `sinter overlap <base...prA> <base...prB> ... --repo <repo>` |
 | Cross-repo (distributed system) versions of the above | add `--workspace <manifest.toml>`; symbols may be `member:Symbol` |
 
@@ -87,8 +87,18 @@ radius; implements/extends follows interface fan-out.
   `sinter unresolved` lists the gaps themselves.
 - `affected`/`deps` cap output at `--limit` (default 200) and print a
   footer with the exact `--limit` rerun that widens it.
-- Symbol ambiguity returns a candidate list; pick the qualified name or
-  node id and rerun rather than assuming.
+- Symbol ambiguity returns a candidate list as `name@file`; rerun with
+  one of those (`run@init.rs` — any unique file-path suffix works), a
+  fuller qualified name, or the node id, rather than assuming.
+
+## MCP
+
+When the sinter MCP server is registered (`.mcp.json`, `.cursor/mcp.json`,
+`.codex/config.toml` — `sinter init` does this), the same verbs are
+available as `mcp__sinter__*` tools (`ask`, `show`, `query`, `affected`,
+`deps`, `path`, `unresolved`, `impact`, `overlap`, `map`) with the same
+JSON shape as `--json`. CLI and MCP are interchangeable; use whichever
+is at hand.
 
 ## Orchestrating subagents
 

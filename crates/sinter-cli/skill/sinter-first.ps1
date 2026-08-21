@@ -31,7 +31,7 @@ while ($d) {
 }
 if (-not $root) { exit 0 }
 
-$Nudge = 'sinter graph available: if this search asks a structure question (symbol location, callers, blast radius, impact), one sinter call answers it ranked and evidence-backed. Grep remains right for content/function-body text.'
+$Nudge = 'sinter graph available: if this search asks a structure question (symbol location, callers, blast radius, impact), one sinter call (CLI verb or mcp__sinter__ tool) answers it ranked and evidence-backed. Grep remains right for content/function-body text.'
 $TaskNudge = 'sinter graph available: you are writing a subagent prompt. Structure claims (who calls X, is Y a dependency of Z, blast radius, any *no callers/no usages* proof) must be answered by sinter ask/show/affected/deps/path/impact, never by grep. Mandate that routing in the subagent prompt; steer grep/rg to content-only searches.'
 $GitNudge = 'sinter graph available: if you are assessing what a commit or diff changes or affects downstream, sinter impact <rev-range> (e.g. HEAD~1..HEAD) answers changed symbols, blast radius, and affected tests in one call.'
 
@@ -69,7 +69,7 @@ switch ($Mode) {
         $cmd = ''
         try { $cmd = ($raw | ConvertFrom-Json).tool_input.command } catch { $cmd = '' }
         if (-not $cmd) { exit 0 }
-        if ($cmd -match '(^|[|;& ])(rg |grep +(-[a-zA-Z]*[rR]|.* -[rR]))') {
+        if ($cmd -match '(^|[|;& ])(rg |git +grep|(xargs|-exec) +(grep|rg)|grep +(-[a-zA-Z]*[rR]|.* -[rR]))') {
             if ($Mode -eq 'grep-strict' -and (Test-StrictDeny $raw)) { EmitDeny } else { Emit $Nudge }
         }
         # Git archaeology stays advisory in both modes.

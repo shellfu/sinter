@@ -14,7 +14,7 @@ pub fn install(repo: &Path) -> Result<()> {
     std::fs::create_dir_all(&hooks_dir)?;
     const MARKER: &str = "# managed by `sinter hooks install`";
     let line = format!("{MARKER}\nsinter build . >/dev/null 2>&1 || true\n");
-    for hook in ["post-commit", "post-checkout", "post-merge"] {
+    for hook in ["post-commit", "post-checkout", "post-merge", "post-rewrite"] {
         let path = hooks_dir.join(hook);
         // Never clobber a user's existing hook: append the managed line to
         // it instead; rerunning is a no-op once the marker is present.

@@ -339,6 +339,30 @@ pub fn run(repo: &Path, fix: bool) -> Result<bool> {
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .is_some_and(|v| v["mcpServers"]["sinter"].is_object())
     };
+    // A registration pins the executable path (MCP clients may not share
+    // the shell's PATH); a moved or bare `sinter` command silently breaks
+    // the server at client startup.
+    let json_command = |rel: &str| {
+        std::fs::read_to_string(repo.join(rel))
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| {
+                v["mcpServers"]["sinter"]["command"]
+                    .as_str()
+                    .map(str::to_string)
+            })
+    };
+    for rel in [".mcp.json", ".cursor/mcp.json"] {
+        if let Some(cmd) = json_command(rel)
+            && !std::path::Path::new(&cmd).is_file()
+        {
+            r.fixable(
+                &format!("{rel} MCP command `{cmd}` is not an existing executable path"),
+                "run `sinter install --mcp` to pin this binary",
+                || install::mcp(&repo),
+            );
+        }
+    }
     let codex_registered = std::fs::read_to_string(repo.join(".codex/config.toml"))
         .is_ok_and(|s| s.contains("[mcp_servers.sinter]"));
     let registered: Vec<&str> = [

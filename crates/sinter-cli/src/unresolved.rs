@@ -6,6 +6,40 @@ use sinter_resolve::qualified_of;
 use crate::lookup::open_store;
 use crate::render::line_of;
 
+/// JSON shape shared by `sinter unresolved --json` and the MCP `unresolved`
+/// tool: `total`, `unresolved` (capped at `limit`), `truncated` when capped.
+pub fn to_json(
+    repo: &Path,
+    refs: &[sinter_core::UnresolvedReference],
+    limit: usize,
+) -> serde_json::Value {
+    let total = refs.len();
+    let entries: Vec<serde_json::Value> = refs
+        .iter()
+        .take(limit)
+        .map(|u| {
+            let r = &u.reference;
+            serde_json::json!({
+                "name": r.name,
+                "path": r.path,
+                "relation": r.relation.as_str(),
+                "file": r.file,
+                "line": line_of(repo, &r.file, r.span.start),
+                "enclosing": r.enclosing.as_ref().map(|id| qualified_of(id.as_str())),
+                "reason": u.reason.as_str(),
+            })
+        })
+        .collect();
+    let mut out = serde_json::json!({
+        "total": total,
+        "unresolved": entries,
+    });
+    if total > limit {
+        out["truncated"] = serde_json::json!(total - limit);
+    }
+    out
+}
+
 /// `sinter unresolved`: list the references extraction saw but resolution
 /// never bound — the graph's honest gaps, first-class (R2). Ok(true) when
 /// any matched (grep-style exit codes).
@@ -21,30 +55,10 @@ pub fn run(
     let total = refs.len();
     let repo = crate::pipeline::discover_root(repo);
     if json {
-        let entries: Vec<serde_json::Value> = refs
-            .iter()
-            .take(limit)
-            .map(|u| {
-                let r = &u.reference;
-                serde_json::json!({
-                    "name": r.name,
-                    "path": r.path,
-                    "relation": r.relation.as_str(),
-                    "file": r.file,
-                    "line": line_of(&repo, &r.file, r.span.start),
-                    "enclosing": r.enclosing.as_ref().map(|id| qualified_of(id.as_str())),
-                    "reason": u.reason.as_str(),
-                })
-            })
-            .collect();
-        let mut out = serde_json::json!({
-            "total": total,
-            "unresolved": entries,
-        });
-        if total > limit {
-            out["truncated"] = serde_json::json!(total - limit);
-        }
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&to_json(&repo, &refs, limit))?
+        );
         return Ok(total > 0);
     }
     println!("{total} unresolved reference(s)");

@@ -63,7 +63,10 @@ pub(crate) fn open_current(repo: &Path) -> Result<Store> {
 }
 
 /// Nodes matching a symbol argument: full node id, exact name, or qualified
-/// suffix (`Config::new`). Empty result falls back to fuzzy suggestions.
+/// suffix (`Config::new`), optionally narrowed by a file-path suffix
+/// (`run@init.rs`, `new@cli/src/config.rs`) — the disambiguator an agent
+/// can derive from the candidate list without copying a byte-offset id.
+/// Empty result falls back to fuzzy suggestions.
 pub enum Found {
     Exact(Vec<Node>),
     Suggestions(Vec<Node>),
@@ -76,13 +79,18 @@ pub fn find_symbol(store: &Store, symbol: &str) -> Result<Found> {
         }
         return Ok(Found::Suggestions(Vec::new()));
     }
+    let (symbol, file) = match symbol.rsplit_once('@') {
+        Some((s, f)) if !s.is_empty() && !f.is_empty() => (s, Some(f)),
+        _ => (symbol, None),
+    };
     let name = symbol.rsplit("::").next().unwrap_or(symbol);
     let mut matches: Vec<Node> = store
         .nodes_named(name)?
         .into_iter()
         .filter(|n| {
             let q = qualified_of(n.id.as_str());
-            q == symbol || q.ends_with(&format!("::{symbol}"))
+            (q == symbol || q.ends_with(&format!("::{symbol}")))
+                && file.is_none_or(|f| n.file == f || n.file.ends_with(&format!("/{f}")))
         })
         .collect();
     matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -100,10 +108,19 @@ pub fn unique_symbol(store: &Store, symbol: &str) -> Result<Node> {
         Found::Exact(nodes) => {
             let list: Vec<String> = nodes
                 .iter()
-                .map(|n| format!("  {} ({} in {})", n.id.as_str(), n.kind.as_str(), n.file))
+                .map(|n| {
+                    format!(
+                        "  {}@{}  ({}, id {})",
+                        qualified_of(n.id.as_str()),
+                        n.file,
+                        n.kind.as_str(),
+                        n.id.as_str()
+                    )
+                })
                 .collect();
             bail!(
-                "`{symbol}` is ambiguous — qualify it or pass a node id:\n{}",
+                "`{symbol}` is ambiguous — rerun with one of these (`name@file`; a \
+                 file-path suffix is enough) or the node id:\n{}",
                 list.join("\n")
             )
         }
