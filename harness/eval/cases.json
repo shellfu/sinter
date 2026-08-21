@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "repositories": [
     {
       "name": "ripgrep-14.1.1",
@@ -18,18 +18,31 @@
       "url": "https://github.com/pallets/flask.git",
       "git_ref": "3.0.3",
       "commit": "c12a5d874c5a014495eb2db8a73f40037bc813ac"
+    },
+    {
+      "name": "hono-v4.4.0",
+      "url": "https://github.com/honojs/hono.git",
+      "git_ref": "v4.4.0",
+      "commit": "03090608db9767652fe32482bc943882c6aa5cfb"
+    },
+    {
+      "name": "gson-2.11.0",
+      "url": "https://github.com/google/gson.git",
+      "git_ref": "gson-parent-2.11.0",
+      "commit": "828a97be0f8d58108b140b77df8dc76b657f4a87"
     }
   ],
   "minimums": {
     "query_mrr": 0.99,
     "query_recall_at_limit": 0.99,
-    "ask_top_1_accuracy": 0.47,
-    "ask_mrr": 0.69,
-    "ask_recall_at_5": 0.95,
-    "ask_recall_at_limit": 0.98,
+    "ask_top_1_accuracy": 0.43,
+    "ask_mrr": 0.6,
+    "ask_recall_at_5": 0.81,
+    "ask_recall_at_limit": 0.9,
     "caller_precision": 0.99,
     "caller_recall": 0.99,
-    "path_accuracy": 0.99
+    "path_accuracy": 0.99,
+    "ask_holdout_top_1_accuracy": 0.48
   },
   "cases": [
     {
@@ -90,7 +103,9 @@
           "qualified": "Parser::parse",
           "file": "crates/core/flags/parse.rs"
         }
-      ]
+      ],
+      "intent": "lookup",
+      "split": "tuning"
     },
     {
       "id": "ask-regex-matcher-construction",
@@ -107,7 +122,9 @@
           "qualified": "RegexMatcherBuilder::build",
           "file": "crates/regex/src/matcher.rs"
         }
-      ]
+      ],
+      "intent": "construction",
+      "split": "tuning"
     },
     {
       "id": "ask-parallel-search",
@@ -120,7 +137,9 @@
           "qualified": "search_parallel",
           "file": "crates/core/main.rs"
         }
-      ]
+      ],
+      "intent": "dispatch",
+      "split": "holdout"
     },
     {
       "id": "ask-ignore-rule-matching",
@@ -145,7 +164,9 @@
           "qualified": "Ignore::matched",
           "file": "crates/ignore/src/dir.rs"
         }
-      ]
+      ],
+      "intent": "lookup",
+      "split": "tuning"
     },
     {
       "id": "ask-low-level-flag-parser",
@@ -162,7 +183,9 @@
           "qualified": "Parser::parse",
           "file": "crates/core/flags/parse.rs"
         }
-      ]
+      ],
+      "intent": "lookup",
+      "split": "tuning"
     },
     {
       "id": "ask-sequential-search",
@@ -175,7 +198,9 @@
           "qualified": "search",
           "file": "crates/core/main.rs"
         }
-      ]
+      ],
+      "intent": "dispatch",
+      "split": "holdout"
     },
     {
       "id": "ask-parallel-file-listing",
@@ -188,7 +213,9 @@
           "qualified": "files_parallel",
           "file": "crates/core/main.rs"
         }
-      ]
+      ],
+      "intent": "output",
+      "split": "tuning"
     },
     {
       "id": "ask-binary-detection-mode",
@@ -201,7 +228,9 @@
           "qualified": "BinaryDetection::from_low_args",
           "file": "crates/core/flags/hiargs.rs"
         }
-      ]
+      ],
+      "intent": "construction",
+      "split": "tuning"
     },
     {
       "id": "ask-rust-regex-engine",
@@ -214,7 +243,9 @@
           "qualified": "HiArgs::matcher_rust",
           "file": "crates/core/flags/hiargs.rs"
         }
-      ]
+      ],
+      "intent": "construction",
+      "split": "holdout"
     },
     {
       "id": "ask-pcre2-regex-engine",
@@ -227,7 +258,9 @@
           "qualified": "HiArgs::matcher_pcre2",
           "file": "crates/core/flags/hiargs.rs"
         }
-      ]
+      ],
+      "intent": "construction",
+      "split": "tuning"
     },
     {
       "id": "ask-gitignore-matcher-build",
@@ -240,7 +273,9 @@
           "qualified": "GitignoreBuilder::build",
           "file": "crates/ignore/src/gitignore.rs"
         }
-      ]
+      ],
+      "intent": "construction",
+      "split": "tuning"
     },
     {
       "id": "ask-parallel-walker-run",
@@ -253,7 +288,9 @@
           "qualified": "WalkParallel::run",
           "file": "crates/ignore/src/walk.rs"
         }
-      ]
+      ],
+      "intent": "dispatch",
+      "split": "holdout"
     },
     {
       "id": "ask-decompression-command-association",
@@ -266,7 +303,9 @@
           "qualified": "DecompressionMatcherBuilder::try_associate",
           "file": "crates/cli/src/decompress.rs"
         }
-      ]
+      ],
+      "intent": "registration",
+      "split": "tuning"
     },
     {
       "id": "ask-file-type-matcher-build",
@@ -279,7 +318,9 @@
           "qualified": "TypesBuilder::build",
           "file": "crates/ignore/src/types.rs"
         }
-      ]
+      ],
+      "intent": "construction",
+      "split": "tuning"
     },
     {
       "id": "ask-search-statistics-count",
@@ -292,7 +333,9 @@
           "qualified": "Stats::add_searches",
           "file": "crates/printer/src/stats.rs"
         }
-      ]
+      ],
+      "intent": "registration",
+      "split": "holdout"
     },
     {
       "id": "ask-config-file-parse",
@@ -305,7 +348,9 @@
           "qualified": "parse_reader",
           "file": "crates/core/flags/config.rs"
         }
-      ]
+      ],
+      "intent": "lookup",
+      "split": "tuning"
     },
     {
       "id": "ask-pattern-arguments-collection",
@@ -318,7 +363,9 @@
           "qualified": "Patterns::from_low_args",
           "file": "crates/core/flags/hiargs.rs"
         }
-      ]
+      ],
+      "intent": "construction",
+      "split": "tuning"
     },
     {
       "id": "ask-haystack-search",
@@ -331,7 +378,9 @@
           "qualified": "SearchWorker::search",
           "file": "crates/core/search.rs"
         }
-      ]
+      ],
+      "intent": "dispatch",
+      "split": "holdout"
     },
     {
       "id": "ask-json-match-output",
@@ -344,7 +393,9 @@
           "qualified": "JSONSink::matched",
           "file": "crates/printer/src/json.rs"
         }
-      ]
+      ],
+      "intent": "output",
+      "split": "tuning"
     },
     {
       "id": "ask-search-worker-construction",
@@ -357,7 +408,9 @@
           "qualified": "SearchWorkerBuilder::build",
           "file": "crates/core/search.rs"
         }
-      ]
+      ],
+      "intent": "construction",
+      "split": "tuning"
     },
     {
       "id": "ask-cobra-command-execution",
@@ -374,7 +427,9 @@
           "qualified": "Command::ExecuteC",
           "file": "command.go"
         }
-      ]
+      ],
+      "intent": "dispatch",
+      "split": "tuning"
     },
     {
       "id": "ask-cobra-subcommand-traversal",
@@ -387,7 +442,9 @@
           "qualified": "Command::Traverse",
           "file": "command.go"
         }
-      ]
+      ],
+      "intent": "lookup",
+      "split": "tuning"
     },
     {
       "id": "ask-cobra-argument-validation",
@@ -400,7 +457,9 @@
           "qualified": "Command::ValidateArgs",
           "file": "command.go"
         }
-      ]
+      ],
+      "intent": "error_handling",
+      "split": "holdout"
     },
     {
       "id": "ask-cobra-required-flags",
@@ -413,7 +472,9 @@
           "qualified": "Command::ValidateRequiredFlags",
           "file": "command.go"
         }
-      ]
+      ],
+      "intent": "error_handling",
+      "split": "tuning"
     },
     {
       "id": "ask-cobra-default-help-flag",
@@ -426,7 +487,9 @@
           "qualified": "Command::InitDefaultHelpFlag",
           "file": "command.go"
         }
-      ]
+      ],
+      "intent": "lifecycle",
+      "split": "tuning"
     },
     {
       "id": "ask-cobra-help-output",
@@ -439,7 +502,9 @@
           "qualified": "Command::Help",
           "file": "command.go"
         }
-      ]
+      ],
+      "intent": "output",
+      "split": "holdout"
     },
     {
       "id": "ask-cobra-usage-rendering",
@@ -452,7 +517,9 @@
           "qualified": "Command::UsageString",
           "file": "command.go"
         }
-      ]
+      ],
+      "intent": "output",
+      "split": "tuning"
     },
     {
       "id": "ask-cobra-command-suggestions",
@@ -465,7 +532,9 @@
           "qualified": "Command::SuggestionsFor",
           "file": "command.go"
         }
-      ]
+      ],
+      "intent": "lookup",
+      "split": "tuning"
     },
     {
       "id": "ask-cobra-add-child-command",
@@ -478,7 +547,9 @@
           "qualified": "Command::AddCommand",
           "file": "command.go"
         }
-      ]
+      ],
+      "intent": "registration",
+      "split": "holdout"
     },
     {
       "id": "ask-cobra-remove-child-command",
@@ -491,7 +562,9 @@
           "qualified": "Command::RemoveCommand",
           "file": "command.go"
         }
-      ]
+      ],
+      "intent": "registration",
+      "split": "tuning"
     },
     {
       "id": "ask-cobra-bash-completion",
@@ -504,7 +577,9 @@
           "qualified": "Command::GenBashCompletion",
           "file": "bash_completions.go"
         }
-      ]
+      ],
+      "intent": "output",
+      "split": "tuning"
     },
     {
       "id": "ask-cobra-shell-completions",
@@ -517,7 +592,9 @@
           "qualified": "Command::getCompletions",
           "file": "completions.go"
         }
-      ]
+      ],
+      "intent": "lookup",
+      "split": "holdout"
     },
     {
       "id": "ask-cobra-exact-args",
@@ -530,7 +607,9 @@
           "qualified": "ExactArgs",
           "file": "args.go"
         }
-      ]
+      ],
+      "intent": "error_handling",
+      "split": "tuning"
     },
     {
       "id": "ask-cobra-alias-matching",
@@ -543,7 +622,9 @@
           "qualified": "Command::HasAlias",
           "file": "command.go"
         }
-      ]
+      ],
+      "intent": "lookup",
+      "split": "tuning"
     },
     {
       "id": "ask-cobra-command-path",
@@ -556,7 +637,9 @@
           "qualified": "Command::CommandPath",
           "file": "command.go"
         }
-      ]
+      ],
+      "intent": "output",
+      "split": "holdout"
     },
     {
       "id": "ask-flask-request-dispatch-lifecycle",
@@ -569,7 +652,9 @@
           "qualified": "Flask::full_dispatch_request",
           "file": "src/flask/app.py"
         }
-      ]
+      ],
+      "intent": "dispatch",
+      "split": "tuning"
     },
     {
       "id": "ask-flask-url-dispatch",
@@ -582,7 +667,9 @@
           "qualified": "Flask::dispatch_request",
           "file": "src/flask/app.py"
         }
-      ]
+      ],
+      "intent": "dispatch",
+      "split": "tuning"
     },
     {
       "id": "ask-flask-view-response-conversion",
@@ -595,7 +682,9 @@
           "qualified": "Flask::make_response",
           "file": "src/flask/app.py"
         }
-      ]
+      ],
+      "intent": "output",
+      "split": "holdout"
     },
     {
       "id": "ask-flask-blueprint-registration",
@@ -608,7 +697,9 @@
           "qualified": "App::register_blueprint",
           "file": "src/flask/sansio/app.py"
         }
-      ]
+      ],
+      "intent": "registration",
+      "split": "tuning"
     },
     {
       "id": "ask-flask-url-rule-registration",
@@ -621,7 +712,9 @@
           "qualified": "App::add_url_rule",
           "file": "src/flask/sansio/app.py"
         }
-      ]
+      ],
+      "intent": "registration",
+      "split": "tuning"
     },
     {
       "id": "ask-flask-before-request-callbacks",
@@ -634,7 +727,9 @@
           "qualified": "Flask::preprocess_request",
           "file": "src/flask/app.py"
         }
-      ]
+      ],
+      "intent": "lifecycle",
+      "split": "holdout"
     },
     {
       "id": "ask-flask-user-exception",
@@ -647,7 +742,9 @@
           "qualified": "Flask::handle_user_exception",
           "file": "src/flask/app.py"
         }
-      ]
+      ],
+      "intent": "error_handling",
+      "split": "tuning"
     },
     {
       "id": "ask-flask-unhandled-exception",
@@ -660,7 +757,9 @@
           "qualified": "Flask::handle_exception",
           "file": "src/flask/app.py"
         }
-      ]
+      ],
+      "intent": "error_handling",
+      "split": "tuning"
     },
     {
       "id": "ask-flask-finalize-request",
@@ -673,7 +772,9 @@
           "qualified": "Flask::finalize_request",
           "file": "src/flask/app.py"
         }
-      ]
+      ],
+      "intent": "lifecycle",
+      "split": "holdout"
     },
     {
       "id": "ask-flask-after-request-callbacks",
@@ -686,7 +787,9 @@
           "qualified": "Flask::process_response",
           "file": "src/flask/app.py"
         }
-      ]
+      ],
+      "intent": "lifecycle",
+      "split": "tuning"
     },
     {
       "id": "ask-flask-request-context",
@@ -699,7 +802,9 @@
           "qualified": "Flask::request_context",
           "file": "src/flask/app.py"
         }
-      ]
+      ],
+      "intent": "lifecycle",
+      "split": "tuning"
     },
     {
       "id": "ask-flask-development-server",
@@ -712,7 +817,9 @@
           "qualified": "Flask::run",
           "file": "src/flask/app.py"
         }
-      ]
+      ],
+      "intent": "lifecycle",
+      "split": "holdout"
     },
     {
       "id": "ask-flask-template-rendering",
@@ -725,7 +832,9 @@
           "qualified": "render_template",
           "file": "src/flask/templating.py"
         }
-      ]
+      ],
+      "intent": "output",
+      "split": "tuning"
     },
     {
       "id": "ask-flask-json-response",
@@ -738,7 +847,9 @@
           "qualified": "jsonify",
           "file": "src/flask/json/__init__.py"
         }
-      ]
+      ],
+      "intent": "output",
+      "split": "tuning"
     },
     {
       "id": "ask-flask-cli-load-app",
@@ -751,7 +862,9 @@
           "qualified": "ScriptInfo::load_app",
           "file": "src/flask/cli.py"
         }
-      ]
+      ],
+      "intent": "lifecycle",
+      "split": "holdout"
     },
     {
       "id": "callers-search-parallel",
@@ -795,7 +908,10 @@
       "kind": "path",
       "from": "crates/core/main.rs#run@3081",
       "to": "search_parallel",
-      "relations": ["calls", "uses"],
+      "relations": [
+        "calls",
+        "uses"
+      ],
       "expect": "found"
     },
     {
@@ -804,7 +920,10 @@
       "kind": "path",
       "from": "crates/core/main.rs#run@3081",
       "to": "files_parallel",
-      "relations": ["calls", "uses"],
+      "relations": [
+        "calls",
+        "uses"
+      ],
       "expect": "found"
     },
     {
@@ -813,8 +932,1779 @@
       "kind": "path",
       "from": "search_parallel",
       "to": "crates/core/main.rs#run@3081",
-      "relations": ["calls", "uses"],
+      "relations": [
+        "calls",
+        "uses"
+      ],
       "expect": "not_proven"
+    },
+    {
+      "id": "ask-rg-files-sequential",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where are files listed sequentially on a single thread",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "files",
+          "file": "crates/core/main.rs"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-rg-summary-printer",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is the summary printer configured from high level arguments",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "HiArgs::printer_summary",
+          "file": "crates/core/flags/hiargs.rs"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-rg-standard-printer",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is the standard printer configured",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "HiArgs::printer_standard",
+          "file": "crates/core/flags/hiargs.rs"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-rg-searcher-from-args",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is the searcher built from high level arguments",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "HiArgs::searcher",
+          "file": "crates/core/flags/hiargs.rs"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-rg-walk-builder",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is the directory walk builder configured",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "HiArgs::walk_builder",
+          "file": "crates/core/flags/hiargs.rs"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-rg-hiargs-from-low",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where are low level arguments converted into high level arguments",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "HiArgs::from_low_args",
+          "file": "crates/core/flags/hiargs.rs"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-rg-flag-lookup",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is a flag looked up by its name",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "FlagMap::find",
+          "file": "crates/core/flags/parse.rs"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-rg-haystack-build",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is a haystack built from a directory entry",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "HaystackBuilder::build",
+          "file": "crates/core/haystack.rs"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-rg-replacement-interpolation",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is the replacement string interpolated with capture groups",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "interpolate",
+          "file": "crates/matcher/src/interpolate.rs"
+        },
+        {
+          "qualified": "Captures::interpolate",
+          "file": "crates/matcher/src/lib.rs"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-rg-glob-build",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is a single glob compiled",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "GlobBuilder::build",
+          "file": "crates/globset/src/glob.rs"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-rg-globset-match",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is a glob set matched against a path",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "GlobSet::is_match",
+          "file": "crates/globset/src/lib.rs"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-rg-long-version",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is the long version string generated",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "generate_long",
+          "file": "crates/core/flags/doc/version.rs"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-rg-summary-finish",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where does the summary sink finish and print its count",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "SummarySink::finish",
+          "file": "crates/printer/src/summary.rs"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-rg-searcher-path",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where does the searcher search a file path",
+      "limit": 10,
+      "intent": "dispatch",
+      "relevant": [
+        {
+          "qualified": "Searcher::search_path",
+          "file": "crates/searcher/src/searcher/mod.rs"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-rg-excludes-file",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is the git excludes file parsed",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "parse_excludes_file",
+          "file": "crates/ignore/src/gitignore.rs"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-rg-types-matched",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where are file type definitions matched against a path",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "Types::matched",
+          "file": "crates/ignore/src/types.rs"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-rg-json-begin",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where does the JSON printer begin a search",
+      "limit": 10,
+      "intent": "lifecycle",
+      "relevant": [
+        {
+          "qualified": "JSONSink::begin",
+          "file": "crates/printer/src/json.rs"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-rg-main-run",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where does the ripgrep binary run its main search mode",
+      "limit": 10,
+      "intent": "dispatch",
+      "relevant": [
+        {
+          "qualified": "run",
+          "file": "crates/core/main.rs"
+        },
+        {
+          "qualified": "main",
+          "file": "crates/core/main.rs"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-cobra-root",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is the root command found",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "Command::Root",
+          "file": "command.go"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-cobra-execute-context",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is a command executed with a context",
+      "limit": 10,
+      "intent": "dispatch",
+      "relevant": [
+        {
+          "qualified": "Command::ExecuteContext",
+          "file": "command.go"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-cobra-persistent-flags",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is the persistent flag set returned",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "Command::PersistentFlags",
+          "file": "command.go"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-cobra-zsh-completion",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is zsh completion generated",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "Command::GenZshCompletion",
+          "file": "zsh_completions.go"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-cobra-fish-completion",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is fish shell completion generated",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "Command::GenFishCompletion",
+          "file": "fish_completions.go"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-cobra-powershell-completion",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is powershell completion generated",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "Command::GenPowerShellCompletion",
+          "file": "powershell_completions.go"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-cobra-help-command-init",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is the default help command initialized",
+      "limit": 10,
+      "intent": "lifecycle",
+      "relevant": [
+        {
+          "qualified": "Command::InitDefaultHelpCmd",
+          "file": "command.go"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-cobra-completion-command-init",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is the default completion command initialized",
+      "limit": 10,
+      "intent": "lifecycle",
+      "relevant": [
+        {
+          "qualified": "Command::InitDefaultCompletionCmd",
+          "file": "completions.go"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-cobra-version-flag-init",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is the default version flag initialized",
+      "limit": 10,
+      "intent": "lifecycle",
+      "relevant": [
+        {
+          "qualified": "Command::InitDefaultVersionFlag",
+          "file": "command.go"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-cobra-usage-template",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is the usage template set",
+      "limit": 10,
+      "intent": "registration",
+      "relevant": [
+        {
+          "qualified": "Command::SetUsageTemplate",
+          "file": "command.go"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-cobra-template-execute",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is a text template executed with a command",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "tmpl",
+          "file": "cobra.go"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-cobra-minimum-args",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is a minimum number of positional arguments enforced",
+      "limit": 10,
+      "intent": "error_handling",
+      "relevant": [
+        {
+          "qualified": "MinimumNArgs",
+          "file": "args.go"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-cobra-only-valid-args",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where are positional arguments checked against the valid args list",
+      "limit": 10,
+      "intent": "error_handling",
+      "relevant": [
+        {
+          "qualified": "OnlyValidArgs",
+          "file": "args.go"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-cobra-flag-error-func",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is the flag error function set",
+      "limit": 10,
+      "intent": "registration",
+      "relevant": [
+        {
+          "qualified": "Command::SetFlagErrorFunc",
+          "file": "command.go"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-cobra-parse-flags",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where are flags parsed for a command",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "Command::ParseFlags",
+          "file": "command.go"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-cobra-print-errln",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is an error line printed to standard error",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "Command::PrintErrln",
+          "file": "command.go"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-cobra-command-name",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is the command name derived from the use line",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "Command::Name",
+          "file": "command.go"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-cobra-levenshtein",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is the levenshtein distance computed for suggestions",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "ld",
+          "file": "cobra.go"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-cobra-strip-flags",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where are flags stripped from arguments before finding a subcommand",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "stripFlags",
+          "file": "command.go"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-cobra-available-command",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is a command checked for availability in help",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "Command::IsAvailableCommand",
+          "file": "command.go"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-cobra-markdown-docs",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is markdown documentation generated for a command",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "GenMarkdown",
+          "file": "doc/md_docs.go"
+        },
+        {
+          "qualified": "GenMarkdownTree",
+          "file": "doc/md_docs.go"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-cobra-man-pages",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where are man pages generated",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "GenMan",
+          "file": "doc/man_docs.go"
+        },
+        {
+          "qualified": "GenManTree",
+          "file": "doc/man_docs.go"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-cobra-find-command",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is the target command found from arguments",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "Command::Find",
+          "file": "command.go"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-cobra-mark-flag-required",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is a flag marked as required",
+      "limit": 10,
+      "intent": "registration",
+      "relevant": [
+        {
+          "qualified": "Command::MarkFlagRequired",
+          "file": "shell_completions.go"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-cobra-internal-execute",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where does the command run its pre run hooks and run function",
+      "limit": 10,
+      "intent": "dispatch",
+      "relevant": [
+        {
+          "qualified": "Command::execute",
+          "file": "command.go"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-flask-wsgi-app",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is the WSGI application entry point",
+      "limit": 10,
+      "intent": "dispatch",
+      "relevant": [
+        {
+          "qualified": "Flask::wsgi_app",
+          "file": "src/flask/app.py"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-flask-url-for",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is a URL built for an endpoint",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "url_for",
+          "file": "src/flask/helpers.py"
+        },
+        {
+          "qualified": "Flask::url_for",
+          "file": "src/flask/app.py"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-flask-app-context-push",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is the application context pushed",
+      "limit": 10,
+      "intent": "lifecycle",
+      "relevant": [
+        {
+          "qualified": "AppContext::push",
+          "file": "src/flask/ctx.py"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-flask-request-context-push",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is the request context pushed",
+      "limit": 10,
+      "intent": "lifecycle",
+      "relevant": [
+        {
+          "qualified": "RequestContext::push",
+          "file": "src/flask/ctx.py"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-flask-teardown-request",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where are teardown request functions called",
+      "limit": 10,
+      "intent": "lifecycle",
+      "relevant": [
+        {
+          "qualified": "Flask::do_teardown_request",
+          "file": "src/flask/app.py"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-flask-teardown-appcontext",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is the application context torn down",
+      "limit": 10,
+      "intent": "lifecycle",
+      "relevant": [
+        {
+          "qualified": "Flask::do_teardown_appcontext",
+          "file": "src/flask/app.py"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-flask-jinja-environment",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is the jinja environment created",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "Flask::create_jinja_environment",
+          "file": "src/flask/app.py"
+        },
+        {
+          "qualified": "App::create_jinja_environment",
+          "file": "src/flask/sansio/app.py"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-flask-template-loader",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where does the dispatching template loader load a template source",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "DispatchingJinjaLoader::get_source",
+          "file": "src/flask/templating.py"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-flask-register-error-handler",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is an error handler registered for an exception",
+      "limit": 10,
+      "intent": "registration",
+      "relevant": [
+        {
+          "qualified": "Scaffold::register_error_handler",
+          "file": "src/flask/sansio/scaffold.py"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-flask-run-cli-command",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is the flask run CLI command defined",
+      "limit": 10,
+      "intent": "lifecycle",
+      "relevant": [
+        {
+          "qualified": "run_command",
+          "file": "src/flask/cli.py"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-flask-shell-command",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is the interactive shell command defined",
+      "limit": 10,
+      "intent": "lifecycle",
+      "relevant": [
+        {
+          "qualified": "shell_command",
+          "file": "src/flask/cli.py"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-flask-routes-command",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where are registered routes listed by the CLI",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "routes_command",
+          "file": "src/flask/cli.py"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-flask-open-session",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is the session loaded from the cookie",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "SecureCookieSessionInterface::open_session",
+          "file": "src/flask/sessions.py"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-flask-save-session",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is the session saved into the cookie",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "SecureCookieSessionInterface::save_session",
+          "file": "src/flask/sessions.py"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-flask-send-from-directory",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is a file sent from a directory",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "send_from_directory",
+          "file": "src/flask/helpers.py"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-flask-stream-with-context",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is a generator streamed with the request context",
+      "limit": 10,
+      "intent": "lifecycle",
+      "relevant": [
+        {
+          "qualified": "stream_with_context",
+          "file": "src/flask/helpers.py"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-flask-flash",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is a flash message stored for the next request",
+      "limit": 10,
+      "intent": "registration",
+      "relevant": [
+        {
+          "qualified": "flash",
+          "file": "src/flask/helpers.py"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-flask-config-pyfile",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is configuration loaded from a python file",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "Config::from_pyfile",
+          "file": "src/flask/config.py"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-flask-config-prefixed-env",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is configuration loaded from prefixed environment variables",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "Config::from_prefixed_env",
+          "file": "src/flask/config.py"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-flask-blueprint-setup-state",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is the blueprint setup state created",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "Blueprint::make_setup_state",
+          "file": "src/flask/sansio/blueprints.py"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-flask-static-file",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is a static file served",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "Flask::send_static_file",
+          "file": "src/flask/app.py"
+        },
+        {
+          "qualified": "Blueprint::send_static_file",
+          "file": "src/flask/blueprints.py"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-flask-match-request",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is the request URL matched to a rule",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "RequestContext::match_request",
+          "file": "src/flask/ctx.py"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-flask-find-error-handler",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is the error handler looked up for an exception",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "App::_find_error_handler",
+          "file": "src/flask/sansio/app.py"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-flask-handle-http-exception",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is an HTTP exception handled",
+      "limit": 10,
+      "intent": "error_handling",
+      "relevant": [
+        {
+          "qualified": "Flask::handle_http_exception",
+          "file": "src/flask/app.py"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-flask-url-adapter",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is the URL adapter created",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "Flask::create_url_adapter",
+          "file": "src/flask/app.py"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-flask-json-dumps",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is data serialized to a JSON string by the provider",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "DefaultJSONProvider::dumps",
+          "file": "src/flask/json/provider.py"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-flask-log-exception",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is an exception logged",
+      "limit": 10,
+      "intent": "error_handling",
+      "relevant": [
+        {
+          "qualified": "Flask::log_exception",
+          "file": "src/flask/app.py"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-hono-dispatch",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where is an incoming request dispatched to matched route handlers",
+      "limit": 10,
+      "intent": "dispatch",
+      "relevant": [
+        {
+          "qualified": "Hono::dispatch",
+          "file": "src/hono-base.ts"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-hono-compose",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where are middleware handlers composed into one chain",
+      "limit": 10,
+      "intent": "dispatch",
+      "relevant": [
+        {
+          "qualified": "compose",
+          "file": "src/compose.ts"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-hono-add-route",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where is a route handler added to the router",
+      "limit": 10,
+      "intent": "registration",
+      "relevant": [
+        {
+          "qualified": "Hono::addRoute",
+          "file": "src/hono-base.ts"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-hono-mount",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where is a sub application mounted under a path",
+      "limit": 10,
+      "intent": "registration",
+      "relevant": [
+        {
+          "qualified": "Hono::mount",
+          "file": "src/hono-base.ts"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-hono-regexp-match",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where does the regular expression router match a method and path",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "RegExpRouter::match",
+          "file": "src/router/reg-exp-router/router.ts"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-hono-trie-insert",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where is a route inserted into the trie router node",
+      "limit": 10,
+      "intent": "registration",
+      "relevant": [
+        {
+          "qualified": "Node::insert",
+          "file": "src/router/trie-router/node.ts"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-hono-trie-match",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where does the trie router match a request",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "TrieRouter::match",
+          "file": "src/router/trie-router/router.ts"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-hono-cookie-parse",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where are cookies parsed from a cookie header",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "parse",
+          "file": "src/utils/cookie.ts"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-hono-cors",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where is the CORS middleware created",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "cors",
+          "file": "src/middleware/cors/index.ts"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-hono-basic-auth",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where is the basic authentication middleware created",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "basicAuth",
+          "file": "src/middleware/basic-auth/index.ts"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-hono-get-path",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where is the request path extracted from the URL",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "getPath",
+          "file": "src/utils/url.ts"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-hono-http-exception",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where is an HTTP exception converted into a response",
+      "limit": 10,
+      "intent": "error_handling",
+      "relevant": [
+        {
+          "qualified": "HTTPException::getResponse",
+          "file": "src/http-exception.ts"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-hono-error-handler",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where is the default error handler that returns an internal server error",
+      "limit": 10,
+      "intent": "error_handling",
+      "relevant": [
+        {
+          "qualified": "errorHandler",
+          "file": "src/hono-base.ts"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-hono-not-found-handler",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where is the default not found handler",
+      "limit": 10,
+      "intent": "error_handling",
+      "relevant": [
+        {
+          "qualified": "notFoundHandler",
+          "file": "src/hono-base.ts"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-hono-validator",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where is a validator middleware created for a request target",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "validator",
+          "file": "src/validator/validator.ts"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-hono-smart-router",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where does the smart router pick a router and match",
+      "limit": 10,
+      "intent": "dispatch",
+      "relevant": [
+        {
+          "qualified": "SmartRouter::match",
+          "file": "src/router/smart-router/router.ts"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-hono-serve-static",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where is the static file middleware created",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "serveStatic",
+          "file": "src/middleware/serve-static/index.ts"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-hono-merge-path",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where are route paths merged with a base path",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "mergePath",
+          "file": "src/utils/url.ts"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-hono-etag",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where is the ETag middleware created",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "etag",
+          "file": "src/middleware/etag/index.ts"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-hono-logger",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where is the logger middleware created",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "logger",
+          "file": "src/middleware/logger/index.ts"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-hono-route-group",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where is a sub application routed under a path prefix",
+      "limit": 10,
+      "intent": "registration",
+      "relevant": [
+        {
+          "qualified": "Hono::route",
+          "file": "src/hono-base.ts"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-hono-base-path",
+      "repository": "hono-v4.4.0",
+      "kind": "ask",
+      "input": "where is the base path set for an application",
+      "limit": 10,
+      "intent": "registration",
+      "relevant": [
+        {
+          "qualified": "Hono::basePath",
+          "file": "src/hono-base.ts"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-gson-builder-create",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is a Gson instance created from the builder configuration",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "GsonBuilder::create",
+          "file": "gson/src/main/java/com/google/gson/GsonBuilder.java"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-gson-from-json",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is JSON deserialized into an object",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "Gson::fromJson",
+          "file": "gson/src/main/java/com/google/gson/Gson.java"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-gson-to-json",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is an object serialized to JSON",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "Gson::toJson",
+          "file": "gson/src/main/java/com/google/gson/Gson.java"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-gson-register-adapter",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is a type adapter registered",
+      "limit": 10,
+      "intent": "registration",
+      "relevant": [
+        {
+          "qualified": "GsonBuilder::registerTypeAdapter",
+          "file": "gson/src/main/java/com/google/gson/GsonBuilder.java"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-gson-get-adapter",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is the type adapter looked up for a type",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "Gson::getAdapter",
+          "file": "gson/src/main/java/com/google/gson/Gson.java"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-gson-parse-reader",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is a JSON element parsed from a reader",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "JsonParser::parseReader",
+          "file": "gson/src/main/java/com/google/gson/JsonParser.java"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-gson-parse-string",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is a JSON string parsed into a tree",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "JsonParser::parseString",
+          "file": "gson/src/main/java/com/google/gson/JsonParser.java"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-gson-peek-token",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is the next token peeked from the JSON stream reader",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "JsonReader::peek",
+          "file": "gson/src/main/java/com/google/gson/stream/JsonReader.java"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-gson-reflective-adapter",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is the reflective type adapter created",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "ReflectiveTypeAdapterFactory::create",
+          "file": "gson/src/main/java/com/google/gson/internal/bind/ReflectiveTypeAdapterFactory.java"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-gson-syntax-error",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is a malformed JSON syntax error raised by the reader",
+      "limit": 10,
+      "intent": "error_handling",
+      "relevant": [
+        {
+          "qualified": "JsonReader::syntaxError",
+          "file": "gson/src/main/java/com/google/gson/stream/JsonReader.java"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-gson-object-add",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is a member added to a JSON object",
+      "limit": 10,
+      "intent": "registration",
+      "relevant": [
+        {
+          "qualified": "JsonObject::add",
+          "file": "gson/src/main/java/com/google/gson/JsonObject.java"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-gson-exclude-field",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is a field excluded from serialization",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "Excluder::excludeField",
+          "file": "gson/src/main/java/com/google/gson/internal/Excluder.java"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-gson-constructor",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is the object constructor resolved for a type",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "ConstructorConstructor::get",
+          "file": "gson/src/main/java/com/google/gson/internal/ConstructorConstructor.java"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-gson-write-null",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is a JSON null written to the stream writer",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "JsonWriter::nullValue",
+          "file": "gson/src/main/java/com/google/gson/stream/JsonWriter.java"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-gson-streams-write",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is a JSON element written to a writer",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "Streams::write",
+          "file": "gson/src/main/java/com/google/gson/internal/Streams.java"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-gson-streams-parse",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is a JSON element parsed from a stream reader",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "Streams::parse",
+          "file": "gson/src/main/java/com/google/gson/internal/Streams.java"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-gson-begin-object",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where does the JSON writer begin an object",
+      "limit": 10,
+      "intent": "output",
+      "relevant": [
+        {
+          "qualified": "JsonWriter::beginObject",
+          "file": "gson/src/main/java/com/google/gson/stream/JsonWriter.java"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-gson-next-string",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is the next string value read from the JSON stream",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "JsonReader::nextString",
+          "file": "gson/src/main/java/com/google/gson/stream/JsonReader.java"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-gson-type-token-get",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is a type token created for a type",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "TypeToken::get",
+          "file": "gson/src/main/java/com/google/gson/reflect/TypeToken.java"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-gson-raw-type",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is the raw class extracted from a generic type",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "$Gson$Types::getRawType",
+          "file": "gson/src/main/java/com/google/gson/internal/$Gson$Types.java"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-gson-delegate-adapter",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is the delegate adapter looked up to skip a factory",
+      "limit": 10,
+      "intent": "lookup",
+      "relevant": [
+        {
+          "qualified": "Gson::getDelegateAdapter",
+          "file": "gson/src/main/java/com/google/gson/Gson.java"
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "ask-gson-pretty-printing",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is pretty printing enabled on the builder",
+      "limit": 10,
+      "intent": "registration",
+      "relevant": [
+        {
+          "qualified": "GsonBuilder::setPrettyPrinting",
+          "file": "gson/src/main/java/com/google/gson/GsonBuilder.java"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-gson-new-writer",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is a JSON writer created with the configured settings",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "Gson::newJsonWriter",
+          "file": "gson/src/main/java/com/google/gson/Gson.java"
+        }
+      ],
+      "split": "tuning"
+    },
+    {
+      "id": "ask-gson-new-reader",
+      "repository": "gson-2.11.0",
+      "kind": "ask",
+      "input": "where is a JSON reader created with the configured settings",
+      "limit": 10,
+      "intent": "construction",
+      "relevant": [
+        {
+          "qualified": "Gson::newJsonReader",
+          "file": "gson/src/main/java/com/google/gson/Gson.java"
+        }
+      ],
+      "split": "holdout"
     }
   ]
 }

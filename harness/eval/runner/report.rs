@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use super::model::{CaseOutcome, Scorecard};
+use super::model::{CaseOutcome, LabeledRanking, Scorecard};
 
 pub fn output_directory(workspace: &Path) -> PathBuf {
     std::env::var_os("SINTER_EVAL_OUT")
@@ -133,6 +133,17 @@ fn render_markdown(scorecard: &Scorecard) -> String {
         scorecard.minimums.path_accuracy
     )
     .unwrap();
+    write_breakdown(&mut output, "Ask by split", &scorecard.metrics.ask_by_split);
+    write_breakdown(
+        &mut output,
+        "Ask by repository",
+        &scorecard.metrics.ask_by_repository,
+    );
+    write_breakdown(
+        &mut output,
+        "Ask by intent",
+        &scorecard.metrics.ask_by_intent,
+    );
     writeln!(output, "\n## Cases\n").unwrap();
     writeln!(
         output,
@@ -147,10 +158,17 @@ fn render_markdown(scorecard: &Scorecard) -> String {
                 recall_at_5,
                 recall_at_limit,
                 candidate_miss,
+                top_incorrect,
                 ..
-            } => format!(
-                "top-1 {top_1_correct}; MRR {reciprocal_rank:.3}; R@5 {recall_at_5:.3}; R@limit {recall_at_limit:.3}; candidate miss {candidate_miss}"
-            ),
+            } => {
+                let mut line = format!(
+                    "top-1 {top_1_correct}; MRR {reciprocal_rank:.3}; R@5 {recall_at_5:.3}; R@limit {recall_at_limit:.3}; candidate miss {candidate_miss}"
+                );
+                if let Some(wrong) = top_incorrect {
+                    write!(line, "; got `{}` ({})", wrong.qualified, wrong.file).unwrap();
+                }
+                line
+            }
             CaseOutcome::Callers {
                 precision, recall, ..
             } => format!("precision {precision:.3}; recall {recall:.3}"),
@@ -171,6 +189,7 @@ fn render_markdown(scorecard: &Scorecard) -> String {
         )
         .unwrap();
     }
+    write_misses(&mut output, scorecard);
     if !scorecard.regressions.is_empty() {
         writeln!(output, "\n## Regressions\n").unwrap();
         for regression in &scorecard.regressions {
@@ -178,4 +197,72 @@ fn render_markdown(scorecard: &Scorecard) -> String {
         }
     }
     output
+}
+
+fn write_breakdown(output: &mut String, title: &str, groups: &[LabeledRanking]) {
+    if groups.is_empty() {
+        return;
+    }
+    writeln!(output, "\n## {title}\n").unwrap();
+    writeln!(
+        output,
+        "| Group | Cases | Top-1 | MRR | R@5 | R@limit | Candidate misses | p95 |\n|---|---:|---:|---:|---:|---:|---:|---:|"
+    )
+    .unwrap();
+    for group in groups {
+        let m = &group.metrics;
+        writeln!(
+            output,
+            "| {} | {} | {:.3} | {:.3} | {:.3} | {:.3} | {} | {} ms |",
+            group.label,
+            m.cases,
+            m.top_1_accuracy,
+            m.mean_reciprocal_rank,
+            m.mean_recall_at_5,
+            m.mean_recall_at_limit,
+            m.candidate_miss_cases,
+            m.p95_duration_ms,
+        )
+        .unwrap();
+    }
+}
+
+/// Every ask case whose top result is wrong, with the wrong answer beside
+/// the labels, so a ranking regression can be read without the JSON.
+fn write_misses(output: &mut String, scorecard: &Scorecard) {
+    let misses = scorecard
+        .cases
+        .iter()
+        .filter_map(|case| match &case.outcome {
+            CaseOutcome::Ranking {
+                input,
+                top_incorrect: Some(wrong),
+                first_relevant_rank,
+                ..
+            } if case.kind == "ask" => Some((case, input, wrong, first_relevant_rank)),
+            _ => None,
+        });
+    let mut wrote_header = false;
+    for (case, input, wrong, first_relevant_rank) in misses {
+        if !wrote_header {
+            writeln!(output, "\n## Ask misses\n").unwrap();
+            writeln!(
+                output,
+                "| Case | Intent | Question | Got | Expected rank |\n|---|---|---|---|---:|"
+            )
+            .unwrap();
+            wrote_header = true;
+        }
+        writeln!(
+            output,
+            "| `{}` | {} | {} | `{}` ({}) | {} |",
+            case.id,
+            case.intent.as_deref().unwrap_or("-"),
+            input,
+            wrong.qualified,
+            wrong.file,
+            first_relevant_rank.map_or("miss".to_owned(), |rank| rank.to_string()),
+        )
+        .unwrap();
+    }
 }

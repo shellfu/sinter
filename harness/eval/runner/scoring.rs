@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use anyhow::{Context, Result};
 
 use super::model::{
-    CallerMetrics, CaseOutcome, CaseResult, Metrics, Minimums, PathExpectation, PathMetrics,
-    RankedSymbol, RankingMetrics, SymbolKey,
+    CallerMetrics, CaseOutcome, CaseResult, LabeledRanking, Metrics, Minimums, PathExpectation,
+    PathMetrics, RankedSymbol, RankingMetrics, Split, SymbolKey,
 };
 
 pub fn score_ranking(
@@ -58,6 +58,10 @@ pub fn score_ranking(
         candidate_pool_size: candidate_results.len(),
         candidate_relevant_found: candidate_found.len(),
         candidate_miss: candidate_found.len() < relevant_set.len(),
+        top_incorrect: returned
+            .first()
+            .filter(|top| !relevant_set.contains(&top.symbol))
+            .map(|top| top.symbol.clone()),
         returned,
     })
 }
@@ -149,33 +153,11 @@ pub fn symbol_key(value: &serde_json::Value, qualified: &str, file: &str) -> Res
 }
 
 pub fn aggregate_metrics(cases: &[CaseResult]) -> Metrics {
-    let mut query = RankingMetrics::default();
-    let mut ask = RankingMetrics::default();
     let mut callers = CallerMetrics::default();
     let mut paths = PathMetrics::default();
-
     for case in cases {
         match &case.outcome {
-            CaseOutcome::Ranking {
-                top_1_correct,
-                reciprocal_rank,
-                recall_at_5,
-                recall_at_limit,
-                candidate_miss,
-                ..
-            } => {
-                let metric = if case.kind == "query" {
-                    &mut query
-                } else {
-                    &mut ask
-                };
-                metric.cases += 1;
-                metric.top_1_accuracy += f64::from(*top_1_correct);
-                metric.mean_reciprocal_rank += reciprocal_rank;
-                metric.mean_recall_at_5 += recall_at_5;
-                metric.mean_recall_at_limit += recall_at_limit;
-                metric.candidate_miss_cases += usize::from(*candidate_miss);
-            }
+            CaseOutcome::Ranking { .. } => {}
             CaseOutcome::Callers {
                 true_positives,
                 returned_total,
@@ -193,19 +175,82 @@ pub fn aggregate_metrics(cases: &[CaseResult]) -> Metrics {
             }
         }
     }
-    finish_ranking(&mut query);
-    finish_ranking(&mut ask);
-    set_latency_percentiles(&mut query, cases, "query");
-    set_latency_percentiles(&mut ask, cases, "ask");
     callers.precision = ratio(callers.true_positives, callers.returned);
     callers.recall = ratio(callers.true_positives, callers.expected);
     paths.accuracy = ratio(paths.correct, paths.cases);
+    let ask = |case: &&CaseResult| case.kind == "ask";
     Metrics {
-        query,
-        ask,
+        query: ranking_metrics(cases.iter().filter(|case| case.kind == "query")),
+        ask: ranking_metrics(cases.iter().filter(ask)),
+        ask_by_split: grouped(cases, |case| {
+            case.split.map(|split| split.as_str().to_owned())
+        }),
+        ask_by_repository: grouped(cases, |case| ask(&case).then(|| case.repository.clone())),
+        ask_by_intent: grouped(cases, |case| case.intent.clone()),
         callers,
         paths,
     }
+}
+
+/// Ask metrics for every distinct label `key` assigns, in first-seen order.
+fn grouped(
+    cases: &[CaseResult],
+    key: impl Fn(&CaseResult) -> Option<String>,
+) -> Vec<LabeledRanking> {
+    let mut labels: Vec<String> = Vec::new();
+    for case in cases {
+        if let Some(label) = key(case)
+            && !labels.contains(&label)
+        {
+            labels.push(label);
+        }
+    }
+    labels
+        .into_iter()
+        .map(|label| LabeledRanking {
+            metrics: ranking_metrics(
+                cases
+                    .iter()
+                    .filter(|case| key(case).as_deref() == Some(label.as_str())),
+            ),
+            label,
+        })
+        .collect()
+}
+
+fn ranking_metrics<'a>(cases: impl Iterator<Item = &'a CaseResult>) -> RankingMetrics {
+    let mut metrics = RankingMetrics::default();
+    let mut durations = Vec::new();
+    for case in cases {
+        let CaseOutcome::Ranking {
+            top_1_correct,
+            reciprocal_rank,
+            recall_at_5,
+            recall_at_limit,
+            candidate_miss,
+            ..
+        } = &case.outcome
+        else {
+            continue;
+        };
+        metrics.cases += 1;
+        metrics.top_1_accuracy += f64::from(*top_1_correct);
+        metrics.mean_reciprocal_rank += reciprocal_rank;
+        metrics.mean_recall_at_5 += recall_at_5;
+        metrics.mean_recall_at_limit += recall_at_limit;
+        metrics.candidate_miss_cases += usize::from(*candidate_miss);
+        durations.push(case.duration_ms);
+    }
+    if metrics.cases > 0 {
+        metrics.top_1_accuracy /= metrics.cases as f64;
+        metrics.mean_reciprocal_rank /= metrics.cases as f64;
+        metrics.mean_recall_at_5 /= metrics.cases as f64;
+        metrics.mean_recall_at_limit /= metrics.cases as f64;
+    }
+    durations.sort_unstable();
+    metrics.p50_duration_ms = percentile(&durations, 50);
+    metrics.p95_duration_ms = percentile(&durations, 95);
+    metrics
 }
 
 pub fn compare_minimums(metrics: &Metrics, minimums: &Minimums) -> Vec<String> {
@@ -241,6 +286,11 @@ pub fn compare_minimums(metrics: &Metrics, minimums: &Minimums) -> Vec<String> {
             minimums.ask_recall_at_limit,
         ),
         (
+            "ask holdout top-1 accuracy",
+            holdout_top_1(metrics),
+            minimums.ask_holdout_top_1_accuracy,
+        ),
+        (
             "caller precision",
             metrics.callers.precision,
             minimums.caller_precision,
@@ -263,24 +313,12 @@ pub fn compare_minimums(metrics: &Metrics, minimums: &Minimums) -> Vec<String> {
         .collect()
 }
 
-fn finish_ranking(metrics: &mut RankingMetrics) {
-    if metrics.cases > 0 {
-        metrics.top_1_accuracy /= metrics.cases as f64;
-        metrics.mean_reciprocal_rank /= metrics.cases as f64;
-        metrics.mean_recall_at_5 /= metrics.cases as f64;
-        metrics.mean_recall_at_limit /= metrics.cases as f64;
-    }
-}
-
-fn set_latency_percentiles(metrics: &mut RankingMetrics, cases: &[CaseResult], kind: &str) {
-    let mut durations = cases
+fn holdout_top_1(metrics: &Metrics) -> f64 {
+    metrics
+        .ask_by_split
         .iter()
-        .filter(|case| case.kind == kind)
-        .map(|case| case.duration_ms)
-        .collect::<Vec<_>>();
-    durations.sort_unstable();
-    metrics.p50_duration_ms = percentile(&durations, 50);
-    metrics.p95_duration_ms = percentile(&durations, 95);
+        .find(|group| group.label == Split::Holdout.as_str())
+        .map_or(1.0, |group| group.metrics.top_1_accuracy)
 }
 
 fn percentile(sorted: &[u128], percentile: usize) -> u128 {
@@ -330,11 +368,13 @@ mod tests {
             recall_at_limit,
             candidate_relevant_found,
             candidate_miss,
+            top_incorrect,
             ..
         } = outcome
         else {
             panic!("expected ranking outcome");
         };
+        assert_eq!(top_incorrect, Some(label("noise")));
         assert_eq!(first_relevant_rank, Some(2));
         assert!(!top_1_correct);
         assert_eq!(recall_at_5, 0.5);

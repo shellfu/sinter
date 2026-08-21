@@ -24,6 +24,7 @@ pub struct Minimums {
     pub ask_mrr: f64,
     pub ask_recall_at_5: f64,
     pub ask_recall_at_limit: f64,
+    pub ask_holdout_top_1_accuracy: f64,
     pub caller_precision: f64,
     pub caller_recall: f64,
     pub path_accuracy: f64,
@@ -44,6 +45,8 @@ pub enum CaseSpec {
         repository: String,
         input: String,
         limit: usize,
+        intent: String,
+        split: Split,
         relevant: Vec<SymbolKey>,
     },
     Callers {
@@ -88,6 +91,23 @@ pub struct SymbolKey {
     pub file: String,
 }
 
+/// Tuning cases may drive weight changes; holdout cases only measure them.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Split {
+    Tuning,
+    Holdout,
+}
+
+impl Split {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Tuning => "tuning",
+            Self::Holdout => "holdout",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PathExpectation {
@@ -130,8 +150,18 @@ pub struct RepositoryResult {
 pub struct Metrics {
     pub query: RankingMetrics,
     pub ask: RankingMetrics,
+    pub ask_by_split: Vec<LabeledRanking>,
+    pub ask_by_repository: Vec<LabeledRanking>,
+    pub ask_by_intent: Vec<LabeledRanking>,
     pub callers: CallerMetrics,
     pub paths: PathMetrics,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LabeledRanking {
+    pub label: String,
+    #[serde(flatten)]
+    pub metrics: RankingMetrics,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -168,6 +198,10 @@ pub struct CaseResult {
     pub id: String,
     pub repository: String,
     pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub split: Option<Split>,
     pub duration_ms: u128,
     #[serde(flatten)]
     pub outcome: CaseOutcome,
@@ -189,6 +223,8 @@ pub enum CaseOutcome {
         candidate_pool_size: usize,
         candidate_relevant_found: usize,
         candidate_miss: bool,
+        /// Top result when it is not relevant; None when top-1 is correct.
+        top_incorrect: Option<SymbolKey>,
         returned: Vec<RankedSymbol>,
     },
     Callers {

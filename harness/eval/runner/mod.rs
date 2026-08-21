@@ -12,9 +12,18 @@ use anyhow::{Context, Result, bail};
 
 use self::model::{CaseResult, CaseSpec, RepositoryResult, Scorecard, SuiteSpec};
 
-const SCORECARD_SCHEMA: u32 = 2;
-const SUITE_SCHEMA: u32 = 1;
+const SCORECARD_SCHEMA: u32 = 3;
+const SUITE_SCHEMA: u32 = 2;
 const ASK_CANDIDATE_LIMIT: usize = 200;
+const INTENTS: &[&str] = &[
+    "construction",
+    "registration",
+    "dispatch",
+    "lifecycle",
+    "error_handling",
+    "output",
+    "lookup",
+];
 
 pub fn run() -> Result<()> {
     let workspace = workspace_root();
@@ -232,10 +241,16 @@ fn evaluate_case(sinter: &Path, repository: &Path, case: &CaseSpec) -> Result<Ca
             )
         }
     };
+    let (intent, split) = match case {
+        CaseSpec::Ask { intent, split, .. } => (Some(intent.clone()), Some(*split)),
+        _ => (None, None),
+    };
     Ok(CaseResult {
         id: case.id().to_owned(),
         repository: case.repository().to_owned(),
         kind,
+        intent,
+        split,
         duration_ms,
         outcome,
     })
@@ -268,6 +283,27 @@ fn validate_suite(suite: &SuiteSpec) -> Result<()> {
     if repository_names.len() != suite.repositories.len() {
         bail!("evaluation repository names must be unique");
     }
+    let holdout = suite
+        .cases
+        .iter()
+        .filter(|case| {
+            matches!(
+                case,
+                CaseSpec::Ask {
+                    split: model::Split::Holdout,
+                    ..
+                }
+            )
+        })
+        .count();
+    let asks = suite
+        .cases
+        .iter()
+        .filter(|case| matches!(case, CaseSpec::Ask { .. }))
+        .count();
+    if asks > 0 && holdout * 4 < asks {
+        bail!("at least a quarter of ask cases must be holdout ({holdout}/{asks})");
+    }
     let mut case_ids = HashSet::new();
     for case in &suite.cases {
         if !case_ids.insert(case.id()) {
@@ -283,12 +319,22 @@ fn validate_suite(suite: &SuiteSpec) -> Result<()> {
         match case {
             CaseSpec::Query {
                 limit, relevant, ..
-            }
-            | CaseSpec::Ask {
-                limit, relevant, ..
             } => {
                 if *limit == 0 || relevant.is_empty() {
                     bail!("case {} needs a positive limit and labels", case.id());
+                }
+            }
+            CaseSpec::Ask {
+                limit,
+                relevant,
+                intent,
+                ..
+            } => {
+                if *limit == 0 || relevant.is_empty() {
+                    bail!("case {} needs a positive limit and labels", case.id());
+                }
+                if !INTENTS.contains(&intent.as_str()) {
+                    bail!("case {} has unknown intent {intent}", case.id());
                 }
             }
             CaseSpec::Callers { expected, .. } if expected.is_empty() => {
