@@ -2,7 +2,12 @@
 
 This harness measures Sinter against hand-labeled navigation tasks in a pinned public repository. It covers exact symbol lookup, natural-language ranking, direct callers, and structural paths. The generated scorecard describes this corpus and configuration; it is not a claim about all repositories.
 
-The first corpus is ripgrep 14.1.1 at commit `4649aa9700619f94cf9c66876e9549d83420e16c`. The run builds a syntax-only graph, so the score represents Sinter's zero-config behavior without SCIP.
+The suite currently pins ripgrep 14.1.1, Cobra 1.8.1, and Flask 3.0.3 at
+the exact commits recorded in `cases.json`. It contains 59 hand-labeled tasks:
+3 exact lookups, 50 natural-language `ask` questions, 3 direct-caller checks,
+and 3 path checks. Each run builds syntax-only graphs, so the score represents
+Sinter's zero-config behavior without SCIP. The small caller and path samples
+are regression gates, not estimates of accuracy across all repositories.
 
 ## Prerequisites
 

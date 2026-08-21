@@ -214,10 +214,15 @@ automatically. Recipe, cache-key guidance, and a copy-paste workflow:
   gate CI at precision/recall 1.0 for the enumerated contract facts; any change that moves the metric fails
   with the exact missing/extra tuples printed. Expectations derive from
   language semantics, never from engine output (`harness/golden/`).
-- **Real-repository evaluation**: fourteen hand-labeled navigation tasks run
-  against ripgrep 14.1.1 at a pinned commit. The weekly and manually dispatched
-  workflow reports exact lookup and `ask` ranking, direct-caller precision and
-  recall, path accuracy, and syntax-only build time (`harness/eval/`).
+- **Real-repository evaluation**: 59 hand-labeled, syntax-only navigation tasks
+  run against pinned releases of ripgrep, Cobra, and Flask: 3 exact lookups,
+  50 natural-language `ask` questions, 3 direct-caller checks, and 3 path
+  checks. The current scorecard reports `ask` top-1 accuracy 0.480, MRR 0.694,
+  recall@5 0.955, and recall@10 0.985, with no relevant symbols missing from
+  the 200-result diagnostic candidate window. Exact lookup, callers, and paths
+  score 1.0 on their small regression samples; those samples are gates, not a
+  claim of universal accuracy. The weekly and manually dispatched workflow
+  uploads the full scorecard and syntax-only build timings (`harness/eval/`).
 - **Budgets** (measured on a ~2M-LOC Go repository, 271k nodes, before
   the stat-gated scan landed): full build 18s, one-file edit under 1s
   typical, cold point query under 100ms, `ask` 66ms end-to-end. A clean
