@@ -14,30 +14,24 @@ use sinter_store::Store;
 use crate::lookup::open_store;
 use crate::render::{ellipsize, line_of, location};
 
+mod query;
 mod ranking;
 
-use ranking::{Hit, QueryTerm, clauses_of, score_candidates, terms_of};
-
-fn term_text(terms: &[QueryTerm], separator: &str) -> String {
-    terms
-        .iter()
-        .map(QueryTerm::surface)
-        .collect::<Vec<_>>()
-        .join(separator)
-}
+use query::{Query, clauses_of};
+use ranking::{Hit, score_candidates};
 
 /// Score each clause independently, then dedup: a node hit by several
 /// clauses shows once, in its best clause (highest score; earlier clause
 /// on ties). Per-clause cap keeps total output near the single-topic limit.
 fn multi_hits(
     store: &Store,
-    clauses: &[(String, Vec<QueryTerm>)],
+    clauses: &[(String, Query)],
     limit: usize,
 ) -> Result<Vec<(String, Vec<Hit>)>> {
     let per = limit.div_ceil(clauses.len()).max(2);
     let mut groups: Vec<(String, Vec<Hit>)> = Vec::with_capacity(clauses.len());
-    for (label, terms) in clauses {
-        groups.push((label.clone(), score_candidates(store, terms)?));
+    for (label, query) in clauses {
+        groups.push((label.clone(), score_candidates(store, query)?));
     }
     let mut best: std::collections::HashMap<String, (i64, usize)> =
         std::collections::HashMap::new();
@@ -90,14 +84,14 @@ fn adjacency_counts(store: &Store, node: &Node) -> Result<(usize, usize, Vec<Str
 /// repo-scope only until a workspace question demands it.
 pub fn run_workspace(manifest: &Path, question: &str, limit: usize) -> Result<bool> {
     let ws = crate::workspace::load(manifest)?;
-    let terms = terms_of(question);
-    if terms.is_empty() {
+    let query = Query::parse(question);
+    if query.is_empty() {
         bail!("no searchable terms in {question:?} — try naming the thing you're looking for");
     }
     let mut all: Vec<(String, std::path::PathBuf, Hit)> = Vec::new();
     for (name, repo) in &ws.members {
         let store = crate::lookup::open_store(repo)?;
-        for hit in score_candidates(&store, &terms)? {
+        for hit in score_candidates(&store, &query)? {
             all.push((name.clone(), repo.clone(), hit));
         }
     }
@@ -110,15 +104,15 @@ pub fn run_workspace(manifest: &Path, question: &str, limit: usize) -> Result<bo
             .then_with(|| a.2.node.span.start.cmp(&b.2.node.span.start))
     });
     if all.is_empty() {
-        println!("no match for {:?} in any member", term_text(&terms, " "));
+        println!("no match for {:?} in any member", query.surface_text(" "));
         return Ok(false);
     }
     println!(
         "Best matches across {} members ({} terms: {}):
 ",
         ws.members.len(),
-        terms.len(),
-        term_text(&terms, ", ")
+        query.len(),
+        query.surface_text(", ")
     );
     for (rank, (member, repo, hit)) in all.iter().take(limit).enumerate() {
         let line = line_of(repo, &hit.node.file, hit.node.span.start);
@@ -163,6 +157,7 @@ fn hit_json(repo: &Path, h: &Hit) -> serde_json::Value {
         "score": h.score,
         "matched": h.matched,
         "channels": h.channels,
+        "roles": h.roles,
         "score_breakdown": h.breakdown,
     })
 }
@@ -205,11 +200,11 @@ fn ask_json_with_store(
         }
         return Ok(out);
     }
-    let terms = terms_of(question);
-    if terms.is_empty() {
+    let query = Query::parse(question);
+    if query.is_empty() {
         bail!("no searchable terms in {question:?} — try naming the thing you're looking for");
     }
-    let hits = score_candidates(store, &terms)?;
+    let hits = score_candidates(store, &query)?;
     Ok(hits.iter().take(limit).map(|h| hit_json(repo, h)).collect())
 }
 
@@ -256,7 +251,7 @@ fn print_hit(repo: &Path, store: &Store, rank: usize, hit: &Hit) -> Result<()> {
 fn run_multi(
     repo: &Path,
     store: &Store,
-    clauses: &[(String, Vec<QueryTerm>)],
+    clauses: &[(String, Query)],
     limit: usize,
 ) -> Result<bool> {
     let groups = multi_hits(store, clauses, limit)?;
@@ -298,15 +293,15 @@ pub fn run(repo: &Path, question: &str, limit: usize, json: bool) -> Result<bool
     if clauses.len() >= 2 {
         return run_multi(&repo, &store, &clauses, limit);
     }
-    let terms = terms_of(question);
-    if terms.is_empty() {
+    let query = Query::parse(question);
+    if query.is_empty() {
         bail!("no searchable terms in {question:?} — try naming the thing you're looking for");
     }
-    let hits = score_candidates(&store, &terms)?;
+    let hits = score_candidates(&store, &query)?;
 
     if hits.is_empty() {
-        println!("no match for {:?}", term_text(&terms, " "));
-        let close = store.search(&term_text(&terms, ""), 5)?;
+        println!("no match for {:?}", query.surface_text(" "));
+        let close = store.search(&query.surface_text(""), 5)?;
         if !close.is_empty() {
             let names: Vec<&str> = close.iter().map(|n| n.name.as_str()).collect();
             println!("closest symbols: {}", names.join(", "));
@@ -316,19 +311,19 @@ pub fn run(repo: &Path, question: &str, limit: usize, json: bool) -> Result<bool
 
     println!(
         "Best matches ({} terms: {}):\n",
-        terms.len(),
-        term_text(&terms, ", ")
+        query.len(),
+        query.surface_text(", ")
     );
     // Verbose multi-topic questions dilute term coverage; a top hit
     // matching almost nothing is noise wearing a ranking. Say so instead
     // of letting it pass as an answer.
-    if terms.len() >= 4 && hits[0].matched.len() * 3 <= terms.len() {
+    if query.len() >= 4 && hits[0].matched.len() * 3 <= query.len() {
         println!(
             "weak match: best hit covers {}/{} terms — this graph indexes code \
              symbols, not prose docs. Ask one topic at a time with the terms \
              you expect in an identifier or doc comment.\n",
             hits[0].matched.len(),
-            terms.len()
+            query.len()
         );
     }
     for (rank, hit) in hits.iter().take(limit).enumerate() {

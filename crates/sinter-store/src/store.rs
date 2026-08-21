@@ -423,8 +423,21 @@ impl Store {
     /// Incoming edges for several nodes under one read transaction. Query
     /// ranking uses this instead of opening one redb snapshot per candidate.
     pub fn in_edges_many(&self, ids: &[NodeId]) -> Result<HashMap<NodeId, Vec<Edge>>, StoreError> {
+        self.adjacent_many(IN_EDGES, ids)
+    }
+
+    /// Outgoing edges for several nodes under one read transaction.
+    pub fn out_edges_many(&self, ids: &[NodeId]) -> Result<HashMap<NodeId, Vec<Edge>>, StoreError> {
+        self.adjacent_many(OUT_EDGES, ids)
+    }
+
+    fn adjacent_many(
+        &self,
+        table: MultimapTableDefinition<&str, &[u8]>,
+        ids: &[NodeId],
+    ) -> Result<HashMap<NodeId, Vec<Edge>>, StoreError> {
         let txn = self.db.begin_read()?;
-        let table = txn.open_multimap_table(IN_EDGES)?;
+        let table = txn.open_multimap_table(table)?;
         let mut found = HashMap::with_capacity(ids.len());
         for id in ids {
             let mut edges = Vec::new();

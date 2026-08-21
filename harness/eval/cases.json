@@ -35,14 +35,14 @@
   "minimums": {
     "query_mrr": 0.99,
     "query_recall_at_limit": 0.99,
-    "ask_top_1_accuracy": 0.43,
-    "ask_mrr": 0.6,
-    "ask_recall_at_5": 0.81,
-    "ask_recall_at_limit": 0.9,
+    "ask_top_1_accuracy": 0.7,
+    "ask_mrr": 0.8,
+    "ask_recall_at_5": 0.93,
+    "ask_recall_at_limit": 0.97,
     "caller_precision": 0.99,
     "caller_recall": 0.99,
     "path_accuracy": 0.99,
-    "ask_holdout_top_1_accuracy": 0.48
+    "ask_holdout_top_1_accuracy": 0.72
   },
   "cases": [
     {
@@ -121,6 +121,10 @@
         {
           "qualified": "RegexMatcherBuilder::build",
           "file": "crates/regex/src/matcher.rs"
+        },
+        {
+          "qualified": "HiArgs::matcher_rust",
+          "file": "crates/core/flags/hiargs.rs"
         }
       ],
       "intent": "construction",
@@ -301,6 +305,10 @@
       "relevant": [
         {
           "qualified": "DecompressionMatcherBuilder::try_associate",
+          "file": "crates/cli/src/decompress.rs"
+        },
+        {
+          "qualified": "DecompressionMatcherBuilder::associate",
           "file": "crates/cli/src/decompress.rs"
         }
       ],
@@ -1037,7 +1045,11 @@
       "intent": "lookup",
       "relevant": [
         {
-          "qualified": "FlagMap::find",
+          "qualified": "lookup",
+          "file": "crates/core/flags/parse.rs"
+        },
+        {
+          "qualified": "FlagMap::find_long",
           "file": "crates/core/flags/parse.rs"
         }
       ],
@@ -1087,6 +1099,10 @@
       "relevant": [
         {
           "qualified": "GlobBuilder::build",
+          "file": "crates/globset/src/glob.rs"
+        },
+        {
+          "qualified": "Glob::compile_matcher",
           "file": "crates/globset/src/glob.rs"
         }
       ],
@@ -1148,6 +1164,14 @@
         {
           "qualified": "Searcher::search_path",
           "file": "crates/searcher/src/searcher/mod.rs"
+        },
+        {
+          "qualified": "search_path",
+          "file": "crates/core/search.rs"
+        },
+        {
+          "qualified": "SearchWorker::search_path",
+          "file": "crates/core/search.rs"
         }
       ],
       "split": "tuning"
@@ -1579,6 +1603,10 @@
       "relevant": [
         {
           "qualified": "Command::MarkFlagRequired",
+          "file": "shell_completions.go"
+        },
+        {
+          "qualified": "MarkFlagRequired",
           "file": "shell_completions.go"
         }
       ],
@@ -2626,6 +2654,10 @@
       "relevant": [
         {
           "qualified": "TypeToken::get",
+          "file": "gson/src/main/java/com/google/gson/reflect/TypeToken.java"
+        },
+        {
+          "qualified": "TypeToken::TypeToken",
           "file": "gson/src/main/java/com/google/gson/reflect/TypeToken.java"
         }
       ],
