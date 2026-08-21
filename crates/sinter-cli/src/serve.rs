@@ -327,7 +327,8 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
         // ask_json opens the store itself — same constraint as impact.
         let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(5) as usize;
         let hits = crate::ask::ask_json_current(repo, &symbol("question")?, limit)?;
-        return Ok(json!({ "hits": hits }));
+        let advice = crate::ask::advice_for(&hits);
+        return Ok(json!({ "hits": hits, "advice": advice }));
     }
     if name == "overlap" {
         // impact::compute opens the store per range — same constraint.
@@ -612,7 +613,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "ask",
-            "description": "Answer a vague or conceptual codebase question (\"where is X handled\", \"how does Y work\") with ranked, content-bearing hits: signature, doc, file:line, and match provenance. Use this first when no exact symbol is known.",
+            "description": "Answer a vague or conceptual codebase question (\"where is X handled\", \"how does Y work\") with ranked, content-bearing hits: signature, doc, file:line, match provenance, and a calibrated `confidence` (high/medium/low from the lead over the runner-up). When `advice` is present the top hit is not clear-cut: read the top few hits before acting. Use this first when no exact symbol is known.",
             "inputSchema": {"type": "object", "properties": {
                 "question": {"type": "string"},
                 "limit": {"type": "integer"},
@@ -759,8 +760,10 @@ fn ws_call_tool(manifest: &Path, name: &str, args: &Value) -> Result<Value> {
                             .cmp(&b["span"]["start"].as_u64())
                     })
             });
+            crate::ask::annotate(&mut hits);
             hits.truncate(limit);
-            Ok(json!({"hits": hits}))
+            let advice = crate::ask::advice_for(&hits);
+            Ok(json!({"hits": hits, "advice": advice}))
         }
         "show" => {
             let (member, node) = crate::workspace::find_symbol(&ws, &symbol("symbol")?)?;

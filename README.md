@@ -118,7 +118,11 @@ $ sinter ask "where is the trigram search"
 ```
 
 Every hit shows its match provenance (`[doc+name 2/2 terms]`) — the ranking
-is auditable, in the same spirit as the edges.
+is auditable, in the same spirit as the edges. When the top hit does not
+clearly beat the runner-up, `ask` says so before the list (`low confidence:
+top hit leads by 4%; inspect the top 3 before acting`); `--json` and the MCP
+tool carry the same facts per hit as `confidence`, `margin`, `roles`, and
+`family_size`, plus an `advice` string on the MCP response.
 
 Negative traversal answers are deliberately non-authoritative. A missed
 `path`, or zero-result `affected`/`deps`, is printed as **not proven**. JSON

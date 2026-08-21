@@ -14,11 +14,51 @@ use sinter_store::Store;
 use crate::lookup::open_store;
 use crate::render::{ellipsize, line_of, location};
 
+pub(crate) mod confidence;
 mod query;
 mod ranking;
 
 use query::{Query, clauses_of};
 use ranking::{Hit, score_candidates};
+
+/// Add `confidence`, `margin`, `margin_permille`, and `family_size` to an
+/// already ordered list of hit objects. Runs after any merge so the margin
+/// reflects the list the caller will actually see.
+pub(crate) fn annotate(hits: &mut [serde_json::Value]) {
+    let scores = hits
+        .iter()
+        .map(|hit| hit["score"].as_i64().unwrap_or(0))
+        .collect::<Vec<_>>();
+    let names = hits
+        .iter()
+        .map(|hit| hit["name"].as_str().unwrap_or("").to_owned())
+        .collect::<Vec<_>>();
+    for (hit, level) in hits.iter_mut().zip(confidence::assess(&scores)) {
+        let name = hit["name"].as_str().unwrap_or("");
+        let family_size = names.iter().filter(|other| *other == name).count();
+        hit["confidence"] = json!(level.level);
+        hit["margin"] = json!(level.margin);
+        hit["margin_permille"] = json!(level.margin_permille);
+        hit["family_size"] = json!(family_size);
+    }
+}
+
+/// Caveat line for an annotated list, or None when the top hit stands clear.
+pub(crate) fn advice_for(hits: &[serde_json::Value]) -> Option<String> {
+    let top = hits.first()?;
+    let scores = hits
+        .iter()
+        .map(|hit| hit["score"].as_i64().unwrap_or(0))
+        .collect::<Vec<_>>();
+    let family_size = top["family_size"].as_u64().unwrap_or(1) as usize;
+    confidence::advice(confidence::assess(&scores)[0], family_size)
+}
+
+fn family_size(hits: &[Hit], rank: usize) -> usize {
+    hits.iter()
+        .filter(|other| other.node.name == hits[rank].node.name)
+        .count()
+}
 
 /// Score each clause independently, then dedup: a node hit by several
 /// clauses shows once, in its best clause (highest score; earlier clause
@@ -108,12 +148,24 @@ pub fn run_workspace(manifest: &Path, question: &str, limit: usize) -> Result<bo
         return Ok(false);
     }
     println!(
-        "Best matches across {} members ({} terms: {}):
-",
+        "Best matches across {} members ({} terms: {}):\n",
         ws.members.len(),
         query.len(),
         query.surface_text(", ")
     );
+    let scores = all
+        .iter()
+        .take(limit + 1)
+        .map(|(_, _, h)| h.score)
+        .collect::<Vec<_>>();
+    let family = all
+        .iter()
+        .take(limit)
+        .filter(|(_, _, h)| h.node.name == all[0].2.node.name)
+        .count();
+    if let Some(caveat) = confidence::advice(confidence::assess(&scores)[0], family) {
+        println!("{caveat}\n");
+    }
     for (rank, (member, repo, hit)) in all.iter().take(limit).enumerate() {
         let line = line_of(repo, &hit.node.file, hit.node.span.start);
         println!(
@@ -192,8 +244,9 @@ fn ask_json_with_store(
     if clauses.len() >= 2 {
         let mut out = Vec::new();
         for (topic, hits) in multi_hits(store, &clauses, limit)? {
-            for h in &hits {
-                let mut v = hit_json(repo, h);
+            let mut group = hits.iter().map(|h| hit_json(repo, h)).collect::<Vec<_>>();
+            annotate(&mut group);
+            for mut v in group {
                 v["topic"] = json!(topic);
                 out.push(v);
             }
@@ -205,7 +258,16 @@ fn ask_json_with_store(
         bail!("no searchable terms in {question:?} — try naming the thing you're looking for");
     }
     let hits = score_candidates(store, &query)?;
-    Ok(hits.iter().take(limit).map(|h| hit_json(repo, h)).collect())
+    // One past the limit so the last shown hit's margin is to a real
+    // candidate, not to nothing.
+    let mut out = hits
+        .iter()
+        .take(limit + 1)
+        .map(|h| hit_json(repo, h))
+        .collect::<Vec<_>>();
+    annotate(&mut out);
+    out.truncate(limit);
+    Ok(out)
 }
 
 fn print_hit(repo: &Path, store: &Store, rank: usize, hit: &Hit) -> Result<()> {
@@ -314,6 +376,18 @@ pub fn run(repo: &Path, question: &str, limit: usize, json: bool) -> Result<bool
         query.len(),
         query.surface_text(", ")
     );
+    let scores = hits
+        .iter()
+        .take(limit + 1)
+        .map(|h| h.score)
+        .collect::<Vec<_>>();
+    let shown = limit.min(hits.len());
+    if let Some(caveat) = confidence::advice(
+        confidence::assess(&scores)[0],
+        family_size(&hits[..shown], 0),
+    ) {
+        println!("{caveat}\n");
+    }
     // Verbose multi-topic questions dilute term coverage; a top hit
     // matching almost nothing is noise wearing a ranking. Say so instead
     // of letting it pass as an answer.
