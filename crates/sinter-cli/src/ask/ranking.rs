@@ -227,7 +227,7 @@ fn gather(node: Node, query: &Query, close_ids: &[HashSet<String>]) -> Candidate
         .map(|(index, term)| {
             let token_hit = name_tokens.iter().any(|token| term.matches_token(token));
             let mut hit = TermEvidence {
-                name_exact: term.variants().iter().any(|variant| *variant == name),
+                name_exact: term.variants().contains(&name),
                 name_close: token_hit
                     || term.occurs_in(&name)
                     || close_ids[index].contains(node.id.as_str()),

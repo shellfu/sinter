@@ -9,6 +9,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use sinter_core::{Relation, UnresolvedReason, UnresolvedReference};
 use sinter_store::Store;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +77,142 @@ fn git_output(repo: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// What an unresolved reference most likely means, and whether anything
+/// in this repository can be done about it. `reason` records how the miss
+/// happened; the category says what it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnresolvedCategory {
+    /// Nothing in the corpus defines the name: standard library, a
+    /// dependency, or a shell builtin. Not a graph gap.
+    LikelyExternal,
+    /// A compiler index would settle it, and the file's language has one
+    /// Sinter can run; the index is missing or stale.
+    MissingCompilerIndex,
+    /// A member call whose receiver type syntax extraction could not see;
+    /// the name exists in the corpus.
+    MissingReceiverType,
+    /// The bare name is defined in several places and nothing picked one.
+    AmbiguousInternalTarget,
+    /// The reference site itself is not an identifier, or sits in a file
+    /// indexed from a partial syntax tree.
+    UnsupportedSyntax,
+    /// Evidence anchored the reference inside the corpus and the target was
+    /// still not found: a real gap worth a look.
+    ActionableAnchoredMiss,
+}
+
+impl UnresolvedCategory {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LikelyExternal => "likely_external",
+            Self::MissingCompilerIndex => "missing_compiler_index",
+            Self::MissingReceiverType => "missing_receiver_type",
+            Self::AmbiguousInternalTarget => "ambiguous_internal_target",
+            Self::UnsupportedSyntax => "unsupported_syntax",
+            Self::ActionableAnchoredMiss => "actionable_anchored_miss",
+        }
+    }
+
+    /// Categories a maintainer of this repository can act on.
+    pub const fn is_actionable(self) -> bool {
+        matches!(
+            self,
+            Self::MissingReceiverType
+                | Self::AmbiguousInternalTarget
+                | Self::ActionableAnchoredMiss
+        )
+    }
+}
+
+/// Repository facts the classifier needs once, not per reference.
+pub struct Classifier {
+    /// Definition count per bare name across the corpus, for every name
+    /// that appears unresolved.
+    definitions: std::collections::HashMap<String, usize>,
+    syntax_error_files: BTreeSet<String>,
+    /// A compiler index is missing or stale for these languages.
+    unindexed_languages: Vec<String>,
+}
+
+impl Classifier {
+    pub fn new(repo: &Path, store: &Store, refs: &[UnresolvedReference]) -> Result<Self> {
+        let mut definitions = std::collections::HashMap::new();
+        for item in refs {
+            let name = item.reference.name.as_str();
+            if !definitions.contains_key(name) {
+                let count = store.nodes_named(name)?.len();
+                definitions.insert(name.to_owned(), count);
+            }
+        }
+        let unindexed_languages = match crate::scip::staleness(repo) {
+            crate::scip::Staleness::Fresh => Vec::new(),
+            _ => crate::scip::indexable_languages(repo),
+        };
+        Ok(Self {
+            definitions,
+            syntax_error_files: read_health(repo).syntax_error_files,
+            unindexed_languages,
+        })
+    }
+
+    pub fn classify(&self, item: &UnresolvedReference) -> UnresolvedCategory {
+        let reference = &item.reference;
+        let is_identifier = reference
+            .name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '$');
+        if !is_identifier || self.syntax_error_files.contains(&reference.file) {
+            return UnresolvedCategory::UnsupportedSyntax;
+        }
+        let defined = self
+            .definitions
+            .get(reference.name.as_str())
+            .copied()
+            .unwrap_or(0);
+        if item.reason == UnresolvedReason::CompilerUnresolved || defined == 0 {
+            return UnresolvedCategory::LikelyExternal;
+        }
+        let has_receiver = reference.path.as_deref().is_some_and(|path| {
+            path.trim_end_matches(reference.name.as_str())
+                .ends_with(['.', ':', '>'])
+        });
+        if item.reason == UnresolvedReason::SyntaxAnchoredMiss && !has_receiver {
+            // Already anchored inside the corpus; an index would only
+            // confirm what a reader can check now.
+            return UnresolvedCategory::ActionableAnchoredMiss;
+        }
+        let language = sinter_extract::spec_for_path(&reference.file).map(|spec| spec.name);
+        if language.is_some_and(|lang| self.unindexed_languages.iter().any(|l| l == lang)) {
+            return UnresolvedCategory::MissingCompilerIndex;
+        }
+        if reference.relation == Relation::Calls && has_receiver {
+            UnresolvedCategory::MissingReceiverType
+        } else if item.reason == UnresolvedReason::SyntaxAnchoredMiss {
+            UnresolvedCategory::ActionableAnchoredMiss
+        } else {
+            // defined >= 1 here; one definition with no anchor is still a
+            // choice resolution declined to make.
+            UnresolvedCategory::AmbiguousInternalTarget
+        }
+    }
+}
+
+/// Count per category, every category present so consumers need no
+/// defaulting.
+pub fn category_counts(
+    classifier: &Classifier,
+    refs: &[UnresolvedReference],
+) -> BTreeMap<&'static str, usize> {
+    let mut counts = BTreeMap::new();
+    for item in refs {
+        *counts
+            .entry(classifier.classify(item).as_str())
+            .or_default() += 1;
+    }
+    counts
+}
+
 /// Machine-readable trust envelope for a negative answer.
 pub fn negative_json(repo: &Path, store: &Store) -> Result<serde_json::Value> {
     let repo = crate::pipeline::discover_root(repo);
@@ -97,6 +234,12 @@ pub fn negative_json(repo: &Path, store: &Store) -> Result<serde_json::Value> {
     for item in &unresolved {
         *reasons.entry(item.reason.as_str()).or_default() += 1;
     }
+    let classifier = Classifier::new(&repo, store, &unresolved)?;
+    let categories = category_counts(&classifier, &unresolved);
+    let actionable = unresolved
+        .iter()
+        .filter(|item| classifier.classify(item).is_actionable())
+        .count();
 
     let mut limitations = vec![
         "a missing graph edge is not proof that no runtime path exists".to_string(),
@@ -119,6 +262,11 @@ pub fn negative_json(repo: &Path, store: &Store) -> Result<serde_json::Value> {
     if !health.syntax_error_files.is_empty() {
         limitations.push("one or more files were indexed from partial syntax trees".to_string());
     }
+    if actionable > 0 {
+        limitations.push(format!(
+            "{actionable} unresolved references point inside this repository; `sinter unresolved` lists them by category"
+        ));
+    }
 
     Ok(serde_json::json!({
         "status": "not_proven",
@@ -138,6 +286,8 @@ pub fn negative_json(repo: &Path, store: &Store) -> Result<serde_json::Value> {
         "graph": {
             "unresolved_references": unresolved.len(),
             "unresolved_by_reason": reasons,
+            "unresolved_by_category": categories,
+            "actionable_unresolved": actionable,
             "syntax_error_files": health.syntax_error_files,
             "unindexed_files": health.failed_files.keys().collect::<Vec<_>>(),
             "excluded_derived_roots": crate::corpus::DERIVED_ROOTS,
@@ -168,11 +318,14 @@ pub fn print_workspace_negative(workspace: &crate::workspace::Workspace) -> Resu
         };
         let coverage = negative_json(repo, &store)?;
         println!(
-            "  coverage: {name}: SCIP {}, {} unresolved, dirty {}",
+            "  coverage: {name}: SCIP {}, {} unresolved ({} actionable), dirty {}",
             coverage["compiler_index"]["state"]
                 .as_str()
                 .unwrap_or("unknown"),
             coverage["graph"]["unresolved_references"]
+                .as_u64()
+                .unwrap_or(0),
+            coverage["graph"]["actionable_unresolved"]
                 .as_u64()
                 .unwrap_or(0),
             coverage["snapshot"]["dirty"]
@@ -181,4 +334,75 @@ pub fn print_workspace_negative(workspace: &crate::workspace::Workspace) -> Resu
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use sinter_core::{Reference, Relation, Span, UnresolvedReason, UnresolvedReference};
+
+    use super::{Classifier, UnresolvedCategory};
+
+    fn item(name: &str, path: Option<&str>, reason: UnresolvedReason) -> UnresolvedReference {
+        UnresolvedReference {
+            reference: Reference {
+                file: "src/lib.rs".into(),
+                name: name.into(),
+                path: path.map(str::to_owned),
+                relation: Relation::Calls,
+                span: Span { start: 0, end: 1 },
+                enclosing: None,
+                alias: None,
+            },
+            reason,
+        }
+    }
+
+    fn classifier(defined: &[(&str, usize)], unindexed: &[&str]) -> Classifier {
+        Classifier {
+            definitions: defined
+                .iter()
+                .map(|(name, count)| ((*name).to_owned(), *count))
+                .collect(),
+            syntax_error_files: Default::default(),
+            unindexed_languages: unindexed.iter().map(|l| (*l).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn undefined_names_are_external_and_anchored_misses_stay_actionable() {
+        let c = classifier(&[("walk", 2), ("run", 1)], &["rust"]);
+        assert_eq!(
+            c.classify(&item("unwrap", None, UnresolvedReason::SyntaxOnly)),
+            UnresolvedCategory::LikelyExternal
+        );
+        assert_eq!(
+            c.classify(&item("walk", None, UnresolvedReason::SyntaxAnchoredMiss)),
+            UnresolvedCategory::ActionableAnchoredMiss
+        );
+        assert_eq!(
+            c.classify(&item("walk", None, UnresolvedReason::SyntaxOnly)),
+            UnresolvedCategory::MissingCompilerIndex
+        );
+        assert_eq!(
+            c.classify(&item(":", None, UnresolvedReason::SyntaxOnly)),
+            UnresolvedCategory::UnsupportedSyntax
+        );
+    }
+
+    #[test]
+    fn receiver_calls_and_bare_names_split_when_no_index_applies() {
+        let c = classifier(&[("walk", 2), ("run", 1)], &[]);
+        assert_eq!(
+            c.classify(&item(
+                "run",
+                Some("self.job.run"),
+                UnresolvedReason::SyntaxOnly
+            )),
+            UnresolvedCategory::MissingReceiverType
+        );
+        assert_eq!(
+            c.classify(&item("walk", None, UnresolvedReason::SyntaxOnly)),
+            UnresolvedCategory::AmbiguousInternalTarget
+        );
+    }
 }

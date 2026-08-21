@@ -355,11 +355,9 @@ fn call_tool(repo: &Path, name: &str, args: &Value) -> Result<Value> {
             };
             let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
             let refs = store.unresolved_details(opt("file"), opt("name"))?;
-            Ok(crate::unresolved::to_json(
-                &crate::pipeline::discover_root(repo),
-                &refs,
-                limit,
-            ))
+            let root = crate::pipeline::discover_root(repo);
+            let classifier = crate::coverage::Classifier::new(&root, store, &refs)?;
+            Ok(crate::unresolved::to_json(&root, &classifier, &refs, limit))
         }
         "show" => {
             let node = unique_symbol(store, &symbol("symbol")?)?;
@@ -885,7 +883,8 @@ fn ws_call_tool(manifest: &Path, name: &str, args: &Value) -> Result<Value> {
                 let refs = store.unresolved_details(opt("file"), opt("name"))?;
                 total += refs.len();
                 let room = limit.saturating_sub(entries.len());
-                let mut part = crate::unresolved::to_json(repo, &refs, room);
+                let classifier = crate::coverage::Classifier::new(repo, &store, &refs)?;
+                let mut part = crate::unresolved::to_json(repo, &classifier, &refs, room);
                 for e in part["unresolved"].as_array_mut().into_iter().flatten() {
                     e["member"] = json!(member);
                     e["file"] = json!(format!("{member}:{}", e["file"].as_str().unwrap_or("")));
