@@ -40,8 +40,8 @@
     "ask_recall_at_5": 0.93,
     "ask_recall_at_limit": 0.97,
     "caller_precision": 0.99,
-    "caller_recall": 0.99,
-    "path_accuracy": 0.99,
+    "caller_recall": 0.5,
+    "path_accuracy": 0.72,
     "ask_holdout_top_1_accuracy": 0.72
   },
   "cases": [
@@ -2737,6 +2737,1055 @@
         }
       ],
       "split": "holdout"
+    },
+    {
+      "id": "callers-cobra-strip-flags",
+      "repository": "cobra-v1.8.1",
+      "kind": "callers",
+      "symbol": "stripFlags",
+      "expected": [
+        {
+          "qualified": "Command::Find",
+          "file": "command.go"
+        },
+        {
+          "qualified": "TestStripFlags",
+          "file": "command_test.go"
+        }
+      ]
+    },
+    {
+      "id": "callers-cobra-ld",
+      "repository": "cobra-v1.8.1",
+      "kind": "callers",
+      "symbol": "ld",
+      "expected": [
+        {
+          "qualified": "Command::SuggestionsFor",
+          "file": "command.go"
+        },
+        {
+          "qualified": "TestLevenshteinDistance",
+          "file": "cobra_test.go"
+        }
+      ]
+    },
+    {
+      "id": "callers-cobra-traverse",
+      "repository": "cobra-v1.8.1",
+      "kind": "callers",
+      "symbol": "Command::Traverse",
+      "expected": [
+        {
+          "qualified": "Command::getCompletions",
+          "file": "completions.go"
+        },
+        {
+          "qualified": "Command::Traverse",
+          "file": "command.go"
+        },
+        {
+          "qualified": "Command::ExecuteC",
+          "file": "command.go"
+        },
+        {
+          "qualified": "TestTraverseWithParentFlags",
+          "file": "command_test.go"
+        },
+        {
+          "qualified": "TestTraverseNoParentFlags",
+          "file": "command_test.go"
+        },
+        {
+          "qualified": "TestTraverseWithBadParentFlags",
+          "file": "command_test.go"
+        },
+        {
+          "qualified": "TestTraverseWithBadChildFlag",
+          "file": "command_test.go"
+        },
+        {
+          "qualified": "TestTraverseWithTwoSubcommands",
+          "file": "command_test.go"
+        }
+      ]
+    },
+    {
+      "id": "callers-cobra-validate-required-flags",
+      "repository": "cobra-v1.8.1",
+      "kind": "callers",
+      "symbol": "Command::ValidateRequiredFlags",
+      "expected": [
+        {
+          "qualified": "Command::execute",
+          "file": "command.go"
+        }
+      ]
+    },
+    {
+      "id": "callers-cobra-suggestions-for",
+      "repository": "cobra-v1.8.1",
+      "kind": "callers",
+      "symbol": "Command::SuggestionsFor",
+      "expected": [
+        {
+          "qualified": "Command::findSuggestions",
+          "file": "command.go"
+        }
+      ]
+    },
+    {
+      "id": "callers-cobra-has-alias",
+      "repository": "cobra-v1.8.1",
+      "kind": "callers",
+      "symbol": "Command::HasAlias",
+      "expected": [
+        {
+          "qualified": "Command::InitDefaultCompletionCmd",
+          "file": "completions.go"
+        },
+        {
+          "qualified": "Command::findNext",
+          "file": "command.go"
+        }
+      ]
+    },
+    {
+      "id": "callers-cobra-execute-c",
+      "repository": "cobra-v1.8.1",
+      "kind": "callers",
+      "symbol": "Command::ExecuteC",
+      "expected": [
+        {
+          "qualified": "Command::Execute",
+          "file": "command.go"
+        },
+        {
+          "qualified": "Command::ExecuteContextC",
+          "file": "command.go"
+        },
+        {
+          "qualified": "Command::ExecuteC",
+          "file": "command.go"
+        },
+        {
+          "qualified": "executeCommandC",
+          "file": "command_test.go"
+        }
+      ]
+    },
+    {
+      "id": "callers-cobra-validate-flag-groups",
+      "repository": "cobra-v1.8.1",
+      "kind": "callers",
+      "symbol": "Command::ValidateFlagGroups",
+      "expected": [
+        {
+          "qualified": "Command::execute",
+          "file": "command.go"
+        }
+      ]
+    },
+    {
+      "id": "callers-cobra-init-default-help-flag",
+      "repository": "cobra-v1.8.1",
+      "kind": "callers",
+      "symbol": "Command::InitDefaultHelpFlag",
+      "expected": [
+        {
+          "qualified": "Command::getCompletions",
+          "file": "completions.go"
+        },
+        {
+          "qualified": "Command::execute",
+          "file": "command.go"
+        },
+        {
+          "qualified": "Command::InitDefaultHelpCmd",
+          "file": "command.go"
+        },
+        {
+          "qualified": "GenReSTCustom",
+          "file": "doc/rest_docs.go"
+        },
+        {
+          "qualified": "GenMarkdownCustom",
+          "file": "doc/md_docs.go"
+        },
+        {
+          "qualified": "GenYamlCustom",
+          "file": "doc/yaml_docs.go"
+        },
+        {
+          "qualified": "genMan",
+          "file": "doc/man_docs.go"
+        }
+      ]
+    },
+    {
+      "id": "callers-rg-search-parallel",
+      "repository": "ripgrep-14.1.1",
+      "kind": "callers",
+      "symbol": "search_parallel",
+      "expected": [
+        {
+          "qualified": "run",
+          "file": "crates/core/main.rs"
+        }
+      ]
+    },
+    {
+      "id": "callers-rg-files-parallel",
+      "repository": "ripgrep-14.1.1",
+      "kind": "callers",
+      "symbol": "files_parallel",
+      "expected": [
+        {
+          "qualified": "run",
+          "file": "crates/core/main.rs"
+        }
+      ]
+    },
+    {
+      "id": "callers-rg-parse-low",
+      "repository": "ripgrep-14.1.1",
+      "kind": "callers",
+      "symbol": "parse_low",
+      "expected": [
+        {
+          "qualified": "parse",
+          "file": "crates/core/flags/parse.rs"
+        }
+      ]
+    },
+    {
+      "id": "callers-rg-binary-detection-from-low",
+      "repository": "ripgrep-14.1.1",
+      "kind": "callers",
+      "symbol": "BinaryDetection::from_low_args",
+      "expected": [
+        {
+          "qualified": "HiArgs::from_low_args",
+          "file": "crates/core/flags/hiargs.rs"
+        }
+      ]
+    },
+    {
+      "id": "callers-rg-patterns-from-low",
+      "repository": "ripgrep-14.1.1",
+      "kind": "callers",
+      "symbol": "Patterns::from_low_args",
+      "expected": [
+        {
+          "qualified": "HiArgs::from_low_args",
+          "file": "crates/core/flags/hiargs.rs"
+        }
+      ]
+    },
+    {
+      "id": "callers-rg-matched-ignore",
+      "repository": "ripgrep-14.1.1",
+      "kind": "callers",
+      "symbol": "Ignore::matched_ignore",
+      "expected": [
+        {
+          "qualified": "Ignore::matched",
+          "file": "crates/ignore/src/dir.rs"
+        }
+      ]
+    },
+    {
+      "id": "callers-rg-add-searches",
+      "repository": "ripgrep-14.1.1",
+      "kind": "callers",
+      "symbol": "Stats::add_searches",
+      "expected": [
+        {
+          "qualified": "JSONSink::finish",
+          "file": "crates/printer/src/json.rs"
+        },
+        {
+          "qualified": "StandardSink::finish",
+          "file": "crates/printer/src/standard.rs"
+        },
+        {
+          "qualified": "SummarySink::finish",
+          "file": "crates/printer/src/summary.rs"
+        }
+      ]
+    },
+    {
+      "id": "callers-rg-stats-new-cross-crate",
+      "repository": "ripgrep-14.1.1",
+      "kind": "callers",
+      "symbol": "Stats::new",
+      "expected": [
+        {
+          "qualified": "JSON::sink",
+          "file": "crates/printer/src/json.rs"
+        },
+        {
+          "qualified": "JSON::sink_with_path",
+          "file": "crates/printer/src/json.rs"
+        },
+        {
+          "qualified": "Standard::sink",
+          "file": "crates/printer/src/standard.rs"
+        },
+        {
+          "qualified": "Standard::sink_with_path",
+          "file": "crates/printer/src/standard.rs"
+        },
+        {
+          "qualified": "Summary::sink",
+          "file": "crates/printer/src/summary.rs"
+        },
+        {
+          "qualified": "Summary::sink_with_path",
+          "file": "crates/printer/src/summary.rs"
+        },
+        {
+          "qualified": "stats",
+          "file": "crates/core/flags/hiargs.rs"
+        }
+      ]
+    },
+    {
+      "id": "callers-rg-searcher-search-path-cross-crate",
+      "repository": "ripgrep-14.1.1",
+      "kind": "callers",
+      "symbol": "Searcher::search_path",
+      "expected": [
+        {
+          "qualified": "SearchWorker::search_path",
+          "file": "crates/core/search.rs"
+        },
+        {
+          "qualified": "search",
+          "file": "crates/grep/examples/simplegrep.rs"
+        }
+      ]
+    },
+    {
+      "id": "callers-flask-full-dispatch",
+      "repository": "flask-3.0.3",
+      "kind": "callers",
+      "symbol": "Flask::full_dispatch_request",
+      "expected": [
+        {
+          "qualified": "Flask::wsgi_app",
+          "file": "src/flask/app.py"
+        },
+        {
+          "qualified": "test_bad_environ_raises_bad_request",
+          "file": "tests/test_reqctx.py"
+        },
+        {
+          "qualified": "TestGreenletContextCopying::index",
+          "file": "tests/test_reqctx.py"
+        }
+      ]
+    },
+    {
+      "id": "callers-flask-preprocess-request",
+      "repository": "flask-3.0.3",
+      "kind": "callers",
+      "symbol": "Flask::preprocess_request",
+      "expected": [
+        {
+          "qualified": "Flask::full_dispatch_request",
+          "file": "src/flask/app.py"
+        }
+      ]
+    },
+    {
+      "id": "callers-flask-finalize-request",
+      "repository": "flask-3.0.3",
+      "kind": "callers",
+      "symbol": "Flask::finalize_request",
+      "expected": [
+        {
+          "qualified": "Flask::handle_exception",
+          "file": "src/flask/app.py"
+        },
+        {
+          "qualified": "Flask::full_dispatch_request",
+          "file": "src/flask/app.py"
+        }
+      ]
+    },
+    {
+      "id": "callers-flask-handle-user-exception",
+      "repository": "flask-3.0.3",
+      "kind": "callers",
+      "symbol": "Flask::handle_user_exception",
+      "expected": [
+        {
+          "qualified": "Flask::full_dispatch_request",
+          "file": "src/flask/app.py"
+        }
+      ]
+    },
+    {
+      "id": "callers-flask-do-teardown-request",
+      "repository": "flask-3.0.3",
+      "kind": "callers",
+      "symbol": "Flask::do_teardown_request",
+      "expected": [
+        {
+          "qualified": "RequestContext::pop",
+          "file": "src/flask/ctx.py"
+        }
+      ]
+    },
+    {
+      "id": "callers-flask-make-setup-state",
+      "repository": "flask-3.0.3",
+      "kind": "callers",
+      "symbol": "Blueprint::make_setup_state",
+      "expected": [
+        {
+          "qualified": "Blueprint::register",
+          "file": "src/flask/sansio/blueprints.py"
+        }
+      ]
+    },
+    {
+      "id": "callers-flask-create-url-adapter",
+      "repository": "flask-3.0.3",
+      "kind": "callers",
+      "symbol": "Flask::create_url_adapter",
+      "expected": [
+        {
+          "qualified": "AppContext::__init__",
+          "file": "src/flask/ctx.py"
+        },
+        {
+          "qualified": "RequestContext::__init__",
+          "file": "src/flask/ctx.py"
+        },
+        {
+          "qualified": "Flask::url_for",
+          "file": "src/flask/app.py"
+        }
+      ]
+    },
+    {
+      "id": "callers-hono-compose",
+      "repository": "hono-v4.4.0",
+      "kind": "callers",
+      "symbol": "compose",
+      "expected": [
+        {
+          "qualified": "Hono::route",
+          "file": "src/hono-base.ts"
+        },
+        {
+          "qualified": "Hono::dispatch",
+          "file": "src/hono-base.ts"
+        },
+        {
+          "qualified": "src/compose.test.ts",
+          "file": "src/compose.test.ts"
+        }
+      ]
+    },
+    {
+      "id": "callers-hono-get-response",
+      "repository": "hono-v4.4.0",
+      "kind": "callers",
+      "symbol": "HTTPException::getResponse",
+      "expected": [
+        {
+          "qualified": "errorHandler",
+          "file": "src/hono-base.ts"
+        }
+      ]
+    },
+    {
+      "id": "callers-hono-get-path",
+      "repository": "hono-v4.4.0",
+      "kind": "callers",
+      "symbol": "getPath@src/utils/url.ts",
+      "expected": [
+        {
+          "qualified": "getPathNoStrict",
+          "file": "src/utils/url.ts"
+        },
+        {
+          "qualified": "logger",
+          "file": "src/middleware/logger/index.ts"
+        },
+        {
+          "qualified": "src/hono.test.ts",
+          "file": "src/hono.test.ts"
+        },
+        {
+          "qualified": "src/utils/url.test.ts",
+          "file": "src/utils/url.test.ts"
+        }
+      ]
+    },
+    {
+      "id": "callers-hono-check-optional-parameter",
+      "repository": "hono-v4.4.0",
+      "kind": "callers",
+      "symbol": "checkOptionalParameter",
+      "expected": [
+        {
+          "qualified": "RegExpRouter::add",
+          "file": "src/router/reg-exp-router/router.ts"
+        },
+        {
+          "qualified": "LinearRouter::add",
+          "file": "src/router/linear-router/router.ts"
+        },
+        {
+          "qualified": "TrieRouter::add",
+          "file": "src/router/trie-router/router.ts"
+        },
+        {
+          "qualified": "src/utils/url.test.ts",
+          "file": "src/utils/url.test.ts"
+        }
+      ]
+    },
+    {
+      "id": "callers-gson-streams-parse",
+      "repository": "gson-2.11.0",
+      "kind": "callers",
+      "symbol": "Streams::parse",
+      "expected": [
+        {
+          "qualified": "TreeTypeAdapter::read",
+          "file": "gson/src/main/java/com/google/gson/internal/bind/TreeTypeAdapter.java"
+        },
+        {
+          "qualified": "JsonParser::parseReader",
+          "file": "gson/src/main/java/com/google/gson/JsonParser.java"
+        },
+        {
+          "qualified": "JsonStreamParser::next",
+          "file": "gson/src/main/java/com/google/gson/JsonStreamParser.java"
+        }
+      ]
+    },
+    {
+      "id": "callers-gson-streams-write",
+      "repository": "gson-2.11.0",
+      "kind": "callers",
+      "symbol": "Streams::write",
+      "expected": [
+        {
+          "qualified": "TreeTypeAdapter::write",
+          "file": "gson/src/main/java/com/google/gson/internal/bind/TreeTypeAdapter.java"
+        },
+        {
+          "qualified": "MapTypeAdapterFactory::Adapter::write",
+          "file": "gson/src/main/java/com/google/gson/internal/bind/MapTypeAdapterFactory.java"
+        },
+        {
+          "qualified": "Gson::toJson",
+          "file": "gson/src/main/java/com/google/gson/Gson.java"
+        },
+        {
+          "qualified": "JsonElement::toString",
+          "file": "gson/src/main/java/com/google/gson/JsonElement.java"
+        }
+      ]
+    },
+    {
+      "id": "callers-gson-constructor-get",
+      "repository": "gson-2.11.0",
+      "kind": "callers",
+      "symbol": "ConstructorConstructor::get",
+      "expected": [
+        {
+          "qualified": "GraphAdapterBuilder::addType",
+          "file": "extras/src/main/java/com/google/gson/graph/GraphAdapterBuilder.java"
+        },
+        {
+          "qualified": "CollectionTypeAdapterFactory::create",
+          "file": "gson/src/main/java/com/google/gson/internal/bind/CollectionTypeAdapterFactory.java"
+        },
+        {
+          "qualified": "ReflectiveTypeAdapterFactory::create",
+          "file": "gson/src/main/java/com/google/gson/internal/bind/ReflectiveTypeAdapterFactory.java"
+        },
+        {
+          "qualified": "MapTypeAdapterFactory::create",
+          "file": "gson/src/main/java/com/google/gson/internal/bind/MapTypeAdapterFactory.java"
+        },
+        {
+          "qualified": "JsonAdapterAnnotationTypeAdapterFactory::createAdapter",
+          "file": "gson/src/main/java/com/google/gson/internal/bind/JsonAdapterAnnotationTypeAdapterFactory.java"
+        }
+      ]
+    },
+    {
+      "id": "callers-gson-include-field",
+      "repository": "gson-2.11.0",
+      "kind": "callers",
+      "symbol": "Excluder::excludeField",
+      "expected": [
+        {
+          "qualified": "ReflectiveTypeAdapterFactory::includeField",
+          "file": "gson/src/main/java/com/google/gson/internal/bind/ReflectiveTypeAdapterFactory.java"
+        }
+      ]
+    },
+    {
+      "id": "path-rg-run-search-parallel",
+      "repository": "ripgrep-14.1.1",
+      "kind": "path",
+      "from": "run@crates/core/main.rs",
+      "to": "search_parallel",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-rg-parse-parse-low",
+      "repository": "ripgrep-14.1.1",
+      "kind": "path",
+      "from": "parse@crates/core/flags/parse.rs",
+      "to": "parse_low",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-rg-parse-binary-detection",
+      "repository": "ripgrep-14.1.1",
+      "kind": "path",
+      "from": "parse@crates/core/flags/parse.rs",
+      "to": "BinaryDetection::from_low_args",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-rg-matched-matched-ignore",
+      "repository": "ripgrep-14.1.1",
+      "kind": "path",
+      "from": "Ignore::matched",
+      "to": "Ignore::matched_ignore",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-rg-standard-finish-add-searches",
+      "repository": "ripgrep-14.1.1",
+      "kind": "path",
+      "from": "StandardSink::finish",
+      "to": "Stats::add_searches",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-rg-search-worker-searcher-cross-crate",
+      "repository": "ripgrep-14.1.1",
+      "kind": "path",
+      "from": "SearchWorker::search_path",
+      "to": "Searcher::search_path",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-rg-hiargs-stats-new-cross-crate",
+      "repository": "ripgrep-14.1.1",
+      "kind": "path",
+      "from": "stats@crates/core/flags/hiargs.rs",
+      "to": "Stats::new",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-rg-searcher-to-sink-trait-dispatch",
+      "repository": "ripgrep-14.1.1",
+      "kind": "path",
+      "from": "Searcher::search_path",
+      "to": "StandardSink::matched",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-rg-negative-siblings",
+      "repository": "ripgrep-14.1.1",
+      "kind": "path",
+      "from": "search_parallel",
+      "to": "files_parallel",
+      "relations": [
+        "calls"
+      ],
+      "expect": "not_proven"
+    },
+    {
+      "id": "path-rg-negative-reverse",
+      "repository": "ripgrep-14.1.1",
+      "kind": "path",
+      "from": "Stats::add_searches",
+      "to": "run@crates/core/main.rs",
+      "relations": [
+        "calls"
+      ],
+      "expect": "not_proven"
+    },
+    {
+      "id": "path-rg-negative-summary-stats-new",
+      "repository": "ripgrep-14.1.1",
+      "kind": "path",
+      "from": "SummarySink::finish",
+      "to": "Stats::new",
+      "relations": [
+        "calls"
+      ],
+      "expect": "not_proven"
+    },
+    {
+      "id": "path-cobra-execute-execute-c",
+      "repository": "cobra-v1.8.1",
+      "kind": "path",
+      "from": "Command::Execute",
+      "to": "Command::ExecuteC",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-cobra-execute-c-traverse",
+      "repository": "cobra-v1.8.1",
+      "kind": "path",
+      "from": "Command::ExecuteC",
+      "to": "Command::Traverse",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-cobra-execute-c-execute",
+      "repository": "cobra-v1.8.1",
+      "kind": "path",
+      "from": "Command::ExecuteC",
+      "to": "Command::execute",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-cobra-execute-validate-args",
+      "repository": "cobra-v1.8.1",
+      "kind": "path",
+      "from": "Command::execute",
+      "to": "Command::ValidateArgs",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-cobra-execute-required-flags-three-hops",
+      "repository": "cobra-v1.8.1",
+      "kind": "path",
+      "from": "Command::Execute",
+      "to": "Command::ValidateRequiredFlags",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-cobra-find-strip-flags",
+      "repository": "cobra-v1.8.1",
+      "kind": "path",
+      "from": "Command::Find",
+      "to": "stripFlags",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-cobra-find-suggestions-ld",
+      "repository": "cobra-v1.8.1",
+      "kind": "path",
+      "from": "Command::findSuggestions",
+      "to": "ld",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-cobra-negative-reverse",
+      "repository": "cobra-v1.8.1",
+      "kind": "path",
+      "from": "Command::ValidateArgs",
+      "to": "Command::Execute",
+      "relations": [
+        "calls"
+      ],
+      "expect": "not_proven"
+    },
+    {
+      "id": "path-cobra-negative-closure-args",
+      "repository": "cobra-v1.8.1",
+      "kind": "path",
+      "from": "ExactArgs",
+      "to": "Command::execute",
+      "relations": [
+        "calls"
+      ],
+      "expect": "not_proven"
+    },
+    {
+      "id": "path-cobra-negative-completion-execute",
+      "repository": "cobra-v1.8.1",
+      "kind": "path",
+      "from": "Command::GenBashCompletion",
+      "to": "Command::Execute",
+      "relations": [
+        "calls"
+      ],
+      "expect": "not_proven",
+      "dirty": true
+    },
+    {
+      "id": "path-flask-wsgi-full-dispatch",
+      "repository": "flask-3.0.3",
+      "kind": "path",
+      "from": "Flask::wsgi_app",
+      "to": "Flask::full_dispatch_request",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-flask-wsgi-preprocess",
+      "repository": "flask-3.0.3",
+      "kind": "path",
+      "from": "Flask::wsgi_app",
+      "to": "Flask::preprocess_request",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-flask-full-dispatch-finalize",
+      "repository": "flask-3.0.3",
+      "kind": "path",
+      "from": "Flask::full_dispatch_request",
+      "to": "Flask::finalize_request",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-flask-wsgi-process-response",
+      "repository": "flask-3.0.3",
+      "kind": "path",
+      "from": "Flask::wsgi_app",
+      "to": "Flask::process_response",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-flask-ctx-pop-teardown",
+      "repository": "flask-3.0.3",
+      "kind": "path",
+      "from": "RequestContext::pop",
+      "to": "Flask::do_teardown_request",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-flask-blueprint-register-setup-state",
+      "repository": "flask-3.0.3",
+      "kind": "path",
+      "from": "Blueprint::register",
+      "to": "Blueprint::make_setup_state",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-flask-negative-reverse",
+      "repository": "flask-3.0.3",
+      "kind": "path",
+      "from": "Flask::preprocess_request",
+      "to": "Flask::wsgi_app",
+      "relations": [
+        "calls"
+      ],
+      "expect": "not_proven"
+    },
+    {
+      "id": "path-flask-negative-run-dispatch",
+      "repository": "flask-3.0.3",
+      "kind": "path",
+      "from": "Flask::run",
+      "to": "Flask::full_dispatch_request",
+      "relations": [
+        "calls"
+      ],
+      "expect": "not_proven",
+      "dirty": true
+    },
+    {
+      "id": "path-hono-dispatch-compose",
+      "repository": "hono-v4.4.0",
+      "kind": "path",
+      "from": "Hono::dispatch",
+      "to": "compose",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-hono-error-handler-get-response",
+      "repository": "hono-v4.4.0",
+      "kind": "path",
+      "from": "errorHandler",
+      "to": "HTTPException::getResponse",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-hono-trie-add-check-optional",
+      "repository": "hono-v4.4.0",
+      "kind": "path",
+      "from": "TrieRouter::add",
+      "to": "checkOptionalParameter",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-hono-route-compose",
+      "repository": "hono-v4.4.0",
+      "kind": "path",
+      "from": "Hono::route",
+      "to": "compose",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-hono-negative-reverse",
+      "repository": "hono-v4.4.0",
+      "kind": "path",
+      "from": "compose",
+      "to": "Hono::dispatch",
+      "relations": [
+        "calls"
+      ],
+      "expect": "not_proven"
+    },
+    {
+      "id": "path-hono-negative-util-to-middleware",
+      "repository": "hono-v4.4.0",
+      "kind": "path",
+      "from": "getPath@src/utils/url.ts",
+      "to": "logger",
+      "relations": [
+        "calls"
+      ],
+      "expect": "not_proven"
+    },
+    {
+      "id": "path-gson-parse-string-streams-parse",
+      "repository": "gson-2.11.0",
+      "kind": "path",
+      "from": "JsonParser::parseString",
+      "to": "Streams::parse",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-gson-element-tostring-streams-write",
+      "repository": "gson-2.11.0",
+      "kind": "path",
+      "from": "JsonElement::toString",
+      "to": "Streams::write",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-gson-tree-adapter-read-streams-parse",
+      "repository": "gson-2.11.0",
+      "kind": "path",
+      "from": "TreeTypeAdapter::read",
+      "to": "Streams::parse",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-gson-collection-factory-constructor",
+      "repository": "gson-2.11.0",
+      "kind": "path",
+      "from": "CollectionTypeAdapterFactory::create",
+      "to": "ConstructorConstructor::get",
+      "relations": [
+        "calls"
+      ],
+      "expect": "found"
+    },
+    {
+      "id": "path-gson-negative-reverse",
+      "repository": "gson-2.11.0",
+      "kind": "path",
+      "from": "Streams::parse",
+      "to": "JsonParser::parseString",
+      "relations": [
+        "calls"
+      ],
+      "expect": "not_proven"
+    },
+    {
+      "id": "path-gson-negative-excluder-tojson",
+      "repository": "gson-2.11.0",
+      "kind": "path",
+      "from": "Excluder::excludeField",
+      "to": "JsonElement::toString",
+      "relations": [
+        "calls"
+      ],
+      "expect": "not_proven"
     }
   ]
 }

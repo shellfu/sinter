@@ -176,10 +176,12 @@ fn render_markdown(scorecard: &Scorecard) -> String {
                 expected,
                 observed,
                 correct,
+                dirty_snapshot,
                 ..
             } => format!(
-                "expected `{expected}`, observed `{observed}` ({})",
-                if *correct { "correct" } else { "wrong" }
+                "expected `{expected}`, observed `{observed}` ({}){}",
+                if *correct { "correct" } else { "wrong" },
+                dirty_snapshot.map_or(String::new(), |dirty| format!("; dirty {dirty}"))
             ),
         };
         writeln!(

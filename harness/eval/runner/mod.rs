@@ -200,14 +200,19 @@ fn evaluate_case(sinter: &Path, repository: &Path, case: &CaseSpec) -> Result<Ca
                     "calls".into(),
                 ],
             )?;
-            let dependents = value
+            // An "external" answer (symbol not found as a definition) has
+            // no dependents array: score it as returning nothing.
+            let returned = value
                 .get("dependents")
                 .and_then(serde_json::Value::as_array)
-                .context("affected JSON is missing dependents")?;
-            let returned = dependents
-                .iter()
-                .map(|node| scoring::symbol_key(node, "s", "f"))
-                .collect::<Result<Vec<_>>>()?;
+                .map(|dependents| {
+                    dependents
+                        .iter()
+                        .map(|node| scoring::symbol_key(node, "s", "f"))
+                        .collect::<Result<Vec<_>>>()
+                })
+                .transpose()?
+                .unwrap_or_default();
             (
                 "callers",
                 scoring::score_callers(symbol, expected, returned),
@@ -219,8 +224,14 @@ fn evaluate_case(sinter: &Path, repository: &Path, case: &CaseSpec) -> Result<Ca
             to,
             relations,
             expect,
+            dirty,
             ..
         } => {
+            let scratch = dirty.then(|| repository.join("sinter-eval-dirty.txt"));
+            if let Some(scratch) = &scratch {
+                fs::write(scratch, "untracked scratch file for the dirty-tree check\n")
+                    .with_context(|| format!("failed to write {}", scratch.display()))?;
+            }
             let value = command::run_json(
                 sinter,
                 &[
@@ -233,10 +244,13 @@ fn evaluate_case(sinter: &Path, repository: &Path, case: &CaseSpec) -> Result<Ca
                     "--relations".into(),
                     relations.join(","),
                 ],
-            )?;
+            );
+            if let Some(scratch) = &scratch {
+                let _ = fs::remove_file(scratch);
+            }
             (
                 "path",
-                scoring::score_path(from, to, *expect, &value)?,
+                scoring::score_path(from, to, *expect, *dirty, &value?)?,
                 started.elapsed().as_millis(),
             )
         }

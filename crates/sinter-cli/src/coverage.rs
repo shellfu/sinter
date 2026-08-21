@@ -218,11 +218,16 @@ pub fn negative_json(repo: &Path, store: &Store) -> Result<serde_json::Value> {
     let repo = crate::pipeline::discover_root(repo);
     let health = read_health(&repo);
     let head = git_output(&repo, &["rev-parse", "HEAD"]);
+    // Sinter's own artifacts must not make the tree look dirty.
     let dirty = git_output(
         &repo,
         &["status", "--porcelain=v1", "--untracked-files=normal"],
     )
-    .map(|s| !s.is_empty());
+    .map(|status| {
+        status
+            .lines()
+            .any(|line| !line.get(3..).unwrap_or("").starts_with(".sinter/"))
+    });
     let indexable_languages = crate::scip::indexable_languages(&repo);
     let (scip_state, stale_inputs) = match crate::scip::staleness(&repo) {
         crate::scip::Staleness::Fresh => ("fresh", 0),

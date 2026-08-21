@@ -62,6 +62,10 @@ pub enum CaseSpec {
         to: String,
         relations: Vec<String>,
         expect: PathExpectation,
+        /// Run with an untracked scratch file in the working tree; a
+        /// negative answer must then report the snapshot as dirty.
+        #[serde(default)]
+        dirty: bool,
     },
 }
 
@@ -244,6 +248,8 @@ pub enum CaseOutcome {
         observed: &'static str,
         correct: bool,
         coverage_status: Option<String>,
+        /// `coverage.snapshot.dirty` when a coverage envelope was returned.
+        dirty_snapshot: Option<bool>,
         steps: Vec<serde_json::Value>,
     },
 }

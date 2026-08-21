@@ -93,6 +93,14 @@ pub fn find_symbol(store: &Store, symbol: &str) -> Result<Found> {
                 && file.is_none_or(|f| n.file == f || n.file.ends_with(&format!("/{f}")))
         })
         .collect();
+    // A free `parse` must not be shadowed by `Parser::parse`: when the
+    // qualified name matches exactly, suffix matches are only noise.
+    if matches
+        .iter()
+        .any(|n| qualified_of(n.id.as_str()) == symbol)
+    {
+        matches.retain(|n| qualified_of(n.id.as_str()) == symbol);
+    }
     matches.sort_by(|a, b| a.id.cmp(&b.id));
     if matches.is_empty() {
         Ok(Found::Suggestions(store.search(symbol, 10)?))

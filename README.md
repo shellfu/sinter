@@ -218,14 +218,16 @@ automatically. Recipe, cache-key guidance, and a copy-paste workflow:
   gate CI at precision/recall 1.0 for the enumerated contract facts; any change that moves the metric fails
   with the exact missing/extra tuples printed. Expectations derive from
   language semantics, never from engine output (`harness/golden/`).
-- **Real-repository evaluation**: 59 hand-labeled, syntax-only navigation tasks
-  run against pinned releases of ripgrep, Cobra, and Flask: 3 exact lookups,
-  50 natural-language `ask` questions, 3 direct-caller checks, and 3 path
-  checks. The current scorecard reports `ask` top-1 accuracy 0.480, MRR 0.694,
-  recall@5 0.955, and recall@10 0.985, with no relevant symbols missing from
-  the 200-result diagnostic candidate window. Exact lookup, callers, and paths
-  score 1.0 on their small regression samples; those samples are gates, not a
-  claim of universal accuracy. The weekly and manually dispatched workflow
+- **Real-repository evaluation**: 249 hand-labeled, syntax-only navigation
+  tasks run against pinned releases of ripgrep (Rust), Cobra (Go), Flask
+  (Python), Hono (TypeScript), and Gson (Java): 3 exact lookups, 166
+  natural-language `ask` questions labeled by intent with a tuning/holdout
+  split, 36 direct-caller checks, and 44 path checks. The current scorecard
+  reports `ask` top-1 accuracy 0.717 (holdout 0.741), MRR 0.818, recall@5
+  0.945, recall@10 0.986, p95 latency under 60 ms. Callers score precision
+  1.000 and recall 0.523, paths 0.727: syntax-only graphs miss receiver-typed
+  and Java static-class calls that a compiler index binds, and the harness
+  labels those sites anyway. The weekly and manually dispatched workflow
   uploads the full scorecard and syntax-only build timings (`harness/eval/`).
 - **Budgets** (measured on a ~2M-LOC Go repository, 271k nodes, before
   the stat-gated scan landed): full build 18s, one-file edit under 1s

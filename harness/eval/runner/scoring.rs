@@ -103,6 +103,7 @@ pub fn score_path(
     from: &str,
     to: &str,
     expected: PathExpectation,
+    dirty: bool,
     value: &serde_json::Value,
 ) -> Result<CaseOutcome> {
     let found = value
@@ -120,7 +121,12 @@ pub fn score_path(
     } else {
         "miss"
     };
-    let correct = observed == expected.as_str();
+    let dirty_snapshot = value
+        .pointer("/coverage/snapshot/dirty")
+        .and_then(serde_json::Value::as_bool);
+    // A dirty tree must be reported as such whenever coverage is shown.
+    let dirty_reported = !dirty || dirty_snapshot.is_none_or(|reported| reported);
+    let correct = observed == expected.as_str() && dirty_reported;
     let steps = value
         .get("steps")
         .and_then(serde_json::Value::as_array)
@@ -133,6 +139,7 @@ pub fn score_path(
         observed,
         correct,
         coverage_status,
+        dirty_snapshot,
         steps,
     })
 }
