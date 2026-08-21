@@ -12,8 +12,9 @@ use anyhow::{Context, Result, bail};
 
 use self::model::{CaseResult, CaseSpec, RepositoryResult, Scorecard, SuiteSpec};
 
-const SCORECARD_SCHEMA: u32 = 1;
+const SCORECARD_SCHEMA: u32 = 2;
 const SUITE_SCHEMA: u32 = 1;
+const ASK_CANDIDATE_LIMIT: usize = 200;
 
 pub fn run() -> Result<()> {
     let workspace = workspace_root();
@@ -76,9 +77,11 @@ pub fn run() -> Result<()> {
 
     println!("real-repository evaluation: {}", output_dir.display());
     println!(
-        "query MRR {:.3}, ask MRR {:.3}, caller P/R {:.3}/{:.3}, path accuracy {:.3}",
+        "query MRR {:.3}, ask top-1/MRR/R@5 {:.3}/{:.3}/{:.3}, caller P/R {:.3}/{:.3}, path accuracy {:.3}",
         scorecard.metrics.query.mean_reciprocal_rank,
+        scorecard.metrics.ask.top_1_accuracy,
         scorecard.metrics.ask.mean_reciprocal_rank,
+        scorecard.metrics.ask.mean_recall_at_5,
         scorecard.metrics.callers.precision,
         scorecard.metrics.callers.recall,
         scorecard.metrics.paths.accuracy
@@ -95,7 +98,7 @@ pub fn run() -> Result<()> {
 fn evaluate_case(sinter: &Path, repository: &Path, case: &CaseSpec) -> Result<CaseResult> {
     let started = Instant::now();
     let repository_arg = repository.display().to_string();
-    let (kind, outcome) = match case {
+    let (kind, outcome, duration_ms) = match case {
         CaseSpec::Query {
             input,
             limit,
@@ -120,7 +123,8 @@ fn evaluate_case(sinter: &Path, repository: &Path, case: &CaseSpec) -> Result<Ca
                 .context("query JSON is missing results")?;
             (
                 "query",
-                scoring::score_ranking(input, *limit, relevant, results)?,
+                scoring::score_ranking(input, *limit, relevant, results, results)?,
+                started.elapsed().as_millis(),
             )
         }
         CaseSpec::Ask {
@@ -142,9 +146,32 @@ fn evaluate_case(sinter: &Path, repository: &Path, case: &CaseSpec) -> Result<Ca
                 ],
             )?;
             let results = value.as_array().context("ask JSON is not an array")?;
+            let primary_duration = started.elapsed();
+            let candidate_value = if ranking_has_all_labels(results, relevant)? {
+                None
+            } else {
+                Some(command::run_json(
+                    sinter,
+                    &[
+                        "ask".into(),
+                        input.clone(),
+                        "--repo".into(),
+                        repository.display().to_string(),
+                        "--json".into(),
+                        "--limit".into(),
+                        ASK_CANDIDATE_LIMIT.to_string(),
+                    ],
+                )?)
+            };
+            let candidate_results = candidate_value.as_ref().map_or(Ok(results), |value| {
+                value
+                    .as_array()
+                    .context("diagnostic ask JSON is not an array")
+            })?;
             (
                 "ask",
-                scoring::score_ranking(input, *limit, relevant, results)?,
+                scoring::score_ranking(input, *limit, relevant, results, candidate_results)?,
+                primary_duration.as_millis(),
             )
         }
         CaseSpec::Callers {
@@ -175,6 +202,7 @@ fn evaluate_case(sinter: &Path, repository: &Path, case: &CaseSpec) -> Result<Ca
             (
                 "callers",
                 scoring::score_callers(symbol, expected, returned),
+                started.elapsed().as_millis(),
             )
         }
         CaseSpec::Path {
@@ -197,16 +225,31 @@ fn evaluate_case(sinter: &Path, repository: &Path, case: &CaseSpec) -> Result<Ca
                     relations.join(","),
                 ],
             )?;
-            ("path", scoring::score_path(from, to, *expect, &value)?)
+            (
+                "path",
+                scoring::score_path(from, to, *expect, &value)?,
+                started.elapsed().as_millis(),
+            )
         }
     };
     Ok(CaseResult {
         id: case.id().to_owned(),
         repository: case.repository().to_owned(),
         kind,
-        duration_ms: started.elapsed().as_millis(),
+        duration_ms,
         outcome,
     })
+}
+
+fn ranking_has_all_labels(
+    results: &[serde_json::Value],
+    relevant: &[model::SymbolKey],
+) -> Result<bool> {
+    let returned = results
+        .iter()
+        .map(|node| scoring::symbol_key(node, "qualified", "file"))
+        .collect::<Result<HashSet<_>>>()?;
+    Ok(relevant.iter().all(|label| returned.contains(label)))
 }
 
 fn validate_suite(suite: &SuiteSpec) -> Result<()> {

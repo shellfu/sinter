@@ -103,12 +103,30 @@ impl Store {
     /// token plus its trailing-`s` singular variant. Deduped by node id,
     /// sorted by id — deterministic. The consumer re-scores.
     pub fn candidates_for_terms(&self, terms: &[String]) -> Result<Vec<Node>, StoreError> {
-        let words = terms.iter().flat_map(|term| {
-            let singular = term
-                .strip_suffix('s')
-                .filter(|singular| !singular.is_empty());
-            [Some(term.as_str()), singular].into_iter().flatten()
-        });
+        let variants = terms
+            .iter()
+            .map(|term| {
+                let mut words = vec![term.clone()];
+                if let Some(singular) = term
+                    .strip_suffix('s')
+                    .filter(|singular| !singular.is_empty())
+                {
+                    words.push(singular.to_owned());
+                }
+                words
+            })
+            .collect::<Vec<_>>();
+        self.candidates_for_term_variants(&variants)
+    }
+
+    /// Recall candidates for already-normalized query-term variants.
+    /// Each inner vector represents one semantic term (for example,
+    /// `["parsed", "parse"]`). All variants are unioned by node id.
+    pub fn candidates_for_term_variants(
+        &self,
+        variants: &[Vec<String>],
+    ) -> Result<Vec<Node>, StoreError> {
+        let words = variants.iter().flatten().map(String::as_str);
         self.decode_ids(self.token_ids(words)?)
     }
 

@@ -70,6 +70,14 @@ fn render_markdown(scorecard: &Scorecard) -> String {
     .unwrap();
     writeln!(
         output,
+        "| ask | {} | top-1 accuracy | {:.3} | {:.3} |",
+        scorecard.metrics.ask.cases,
+        scorecard.metrics.ask.top_1_accuracy,
+        scorecard.minimums.ask_top_1_accuracy,
+    )
+    .unwrap();
+    writeln!(
+        output,
         "| ask | {} | MRR | {:.3} | {:.3} |",
         scorecard.metrics.ask.cases,
         scorecard.metrics.ask.mean_reciprocal_rank,
@@ -78,10 +86,27 @@ fn render_markdown(scorecard: &Scorecard) -> String {
     .unwrap();
     writeln!(
         output,
+        "| ask | {} | recall@5 | {:.3} | {:.3} |",
+        scorecard.metrics.ask.cases,
+        scorecard.metrics.ask.mean_recall_at_5,
+        scorecard.minimums.ask_recall_at_5,
+    )
+    .unwrap();
+    writeln!(
+        output,
         "| ask | {} | recall@limit | {:.3} | {:.3} |",
         scorecard.metrics.ask.cases,
         scorecard.metrics.ask.mean_recall_at_limit,
         scorecard.minimums.ask_recall_at_limit
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "\nAsk candidate misses: **{} / {}**. Primary-query latency: **p50 {} ms**, **p95 {} ms**.\n",
+        scorecard.metrics.ask.candidate_miss_cases,
+        scorecard.metrics.ask.cases,
+        scorecard.metrics.ask.p50_duration_ms,
+        scorecard.metrics.ask.p95_duration_ms,
     )
     .unwrap();
     writeln!(
@@ -117,10 +142,15 @@ fn render_markdown(scorecard: &Scorecard) -> String {
     for case in &scorecard.cases {
         let result = match &case.outcome {
             CaseOutcome::Ranking {
+                top_1_correct,
                 reciprocal_rank,
+                recall_at_5,
                 recall_at_limit,
+                candidate_miss,
                 ..
-            } => format!("MRR {reciprocal_rank:.3}; recall {recall_at_limit:.3}"),
+            } => format!(
+                "top-1 {top_1_correct}; MRR {reciprocal_rank:.3}; R@5 {recall_at_5:.3}; R@limit {recall_at_limit:.3}; candidate miss {candidate_miss}"
+            ),
             CaseOutcome::Callers {
                 precision, recall, ..
             } => format!("precision {precision:.3}; recall {recall:.3}"),

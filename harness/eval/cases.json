@@ -6,13 +6,27 @@
       "url": "https://github.com/BurntSushi/ripgrep.git",
       "git_ref": "14.1.1",
       "commit": "4649aa9700619f94cf9c66876e9549d83420e16c"
+    },
+    {
+      "name": "cobra-v1.8.1",
+      "url": "https://github.com/spf13/cobra.git",
+      "git_ref": "v1.8.1",
+      "commit": "e94f6d0dd9a5e5738dca6bce03c4b1207ffbc0ec"
+    },
+    {
+      "name": "flask-3.0.3",
+      "url": "https://github.com/pallets/flask.git",
+      "git_ref": "3.0.3",
+      "commit": "c12a5d874c5a014495eb2db8a73f40037bc813ac"
     }
   ],
   "minimums": {
     "query_mrr": 0.99,
     "query_recall_at_limit": 0.99,
-    "ask_mrr": 0.46,
-    "ask_recall_at_limit": 0.89,
+    "ask_top_1_accuracy": 0.47,
+    "ask_mrr": 0.69,
+    "ask_recall_at_5": 0.95,
+    "ask_recall_at_limit": 0.98,
     "caller_precision": 0.99,
     "caller_recall": 0.99,
     "path_accuracy": 0.99
@@ -147,6 +161,595 @@
         {
           "qualified": "Parser::parse",
           "file": "crates/core/flags/parse.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-sequential-search",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is single threaded file search executed sequentially",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "search",
+          "file": "crates/core/main.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-parallel-file-listing",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where are files listed using multiple threads",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "files_parallel",
+          "file": "crates/core/main.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-binary-detection-mode",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is binary file detection mode selected from arguments",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "BinaryDetection::from_low_args",
+          "file": "crates/core/flags/hiargs.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-rust-regex-engine",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is the matcher for the Rust regex engine configured",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "HiArgs::matcher_rust",
+          "file": "crates/core/flags/hiargs.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-pcre2-regex-engine",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is the PCRE2 matcher configured",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "HiArgs::matcher_pcre2",
+          "file": "crates/core/flags/hiargs.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-gitignore-matcher-build",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is a gitignore matcher built from globs",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "GitignoreBuilder::build",
+          "file": "crates/ignore/src/gitignore.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-parallel-walker-run",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is the parallel recursive directory iterator run",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "WalkParallel::run",
+          "file": "crates/ignore/src/walk.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-decompression-command-association",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where are file globs associated with decompression commands",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "DecompressionMatcherBuilder::try_associate",
+          "file": "crates/cli/src/decompress.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-file-type-matcher-build",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where are file type definitions built into a matcher",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "TypesBuilder::build",
+          "file": "crates/ignore/src/types.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-search-statistics-count",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is the number of searches added to statistics",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Stats::add_searches",
+          "file": "crates/printer/src/stats.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-config-file-parse",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is a ripgrep configuration file parsed",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "parse_reader",
+          "file": "crates/core/flags/config.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-pattern-arguments-collection",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where are search patterns collected from flags and files",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Patterns::from_low_args",
+          "file": "crates/core/flags/hiargs.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-haystack-search",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is a search executed over one haystack",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "SearchWorker::search",
+          "file": "crates/core/search.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-json-match-output",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is a search match written as JSON output",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "JSONSink::matched",
+          "file": "crates/printer/src/json.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-search-worker-construction",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is a search worker created from a matcher searcher and printer",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "SearchWorkerBuilder::build",
+          "file": "crates/core/search.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-cobra-command-execution",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where does cobra execute a command",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Command::Execute",
+          "file": "command.go"
+        },
+        {
+          "qualified": "Command::ExecuteC",
+          "file": "command.go"
+        }
+      ]
+    },
+    {
+      "id": "ask-cobra-subcommand-traversal",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where does cobra find a subcommand and parse parent flags",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Command::Traverse",
+          "file": "command.go"
+        }
+      ]
+    },
+    {
+      "id": "ask-cobra-argument-validation",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where are command arguments validated",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Command::ValidateArgs",
+          "file": "command.go"
+        }
+      ]
+    },
+    {
+      "id": "ask-cobra-required-flags",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where are required flags checked",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Command::ValidateRequiredFlags",
+          "file": "command.go"
+        }
+      ]
+    },
+    {
+      "id": "ask-cobra-default-help-flag",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is the default help flag initialized",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Command::InitDefaultHelpFlag",
+          "file": "command.go"
+        }
+      ]
+    },
+    {
+      "id": "ask-cobra-help-output",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is command help printed",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Command::Help",
+          "file": "command.go"
+        }
+      ]
+    },
+    {
+      "id": "ask-cobra-usage-rendering",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is the usage string rendered",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Command::UsageString",
+          "file": "command.go"
+        }
+      ]
+    },
+    {
+      "id": "ask-cobra-command-suggestions",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where are mistyped command suggestions generated",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Command::SuggestionsFor",
+          "file": "command.go"
+        }
+      ]
+    },
+    {
+      "id": "ask-cobra-add-child-command",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where are child commands registered",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Command::AddCommand",
+          "file": "command.go"
+        }
+      ]
+    },
+    {
+      "id": "ask-cobra-remove-child-command",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where are child commands removed",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Command::RemoveCommand",
+          "file": "command.go"
+        }
+      ]
+    },
+    {
+      "id": "ask-cobra-bash-completion",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is bash completion generated",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Command::GenBashCompletion",
+          "file": "bash_completions.go"
+        }
+      ]
+    },
+    {
+      "id": "ask-cobra-shell-completions",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where are shell completion candidates calculated",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Command::getCompletions",
+          "file": "completions.go"
+        }
+      ]
+    },
+    {
+      "id": "ask-cobra-exact-args",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where are exactly N positional arguments enforced",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "ExactArgs",
+          "file": "args.go"
+        }
+      ]
+    },
+    {
+      "id": "ask-cobra-alias-matching",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where are command aliases matched",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Command::HasAlias",
+          "file": "command.go"
+        }
+      ]
+    },
+    {
+      "id": "ask-cobra-command-path",
+      "repository": "cobra-v1.8.1",
+      "kind": "ask",
+      "input": "where is a command path assembled",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Command::CommandPath",
+          "file": "command.go"
+        }
+      ]
+    },
+    {
+      "id": "ask-flask-request-dispatch-lifecycle",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is a request dispatched with preprocessing and error handling",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Flask::full_dispatch_request",
+          "file": "src/flask/app.py"
+        }
+      ]
+    },
+    {
+      "id": "ask-flask-url-dispatch",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is the URL matched and its view function called",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Flask::dispatch_request",
+          "file": "src/flask/app.py"
+        }
+      ]
+    },
+    {
+      "id": "ask-flask-view-response-conversion",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is a view return value converted into a response",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Flask::make_response",
+          "file": "src/flask/app.py"
+        }
+      ]
+    },
+    {
+      "id": "ask-flask-blueprint-registration",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is a blueprint registered on an application",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "App::register_blueprint",
+          "file": "src/flask/sansio/app.py"
+        }
+      ]
+    },
+    {
+      "id": "ask-flask-url-rule-registration",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is a URL route registered with a view function",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "App::add_url_rule",
+          "file": "src/flask/sansio/app.py"
+        }
+      ]
+    },
+    {
+      "id": "ask-flask-before-request-callbacks",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where are before request callbacks run",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Flask::preprocess_request",
+          "file": "src/flask/app.py"
+        }
+      ]
+    },
+    {
+      "id": "ask-flask-user-exception",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is an exception from request handling sent to a user error handler",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Flask::handle_user_exception",
+          "file": "src/flask/app.py"
+        }
+      ]
+    },
+    {
+      "id": "ask-flask-unhandled-exception",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is an unhandled exception converted to an internal server error",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Flask::handle_exception",
+          "file": "src/flask/app.py"
+        }
+      ]
+    },
+    {
+      "id": "ask-flask-finalize-request",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is a view result finalized and postprocessed",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Flask::finalize_request",
+          "file": "src/flask/app.py"
+        }
+      ]
+    },
+    {
+      "id": "ask-flask-after-request-callbacks",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where are after request functions applied to the response",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Flask::process_response",
+          "file": "src/flask/app.py"
+        }
+      ]
+    },
+    {
+      "id": "ask-flask-request-context",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is a request context created from a WSGI environment",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Flask::request_context",
+          "file": "src/flask/app.py"
+        }
+      ]
+    },
+    {
+      "id": "ask-flask-development-server",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is the local development server started",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Flask::run",
+          "file": "src/flask/app.py"
+        }
+      ]
+    },
+    {
+      "id": "ask-flask-template-rendering",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is a template rendered with context variables",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "render_template",
+          "file": "src/flask/templating.py"
+        }
+      ]
+    },
+    {
+      "id": "ask-flask-json-response",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where is a value serialized into a JSON response",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "jsonify",
+          "file": "src/flask/json/__init__.py"
+        }
+      ]
+    },
+    {
+      "id": "ask-flask-cli-load-app",
+      "repository": "flask-3.0.3",
+      "kind": "ask",
+      "input": "where does the command line interface load the Flask application",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "ScriptInfo::load_app",
+          "file": "src/flask/cli.py"
         }
       ]
     },

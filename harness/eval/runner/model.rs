@@ -20,7 +20,9 @@ pub struct RepositorySpec {
 pub struct Minimums {
     pub query_mrr: f64,
     pub query_recall_at_limit: f64,
+    pub ask_top_1_accuracy: f64,
     pub ask_mrr: f64,
+    pub ask_recall_at_5: f64,
     pub ask_recall_at_limit: f64,
     pub caller_precision: f64,
     pub caller_recall: f64,
@@ -135,8 +137,13 @@ pub struct Metrics {
 #[derive(Debug, Default, Serialize)]
 pub struct RankingMetrics {
     pub cases: usize,
+    pub top_1_accuracy: f64,
     pub mean_reciprocal_rank: f64,
+    pub mean_recall_at_5: f64,
     pub mean_recall_at_limit: f64,
+    pub candidate_miss_cases: usize,
+    pub p50_duration_ms: u128,
+    pub p95_duration_ms: u128,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -173,10 +180,15 @@ pub enum CaseOutcome {
         input: String,
         limit: usize,
         first_relevant_rank: Option<usize>,
+        top_1_correct: bool,
         relevant_found: usize,
         relevant_total: usize,
         reciprocal_rank: f64,
+        recall_at_5: f64,
         recall_at_limit: f64,
+        candidate_pool_size: usize,
+        candidate_relevant_found: usize,
+        candidate_miss: bool,
         returned: Vec<RankedSymbol>,
     },
     Callers {
