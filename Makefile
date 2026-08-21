@@ -49,6 +49,10 @@ test-scale: ## 500k-node scale exercise + incremental gate, release mode (nightl
 	cargo test --release -p sinter-resolve --test scale -- --ignored --nocapture
 	cargo test --release -p sinter-io --test incremental_build -- --nocapture
 
+.PHONY: test-eval
+test-eval: ## Pinned real-repository accuracy scorecard (requires network)
+	cargo test --release -p sinter-io --test real_repository_eval -- --ignored --nocapture
+
 # ------------------------------------------------------------------ hygiene
 
 .PHONY: fmt

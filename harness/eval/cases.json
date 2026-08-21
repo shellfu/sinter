@@ -1,0 +1,217 @@
+{
+  "schema": 1,
+  "repositories": [
+    {
+      "name": "ripgrep-14.1.1",
+      "url": "https://github.com/BurntSushi/ripgrep.git",
+      "git_ref": "14.1.1",
+      "commit": "4649aa9700619f94cf9c66876e9549d83420e16c"
+    }
+  ],
+  "minimums": {
+    "query_mrr": 0.99,
+    "query_recall_at_limit": 0.99,
+    "ask_mrr": 0.46,
+    "ask_recall_at_limit": 0.89,
+    "caller_precision": 0.99,
+    "caller_recall": 0.99,
+    "path_accuracy": 0.99
+  },
+  "cases": [
+    {
+      "id": "query-walk-parallel",
+      "repository": "ripgrep-14.1.1",
+      "kind": "query",
+      "input": "WalkParallel",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "WalkParallel",
+          "file": "crates/ignore/src/walk.rs"
+        }
+      ]
+    },
+    {
+      "id": "query-regex-matcher-builder",
+      "repository": "ripgrep-14.1.1",
+      "kind": "query",
+      "input": "RegexMatcherBuilder",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "RegexMatcherBuilder",
+          "file": "crates/regex/src/matcher.rs"
+        },
+        {
+          "qualified": "RegexMatcherBuilder",
+          "file": "crates/pcre2/src/matcher.rs"
+        }
+      ]
+    },
+    {
+      "id": "query-low-level-parser",
+      "repository": "ripgrep-14.1.1",
+      "kind": "query",
+      "input": "parse_low",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "parse_low",
+          "file": "crates/core/flags/parse.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-cli-argument-parsing",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where are command line arguments parsed",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "parse_low",
+          "file": "crates/core/flags/parse.rs"
+        },
+        {
+          "qualified": "Parser::parse",
+          "file": "crates/core/flags/parse.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-regex-matcher-construction",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is the Rust regex matcher built",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "RegexMatcherBuilder",
+          "file": "crates/regex/src/matcher.rs"
+        },
+        {
+          "qualified": "RegexMatcherBuilder::build",
+          "file": "crates/regex/src/matcher.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-parallel-search",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where is parallel directory search executed",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "search_parallel",
+          "file": "crates/core/main.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-ignore-rule-matching",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "where are ignore rules matched",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "Ignore::matched_ignore",
+          "file": "crates/ignore/src/dir.rs"
+        },
+        {
+          "qualified": "Gitignore::matched",
+          "file": "crates/ignore/src/gitignore.rs"
+        },
+        {
+          "qualified": "Override::matched",
+          "file": "crates/ignore/src/overrides.rs"
+        },
+        {
+          "qualified": "Ignore::matched",
+          "file": "crates/ignore/src/dir.rs"
+        }
+      ]
+    },
+    {
+      "id": "ask-low-level-flag-parser",
+      "repository": "ripgrep-14.1.1",
+      "kind": "ask",
+      "input": "low level command line flag parser",
+      "limit": 10,
+      "relevant": [
+        {
+          "qualified": "parse_low",
+          "file": "crates/core/flags/parse.rs"
+        },
+        {
+          "qualified": "Parser::parse",
+          "file": "crates/core/flags/parse.rs"
+        }
+      ]
+    },
+    {
+      "id": "callers-search-parallel",
+      "repository": "ripgrep-14.1.1",
+      "kind": "callers",
+      "symbol": "search_parallel",
+      "expected": [
+        {
+          "qualified": "run",
+          "file": "crates/core/main.rs"
+        }
+      ]
+    },
+    {
+      "id": "callers-files-parallel",
+      "repository": "ripgrep-14.1.1",
+      "kind": "callers",
+      "symbol": "files_parallel",
+      "expected": [
+        {
+          "qualified": "run",
+          "file": "crates/core/main.rs"
+        }
+      ]
+    },
+    {
+      "id": "callers-low-level-parser",
+      "repository": "ripgrep-14.1.1",
+      "kind": "callers",
+      "symbol": "parse_low",
+      "expected": [
+        {
+          "qualified": "parse",
+          "file": "crates/core/flags/parse.rs"
+        }
+      ]
+    },
+    {
+      "id": "path-run-to-parallel-search",
+      "repository": "ripgrep-14.1.1",
+      "kind": "path",
+      "from": "crates/core/main.rs#run@3081",
+      "to": "search_parallel",
+      "relations": ["calls", "uses"],
+      "expect": "found"
+    },
+    {
+      "id": "path-run-to-parallel-files",
+      "repository": "ripgrep-14.1.1",
+      "kind": "path",
+      "from": "crates/core/main.rs#run@3081",
+      "to": "files_parallel",
+      "relations": ["calls", "uses"],
+      "expect": "found"
+    },
+    {
+      "id": "path-parallel-search-to-run",
+      "repository": "ripgrep-14.1.1",
+      "kind": "path",
+      "from": "search_parallel",
+      "to": "crates/core/main.rs#run@3081",
+      "relations": ["calls", "uses"],
+      "expect": "not_proven"
+    }
+  ]
+}

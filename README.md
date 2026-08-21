@@ -209,11 +209,15 @@ automatically. Recipe, cache-key guidance, and a copy-paste workflow:
 
 ## Accuracy and performance are measured, not asserted
 
-- **Golden corpus**: hand-verified fixtures (79 at time of writing) across all thirteen languages,
+- **Golden corpus**: hand-verified fixtures (82 at time of writing) across all thirteen languages,
   mined from real-world extraction idioms. Extraction and resolution both
   gate CI at precision/recall 1.0 for the enumerated contract facts; any change that moves the metric fails
   with the exact missing/extra tuples printed. Expectations derive from
   language semantics, never from engine output (`harness/golden/`).
+- **Real-repository evaluation**: fourteen hand-labeled navigation tasks run
+  against ripgrep 14.1.1 at a pinned commit. The weekly and manually dispatched
+  workflow reports exact lookup and `ask` ranking, direct-caller precision and
+  recall, path accuracy, and syntax-only build time (`harness/eval/`).
 - **Budgets** (measured on a ~2M-LOC Go repository, 271k nodes, before
   the stat-gated scan landed): full build 18s, one-file edit under 1s
   typical, cold point query under 100ms, `ask` 66ms end-to-end. A clean

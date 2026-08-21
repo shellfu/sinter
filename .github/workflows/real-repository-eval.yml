@@ -1,0 +1,31 @@
+name: real-repository-eval
+
+on:
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run pinned real-repository evaluation
+        run: cargo test --release -p sinter-io --test real_repository_eval -- --ignored --nocapture
+      - name: Add scorecard to the job summary
+        if: always()
+        run: test ! -f target/sinter-eval/scorecard.md || cat target/sinter-eval/scorecard.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload scorecards
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sinter-real-repository-scorecard
+          path: target/sinter-eval/scorecard.*
+          if-no-files-found: error
+          retention-days: 30
