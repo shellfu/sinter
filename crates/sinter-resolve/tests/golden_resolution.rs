@@ -316,6 +316,11 @@ fn resolution_typescript_arrow_const() {
 }
 
 #[test]
+fn resolution_typescript_class_arrow_property() {
+    check("typescript-class-arrow-property");
+}
+
+#[test]
 fn resolution_typescript_default_export() {
     check("typescript-default-export");
 }

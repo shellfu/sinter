@@ -3,6 +3,11 @@
 (function_declaration name: (identifier) @name) @def.function
 (class_declaration name: (type_identifier) @name) @def.class
 (method_definition name: (property_identifier) @name) @def.method
+; Class fields initialized with callable values are methods in normal
+; TypeScript APIs (`fetch = (...) => ...`), not data fields.
+(public_field_definition
+  name: (property_identifier) @name
+  value: [(arrow_function) (function_expression)]) @def.method
 (interface_declaration name: (type_identifier) @name) @def.interface
 ; interface method signatures are declared symbols (Iface::method):
 ; fan-out sources for implements pairing

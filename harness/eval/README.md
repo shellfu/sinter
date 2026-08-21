@@ -21,13 +21,14 @@ coverage envelope to report `snapshot.dirty`. Not yet covered: C# interfaces
 indexes (the harness never runs an indexer).
 
 Every `ask` case carries an `intent` (`construction`, `registration`,
-`dispatch`, `lifecycle`, `error_handling`, `output`, `lookup`) and a `split`.
-`tuning` cases may motivate ranking changes; `holdout` cases (at least a
-quarter of the ask set, every third case per repository) only measure them.
-A ranking change that lifts tuning scores but not holdout scores is
-overfitting and must not raise a floor. The scorecard reports ask metrics
-per split, per repository, and per intent, and lists every ask case whose
-top result is wrong beside the rank of the first relevant answer.
+`dispatch`, `lifecycle`, `error_handling`, `output`, `lookup`). The split is
+owned by the repository: ripgrep, Cobra, and Flask are tuning repositories;
+Hono and Gson are holdout repositories. A ranking change may be motivated by
+tuning results, but the holdout repositories only measure it. This prevents a
+repository's vocabulary and structure from appearing on both sides of the
+split. The scorecard reports ask metrics per split, repository, and intent,
+reports confidence-bucket precision only on holdout repositories, and lists
+every wrong top result beside the first relevant rank.
 
 ## Prerequisites
 
@@ -44,12 +45,30 @@ make test-eval
 
 The command writes `target/sinter-eval/scorecard.json` for automation and `target/sinter-eval/scorecard.md` for review. Set `SINTER_EVAL_OUT` to write them elsewhere.
 
+Set `SINTER_EVAL_BIN` to evaluate an already-built Sinter executable instead
+of the executable built by the test. This makes release-to-HEAD comparisons
+use the identical corpus and scorer:
+
+```bash
+SINTER_EVAL_BIN=/path/to/sinter-0.43.0 \
+  SINTER_EVAL_SCOPE=ask \
+  SINTER_EVAL_OUT=target/sinter-eval-0.43.0 \
+  make test-eval
+SINTER_EVAL_SCOPE=ask \
+  SINTER_EVAL_OUT=target/sinter-eval-head \
+  make test-eval
+```
+
+`SINTER_EVAL_SCOPE=ask` runs only the natural-language corpus and applies
+only its gates. Use it when an older binary cannot execute structural cases
+added after that release. The default scope remains the complete suite.
+
 The `real-repository-eval` GitHub Actions workflow runs every Monday and accepts manual dispatches. It uploads both scorecards even when a metric floor fails.
 
 ## Maintain the labels
 
-`cases.json` is the source of truth. Each repository entry uses a human-readable Git ref and the exact commit it must resolve to. A moved or retagged ref fails before scoring.
+`cases.json` is the source of truth. Each repository entry uses a human-readable Git ref, the exact commit it must resolve to, and one repository-level ask split. A moved or retagged ref fails before scoring. Moving a repository from holdout to tuning is an evaluation-policy change and must not be used to conceal a regression.
 
-Labels come from source inspection. Do not change an expected symbol because Sinter returned a different answer. Ambiguous endpoints use `name@file` (`parse@crates/core/flags/parse.rs`). Add a case when a user report exposes a concrete navigation task, then record every relevant result within the case's limit; questions that legitimately resolve to several symbols (overloads, lifecycle stages) list all of them. Raise a metric floor after an implementation improves the measured score on both splits.
+Labels come from source inspection. Do not change an expected symbol because Sinter returned a different answer. Ambiguous endpoints use `name@file` (`parse@crates/core/flags/parse.rs`). Add a case when a user report exposes a concrete navigation task, then record every relevant result within the case's limit; questions that legitimately resolve to several symbols (overloads, lifecycle stages) list all of them. Raise a metric floor only after an implementation improves the tuning repositories without regressing the holdout repositories.
 
 Normal `cargo test` runs compile this harness but skip the network test.

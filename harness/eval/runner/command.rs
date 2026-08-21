@@ -58,6 +58,18 @@ pub fn build_graph(sinter: &Path, repository: &Path) -> Result<Duration> {
     Ok(started.elapsed())
 }
 
+pub fn version(sinter: &Path) -> Result<String> {
+    let output = Command::new(sinter)
+        .arg("version")
+        .output()
+        .context("failed to start sinter version")?;
+    require_success("sinter version", &output)?;
+    Ok(String::from_utf8(output.stdout)
+        .context("sinter version returned non-UTF-8 output")?
+        .trim()
+        .to_owned())
+}
+
 pub fn run_json(sinter: &Path, args: &[String]) -> Result<serde_json::Value> {
     let output = Command::new(sinter)
         .args(args)

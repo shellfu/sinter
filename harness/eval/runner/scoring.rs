@@ -3,8 +3,9 @@ use std::collections::BTreeSet;
 use anyhow::{Context, Result};
 
 use super::model::{
-    CallerMetrics, CaseOutcome, CaseResult, LabeledRanking, Metrics, Minimums, PathExpectation,
-    PathMetrics, RankedSymbol, RankingMetrics, Split, SymbolKey,
+    CallerMetrics, CaseOutcome, CaseResult, ConfidenceBucket, ConfidenceCalibration,
+    EvaluationScope, LabeledRanking, Metrics, Minimums, PathExpectation, PathMetrics, RankedSymbol,
+    RankingMetrics, Split, SymbolKey,
 };
 
 pub fn score_ranking(
@@ -45,6 +46,20 @@ pub fn score_ranking(
         .map(|result| result.rank);
     let reciprocal_rank = first_relevant_rank.map_or(0.0, |rank| 1.0 / rank as f64);
     let recall_at_limit = ratio(found.len(), relevant_set.len());
+    let top_confidence = results
+        .first()
+        .and_then(|result| result.get("confidence"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    if let Some(level) = top_confidence.as_deref()
+        && !matches!(level, "high" | "medium" | "low")
+    {
+        anyhow::bail!("result has unknown confidence level {level:?}");
+    }
+    let top_margin_permille = results
+        .first()
+        .and_then(|result| result.get("margin_permille"))
+        .and_then(serde_json::Value::as_i64);
     Ok(CaseOutcome::Ranking {
         input: input.to_owned(),
         limit,
@@ -58,6 +73,8 @@ pub fn score_ranking(
         candidate_pool_size: candidate_results.len(),
         candidate_relevant_found: candidate_found.len(),
         candidate_miss: candidate_found.len() < relevant_set.len(),
+        top_confidence,
+        top_margin_permille,
         top_incorrect: returned
             .first()
             .filter(|top| !relevant_set.contains(&top.symbol))
@@ -194,9 +211,61 @@ pub fn aggregate_metrics(cases: &[CaseResult]) -> Metrics {
         }),
         ask_by_repository: grouped(cases, |case| ask(&case).then(|| case.repository.clone())),
         ask_by_intent: grouped(cases, |case| case.intent.clone()),
+        ask_holdout_confidence: confidence_calibration(
+            cases
+                .iter()
+                .filter(|case| case.kind == "ask" && case.split == Some(Split::Holdout)),
+        ),
         callers,
         paths,
     }
+}
+
+fn confidence_calibration<'a>(
+    cases: impl Iterator<Item = &'a CaseResult>,
+) -> ConfidenceCalibration {
+    let mut calibration = ConfidenceCalibration {
+        buckets: ["high", "medium", "low"]
+            .into_iter()
+            .map(|level| ConfidenceBucket {
+                level,
+                cases: 0,
+                correct: 0,
+                precision: 1.0,
+            })
+            .collect(),
+        ..ConfidenceCalibration::default()
+    };
+    for case in cases {
+        let CaseOutcome::Ranking {
+            top_1_correct,
+            top_confidence,
+            ..
+        } = &case.outcome
+        else {
+            continue;
+        };
+        calibration.cases += 1;
+        let Some(level) = top_confidence else {
+            continue;
+        };
+        let bucket = calibration
+            .buckets
+            .iter_mut()
+            .find(|bucket| bucket.level == level)
+            .expect("score_ranking rejects unknown confidence levels");
+        calibration.rated_cases += 1;
+        bucket.cases += 1;
+        bucket.correct += usize::from(*top_1_correct);
+    }
+    for bucket in &mut calibration.buckets {
+        bucket.precision = if bucket.cases == 0 {
+            0.0
+        } else {
+            ratio(bucket.correct, bucket.cases)
+        };
+    }
+    calibration
 }
 
 /// Ask metrics for every distinct label `key` assigns, in first-seen order.
@@ -260,7 +329,11 @@ fn ranking_metrics<'a>(cases: impl Iterator<Item = &'a CaseResult>) -> RankingMe
     metrics
 }
 
-pub fn compare_minimums(metrics: &Metrics, minimums: &Minimums) -> Vec<String> {
+pub fn compare_minimums(
+    metrics: &Metrics,
+    minimums: &Minimums,
+    scope: EvaluationScope,
+) -> Vec<String> {
     let checks = [
         (
             "query MRR",
@@ -315,6 +388,7 @@ pub fn compare_minimums(metrics: &Metrics, minimums: &Minimums) -> Vec<String> {
     ];
     checks
         .into_iter()
+        .filter(|(name, _, _)| scope == EvaluationScope::All || name.starts_with("ask "))
         .filter(|(_, actual, minimum)| actual + f64::EPSILON < *minimum)
         .map(|(name, actual, minimum)| format!("{name}: {actual:.3} < {minimum:.3}"))
         .collect()
@@ -348,8 +422,8 @@ fn ratio(numerator: usize, denominator: usize) -> f64 {
 mod tests {
     use serde_json::json;
 
-    use super::super::model::{CaseOutcome, SymbolKey};
-    use super::{percentile, score_ranking};
+    use super::super::model::{CaseOutcome, CaseResult, Split, SymbolKey};
+    use super::{aggregate_metrics, percentile, score_ranking};
 
     fn label(qualified: &str) -> SymbolKey {
         SymbolKey {
@@ -395,5 +469,39 @@ mod tests {
         assert_eq!(percentile(&[], 95), 0);
         assert_eq!(percentile(&[10, 20, 30, 40], 50), 20);
         assert_eq!(percentile(&[10, 20, 30, 40], 95), 40);
+    }
+
+    #[test]
+    fn confidence_is_calibrated_only_from_holdout_ask_cases() {
+        let scored = score_ranking(
+            "question",
+            1,
+            &[label("wanted")],
+            &[json!({
+                "qualified": "wanted",
+                "file": "src/lib.rs",
+                "confidence": "high",
+                "margin_permille": 250
+            })],
+            &[result("wanted")],
+        )
+        .unwrap();
+        let holdout = CaseResult {
+            id: "holdout".into(),
+            repository: "held-out-repo".into(),
+            kind: "ask",
+            intent: Some("lookup".into()),
+            split: Some(Split::Holdout),
+            duration_ms: 1,
+            outcome: scored,
+        };
+        let metrics = aggregate_metrics(&[holdout]);
+        let high = &metrics.ask_holdout_confidence.buckets[0];
+
+        assert_eq!(metrics.ask_holdout_confidence.cases, 1);
+        assert_eq!(metrics.ask_holdout_confidence.rated_cases, 1);
+        assert_eq!((high.level, high.cases, high.correct), ("high", 1, 1));
+        assert_eq!(high.precision, 1.0);
+        assert_eq!(metrics.ask_holdout_confidence.buckets[1].precision, 0.0);
     }
 }

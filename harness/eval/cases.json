@@ -1,35 +1,40 @@
 {
-  "schema": 2,
+  "schema": 3,
   "repositories": [
     {
       "name": "ripgrep-14.1.1",
       "url": "https://github.com/BurntSushi/ripgrep.git",
       "git_ref": "14.1.1",
-      "commit": "4649aa9700619f94cf9c66876e9549d83420e16c"
+      "commit": "4649aa9700619f94cf9c66876e9549d83420e16c",
+      "ask_split": "tuning"
     },
     {
       "name": "cobra-v1.8.1",
       "url": "https://github.com/spf13/cobra.git",
       "git_ref": "v1.8.1",
-      "commit": "e94f6d0dd9a5e5738dca6bce03c4b1207ffbc0ec"
+      "commit": "e94f6d0dd9a5e5738dca6bce03c4b1207ffbc0ec",
+      "ask_split": "tuning"
     },
     {
       "name": "flask-3.0.3",
       "url": "https://github.com/pallets/flask.git",
       "git_ref": "3.0.3",
-      "commit": "c12a5d874c5a014495eb2db8a73f40037bc813ac"
+      "commit": "c12a5d874c5a014495eb2db8a73f40037bc813ac",
+      "ask_split": "tuning"
     },
     {
       "name": "hono-v4.4.0",
       "url": "https://github.com/honojs/hono.git",
       "git_ref": "v4.4.0",
-      "commit": "03090608db9767652fe32482bc943882c6aa5cfb"
+      "commit": "03090608db9767652fe32482bc943882c6aa5cfb",
+      "ask_split": "holdout"
     },
     {
       "name": "gson-2.11.0",
       "url": "https://github.com/google/gson.git",
       "git_ref": "gson-parent-2.11.0",
-      "commit": "828a97be0f8d58108b140b77df8dc76b657f4a87"
+      "commit": "828a97be0f8d58108b140b77df8dc76b657f4a87",
+      "ask_split": "holdout"
     }
   ],
   "minimums": {
@@ -42,7 +47,7 @@
     "caller_precision": 0.99,
     "caller_recall": 0.5,
     "path_accuracy": 0.72,
-    "ask_holdout_top_1_accuracy": 0.72
+    "ask_holdout_top_1_accuracy": 0.69
   },
   "cases": [
     {
@@ -104,8 +109,7 @@
           "file": "crates/core/flags/parse.rs"
         }
       ],
-      "intent": "lookup",
-      "split": "tuning"
+      "intent": "lookup"
     },
     {
       "id": "ask-regex-matcher-construction",
@@ -127,8 +131,7 @@
           "file": "crates/core/flags/hiargs.rs"
         }
       ],
-      "intent": "construction",
-      "split": "tuning"
+      "intent": "construction"
     },
     {
       "id": "ask-parallel-search",
@@ -142,8 +145,7 @@
           "file": "crates/core/main.rs"
         }
       ],
-      "intent": "dispatch",
-      "split": "holdout"
+      "intent": "dispatch"
     },
     {
       "id": "ask-ignore-rule-matching",
@@ -169,8 +171,7 @@
           "file": "crates/ignore/src/dir.rs"
         }
       ],
-      "intent": "lookup",
-      "split": "tuning"
+      "intent": "lookup"
     },
     {
       "id": "ask-low-level-flag-parser",
@@ -188,8 +189,7 @@
           "file": "crates/core/flags/parse.rs"
         }
       ],
-      "intent": "lookup",
-      "split": "tuning"
+      "intent": "lookup"
     },
     {
       "id": "ask-sequential-search",
@@ -203,8 +203,7 @@
           "file": "crates/core/main.rs"
         }
       ],
-      "intent": "dispatch",
-      "split": "holdout"
+      "intent": "dispatch"
     },
     {
       "id": "ask-parallel-file-listing",
@@ -218,8 +217,7 @@
           "file": "crates/core/main.rs"
         }
       ],
-      "intent": "output",
-      "split": "tuning"
+      "intent": "output"
     },
     {
       "id": "ask-binary-detection-mode",
@@ -233,8 +231,7 @@
           "file": "crates/core/flags/hiargs.rs"
         }
       ],
-      "intent": "construction",
-      "split": "tuning"
+      "intent": "construction"
     },
     {
       "id": "ask-rust-regex-engine",
@@ -248,8 +245,7 @@
           "file": "crates/core/flags/hiargs.rs"
         }
       ],
-      "intent": "construction",
-      "split": "holdout"
+      "intent": "construction"
     },
     {
       "id": "ask-pcre2-regex-engine",
@@ -263,8 +259,7 @@
           "file": "crates/core/flags/hiargs.rs"
         }
       ],
-      "intent": "construction",
-      "split": "tuning"
+      "intent": "construction"
     },
     {
       "id": "ask-gitignore-matcher-build",
@@ -278,8 +273,7 @@
           "file": "crates/ignore/src/gitignore.rs"
         }
       ],
-      "intent": "construction",
-      "split": "tuning"
+      "intent": "construction"
     },
     {
       "id": "ask-parallel-walker-run",
@@ -293,8 +287,7 @@
           "file": "crates/ignore/src/walk.rs"
         }
       ],
-      "intent": "dispatch",
-      "split": "holdout"
+      "intent": "dispatch"
     },
     {
       "id": "ask-decompression-command-association",
@@ -312,8 +305,7 @@
           "file": "crates/cli/src/decompress.rs"
         }
       ],
-      "intent": "registration",
-      "split": "tuning"
+      "intent": "registration"
     },
     {
       "id": "ask-file-type-matcher-build",
@@ -327,8 +319,7 @@
           "file": "crates/ignore/src/types.rs"
         }
       ],
-      "intent": "construction",
-      "split": "tuning"
+      "intent": "construction"
     },
     {
       "id": "ask-search-statistics-count",
@@ -342,8 +333,7 @@
           "file": "crates/printer/src/stats.rs"
         }
       ],
-      "intent": "registration",
-      "split": "holdout"
+      "intent": "registration"
     },
     {
       "id": "ask-config-file-parse",
@@ -357,8 +347,7 @@
           "file": "crates/core/flags/config.rs"
         }
       ],
-      "intent": "lookup",
-      "split": "tuning"
+      "intent": "lookup"
     },
     {
       "id": "ask-pattern-arguments-collection",
@@ -372,8 +361,7 @@
           "file": "crates/core/flags/hiargs.rs"
         }
       ],
-      "intent": "construction",
-      "split": "tuning"
+      "intent": "construction"
     },
     {
       "id": "ask-haystack-search",
@@ -387,8 +375,7 @@
           "file": "crates/core/search.rs"
         }
       ],
-      "intent": "dispatch",
-      "split": "holdout"
+      "intent": "dispatch"
     },
     {
       "id": "ask-json-match-output",
@@ -402,8 +389,7 @@
           "file": "crates/printer/src/json.rs"
         }
       ],
-      "intent": "output",
-      "split": "tuning"
+      "intent": "output"
     },
     {
       "id": "ask-search-worker-construction",
@@ -417,8 +403,7 @@
           "file": "crates/core/search.rs"
         }
       ],
-      "intent": "construction",
-      "split": "tuning"
+      "intent": "construction"
     },
     {
       "id": "ask-cobra-command-execution",
@@ -436,8 +421,7 @@
           "file": "command.go"
         }
       ],
-      "intent": "dispatch",
-      "split": "tuning"
+      "intent": "dispatch"
     },
     {
       "id": "ask-cobra-subcommand-traversal",
@@ -451,8 +435,7 @@
           "file": "command.go"
         }
       ],
-      "intent": "lookup",
-      "split": "tuning"
+      "intent": "lookup"
     },
     {
       "id": "ask-cobra-argument-validation",
@@ -466,8 +449,7 @@
           "file": "command.go"
         }
       ],
-      "intent": "error_handling",
-      "split": "holdout"
+      "intent": "error_handling"
     },
     {
       "id": "ask-cobra-required-flags",
@@ -481,8 +463,7 @@
           "file": "command.go"
         }
       ],
-      "intent": "error_handling",
-      "split": "tuning"
+      "intent": "error_handling"
     },
     {
       "id": "ask-cobra-default-help-flag",
@@ -496,8 +477,7 @@
           "file": "command.go"
         }
       ],
-      "intent": "lifecycle",
-      "split": "tuning"
+      "intent": "lifecycle"
     },
     {
       "id": "ask-cobra-help-output",
@@ -511,8 +491,7 @@
           "file": "command.go"
         }
       ],
-      "intent": "output",
-      "split": "holdout"
+      "intent": "output"
     },
     {
       "id": "ask-cobra-usage-rendering",
@@ -526,8 +505,7 @@
           "file": "command.go"
         }
       ],
-      "intent": "output",
-      "split": "tuning"
+      "intent": "output"
     },
     {
       "id": "ask-cobra-command-suggestions",
@@ -541,8 +519,7 @@
           "file": "command.go"
         }
       ],
-      "intent": "lookup",
-      "split": "tuning"
+      "intent": "lookup"
     },
     {
       "id": "ask-cobra-add-child-command",
@@ -556,8 +533,7 @@
           "file": "command.go"
         }
       ],
-      "intent": "registration",
-      "split": "holdout"
+      "intent": "registration"
     },
     {
       "id": "ask-cobra-remove-child-command",
@@ -571,8 +547,7 @@
           "file": "command.go"
         }
       ],
-      "intent": "registration",
-      "split": "tuning"
+      "intent": "registration"
     },
     {
       "id": "ask-cobra-bash-completion",
@@ -586,8 +561,7 @@
           "file": "bash_completions.go"
         }
       ],
-      "intent": "output",
-      "split": "tuning"
+      "intent": "output"
     },
     {
       "id": "ask-cobra-shell-completions",
@@ -601,8 +575,7 @@
           "file": "completions.go"
         }
       ],
-      "intent": "lookup",
-      "split": "holdout"
+      "intent": "lookup"
     },
     {
       "id": "ask-cobra-exact-args",
@@ -616,8 +589,7 @@
           "file": "args.go"
         }
       ],
-      "intent": "error_handling",
-      "split": "tuning"
+      "intent": "error_handling"
     },
     {
       "id": "ask-cobra-alias-matching",
@@ -631,8 +603,7 @@
           "file": "command.go"
         }
       ],
-      "intent": "lookup",
-      "split": "tuning"
+      "intent": "lookup"
     },
     {
       "id": "ask-cobra-command-path",
@@ -646,8 +617,7 @@
           "file": "command.go"
         }
       ],
-      "intent": "output",
-      "split": "holdout"
+      "intent": "output"
     },
     {
       "id": "ask-flask-request-dispatch-lifecycle",
@@ -661,8 +631,7 @@
           "file": "src/flask/app.py"
         }
       ],
-      "intent": "dispatch",
-      "split": "tuning"
+      "intent": "dispatch"
     },
     {
       "id": "ask-flask-url-dispatch",
@@ -676,8 +645,7 @@
           "file": "src/flask/app.py"
         }
       ],
-      "intent": "dispatch",
-      "split": "tuning"
+      "intent": "dispatch"
     },
     {
       "id": "ask-flask-view-response-conversion",
@@ -691,8 +659,7 @@
           "file": "src/flask/app.py"
         }
       ],
-      "intent": "output",
-      "split": "holdout"
+      "intent": "output"
     },
     {
       "id": "ask-flask-blueprint-registration",
@@ -706,8 +673,7 @@
           "file": "src/flask/sansio/app.py"
         }
       ],
-      "intent": "registration",
-      "split": "tuning"
+      "intent": "registration"
     },
     {
       "id": "ask-flask-url-rule-registration",
@@ -721,8 +687,7 @@
           "file": "src/flask/sansio/app.py"
         }
       ],
-      "intent": "registration",
-      "split": "tuning"
+      "intent": "registration"
     },
     {
       "id": "ask-flask-before-request-callbacks",
@@ -736,8 +701,7 @@
           "file": "src/flask/app.py"
         }
       ],
-      "intent": "lifecycle",
-      "split": "holdout"
+      "intent": "lifecycle"
     },
     {
       "id": "ask-flask-user-exception",
@@ -751,8 +715,7 @@
           "file": "src/flask/app.py"
         }
       ],
-      "intent": "error_handling",
-      "split": "tuning"
+      "intent": "error_handling"
     },
     {
       "id": "ask-flask-unhandled-exception",
@@ -766,8 +729,7 @@
           "file": "src/flask/app.py"
         }
       ],
-      "intent": "error_handling",
-      "split": "tuning"
+      "intent": "error_handling"
     },
     {
       "id": "ask-flask-finalize-request",
@@ -781,8 +743,7 @@
           "file": "src/flask/app.py"
         }
       ],
-      "intent": "lifecycle",
-      "split": "holdout"
+      "intent": "lifecycle"
     },
     {
       "id": "ask-flask-after-request-callbacks",
@@ -796,8 +757,7 @@
           "file": "src/flask/app.py"
         }
       ],
-      "intent": "lifecycle",
-      "split": "tuning"
+      "intent": "lifecycle"
     },
     {
       "id": "ask-flask-request-context",
@@ -811,8 +771,7 @@
           "file": "src/flask/app.py"
         }
       ],
-      "intent": "lifecycle",
-      "split": "tuning"
+      "intent": "lifecycle"
     },
     {
       "id": "ask-flask-development-server",
@@ -826,8 +785,7 @@
           "file": "src/flask/app.py"
         }
       ],
-      "intent": "lifecycle",
-      "split": "holdout"
+      "intent": "lifecycle"
     },
     {
       "id": "ask-flask-template-rendering",
@@ -841,8 +799,7 @@
           "file": "src/flask/templating.py"
         }
       ],
-      "intent": "output",
-      "split": "tuning"
+      "intent": "output"
     },
     {
       "id": "ask-flask-json-response",
@@ -856,8 +813,7 @@
           "file": "src/flask/json/__init__.py"
         }
       ],
-      "intent": "output",
-      "split": "tuning"
+      "intent": "output"
     },
     {
       "id": "ask-flask-cli-load-app",
@@ -871,8 +827,7 @@
           "file": "src/flask/cli.py"
         }
       ],
-      "intent": "lifecycle",
-      "split": "holdout"
+      "intent": "lifecycle"
     },
     {
       "id": "callers-search-parallel",
@@ -958,8 +913,7 @@
           "qualified": "files",
           "file": "crates/core/main.rs"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-rg-summary-printer",
@@ -973,8 +927,7 @@
           "qualified": "HiArgs::printer_summary",
           "file": "crates/core/flags/hiargs.rs"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-rg-standard-printer",
@@ -988,8 +941,7 @@
           "qualified": "HiArgs::printer_standard",
           "file": "crates/core/flags/hiargs.rs"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-rg-searcher-from-args",
@@ -1003,8 +955,7 @@
           "qualified": "HiArgs::searcher",
           "file": "crates/core/flags/hiargs.rs"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-rg-walk-builder",
@@ -1018,8 +969,7 @@
           "qualified": "HiArgs::walk_builder",
           "file": "crates/core/flags/hiargs.rs"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-rg-hiargs-from-low",
@@ -1033,8 +983,7 @@
           "qualified": "HiArgs::from_low_args",
           "file": "crates/core/flags/hiargs.rs"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-rg-flag-lookup",
@@ -1052,8 +1001,7 @@
           "qualified": "FlagMap::find_long",
           "file": "crates/core/flags/parse.rs"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-rg-haystack-build",
@@ -1067,8 +1015,7 @@
           "qualified": "HaystackBuilder::build",
           "file": "crates/core/haystack.rs"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-rg-replacement-interpolation",
@@ -1086,8 +1033,7 @@
           "qualified": "Captures::interpolate",
           "file": "crates/matcher/src/lib.rs"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-rg-glob-build",
@@ -1105,8 +1051,7 @@
           "qualified": "Glob::compile_matcher",
           "file": "crates/globset/src/glob.rs"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-rg-globset-match",
@@ -1120,8 +1065,7 @@
           "qualified": "GlobSet::is_match",
           "file": "crates/globset/src/lib.rs"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-rg-long-version",
@@ -1135,8 +1079,7 @@
           "qualified": "generate_long",
           "file": "crates/core/flags/doc/version.rs"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-rg-summary-finish",
@@ -1150,8 +1093,7 @@
           "qualified": "SummarySink::finish",
           "file": "crates/printer/src/summary.rs"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-rg-searcher-path",
@@ -1173,8 +1115,7 @@
           "qualified": "SearchWorker::search_path",
           "file": "crates/core/search.rs"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-rg-excludes-file",
@@ -1188,8 +1129,7 @@
           "qualified": "parse_excludes_file",
           "file": "crates/ignore/src/gitignore.rs"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-rg-types-matched",
@@ -1203,8 +1143,7 @@
           "qualified": "Types::matched",
           "file": "crates/ignore/src/types.rs"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-rg-json-begin",
@@ -1218,8 +1157,7 @@
           "qualified": "JSONSink::begin",
           "file": "crates/printer/src/json.rs"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-rg-main-run",
@@ -1237,8 +1175,7 @@
           "qualified": "main",
           "file": "crates/core/main.rs"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-cobra-root",
@@ -1252,8 +1189,7 @@
           "qualified": "Command::Root",
           "file": "command.go"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-cobra-execute-context",
@@ -1267,8 +1203,7 @@
           "qualified": "Command::ExecuteContext",
           "file": "command.go"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-cobra-persistent-flags",
@@ -1282,8 +1217,7 @@
           "qualified": "Command::PersistentFlags",
           "file": "command.go"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-cobra-zsh-completion",
@@ -1297,8 +1231,7 @@
           "qualified": "Command::GenZshCompletion",
           "file": "zsh_completions.go"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-cobra-fish-completion",
@@ -1312,8 +1245,7 @@
           "qualified": "Command::GenFishCompletion",
           "file": "fish_completions.go"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-cobra-powershell-completion",
@@ -1327,8 +1259,7 @@
           "qualified": "Command::GenPowerShellCompletion",
           "file": "powershell_completions.go"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-cobra-help-command-init",
@@ -1342,8 +1273,7 @@
           "qualified": "Command::InitDefaultHelpCmd",
           "file": "command.go"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-cobra-completion-command-init",
@@ -1357,8 +1287,7 @@
           "qualified": "Command::InitDefaultCompletionCmd",
           "file": "completions.go"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-cobra-version-flag-init",
@@ -1372,8 +1301,7 @@
           "qualified": "Command::InitDefaultVersionFlag",
           "file": "command.go"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-cobra-usage-template",
@@ -1387,8 +1315,7 @@
           "qualified": "Command::SetUsageTemplate",
           "file": "command.go"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-cobra-template-execute",
@@ -1402,8 +1329,7 @@
           "qualified": "tmpl",
           "file": "cobra.go"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-cobra-minimum-args",
@@ -1417,8 +1343,7 @@
           "qualified": "MinimumNArgs",
           "file": "args.go"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-cobra-only-valid-args",
@@ -1432,8 +1357,7 @@
           "qualified": "OnlyValidArgs",
           "file": "args.go"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-cobra-flag-error-func",
@@ -1447,8 +1371,7 @@
           "qualified": "Command::SetFlagErrorFunc",
           "file": "command.go"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-cobra-parse-flags",
@@ -1462,8 +1385,7 @@
           "qualified": "Command::ParseFlags",
           "file": "command.go"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-cobra-print-errln",
@@ -1477,8 +1399,7 @@
           "qualified": "Command::PrintErrln",
           "file": "command.go"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-cobra-command-name",
@@ -1492,8 +1413,7 @@
           "qualified": "Command::Name",
           "file": "command.go"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-cobra-levenshtein",
@@ -1507,8 +1427,7 @@
           "qualified": "ld",
           "file": "cobra.go"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-cobra-strip-flags",
@@ -1522,8 +1441,7 @@
           "qualified": "stripFlags",
           "file": "command.go"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-cobra-available-command",
@@ -1537,8 +1455,7 @@
           "qualified": "Command::IsAvailableCommand",
           "file": "command.go"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-cobra-markdown-docs",
@@ -1556,8 +1473,7 @@
           "qualified": "GenMarkdownTree",
           "file": "doc/md_docs.go"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-cobra-man-pages",
@@ -1575,8 +1491,7 @@
           "qualified": "GenManTree",
           "file": "doc/man_docs.go"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-cobra-find-command",
@@ -1590,8 +1505,7 @@
           "qualified": "Command::Find",
           "file": "command.go"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-cobra-mark-flag-required",
@@ -1609,8 +1523,7 @@
           "qualified": "MarkFlagRequired",
           "file": "shell_completions.go"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-cobra-internal-execute",
@@ -1624,8 +1537,7 @@
           "qualified": "Command::execute",
           "file": "command.go"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-flask-wsgi-app",
@@ -1639,8 +1551,7 @@
           "qualified": "Flask::wsgi_app",
           "file": "src/flask/app.py"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-flask-url-for",
@@ -1658,8 +1569,7 @@
           "qualified": "Flask::url_for",
           "file": "src/flask/app.py"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-flask-app-context-push",
@@ -1673,8 +1583,7 @@
           "qualified": "AppContext::push",
           "file": "src/flask/ctx.py"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-flask-request-context-push",
@@ -1688,8 +1597,7 @@
           "qualified": "RequestContext::push",
           "file": "src/flask/ctx.py"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-flask-teardown-request",
@@ -1703,8 +1611,7 @@
           "qualified": "Flask::do_teardown_request",
           "file": "src/flask/app.py"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-flask-teardown-appcontext",
@@ -1718,8 +1625,7 @@
           "qualified": "Flask::do_teardown_appcontext",
           "file": "src/flask/app.py"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-flask-jinja-environment",
@@ -1737,8 +1643,7 @@
           "qualified": "App::create_jinja_environment",
           "file": "src/flask/sansio/app.py"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-flask-template-loader",
@@ -1752,8 +1657,7 @@
           "qualified": "DispatchingJinjaLoader::get_source",
           "file": "src/flask/templating.py"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-flask-register-error-handler",
@@ -1767,8 +1671,7 @@
           "qualified": "Scaffold::register_error_handler",
           "file": "src/flask/sansio/scaffold.py"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-flask-run-cli-command",
@@ -1782,8 +1685,7 @@
           "qualified": "run_command",
           "file": "src/flask/cli.py"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-flask-shell-command",
@@ -1797,8 +1699,7 @@
           "qualified": "shell_command",
           "file": "src/flask/cli.py"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-flask-routes-command",
@@ -1812,8 +1713,7 @@
           "qualified": "routes_command",
           "file": "src/flask/cli.py"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-flask-open-session",
@@ -1827,8 +1727,7 @@
           "qualified": "SecureCookieSessionInterface::open_session",
           "file": "src/flask/sessions.py"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-flask-save-session",
@@ -1842,8 +1741,7 @@
           "qualified": "SecureCookieSessionInterface::save_session",
           "file": "src/flask/sessions.py"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-flask-send-from-directory",
@@ -1857,8 +1755,7 @@
           "qualified": "send_from_directory",
           "file": "src/flask/helpers.py"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-flask-stream-with-context",
@@ -1872,8 +1769,7 @@
           "qualified": "stream_with_context",
           "file": "src/flask/helpers.py"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-flask-flash",
@@ -1887,8 +1783,7 @@
           "qualified": "flash",
           "file": "src/flask/helpers.py"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-flask-config-pyfile",
@@ -1902,8 +1797,7 @@
           "qualified": "Config::from_pyfile",
           "file": "src/flask/config.py"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-flask-config-prefixed-env",
@@ -1917,8 +1811,7 @@
           "qualified": "Config::from_prefixed_env",
           "file": "src/flask/config.py"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-flask-blueprint-setup-state",
@@ -1932,8 +1825,7 @@
           "qualified": "Blueprint::make_setup_state",
           "file": "src/flask/sansio/blueprints.py"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-flask-static-file",
@@ -1951,8 +1843,7 @@
           "qualified": "Blueprint::send_static_file",
           "file": "src/flask/blueprints.py"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-flask-match-request",
@@ -1966,8 +1857,7 @@
           "qualified": "RequestContext::match_request",
           "file": "src/flask/ctx.py"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-flask-find-error-handler",
@@ -1981,8 +1871,7 @@
           "qualified": "App::_find_error_handler",
           "file": "src/flask/sansio/app.py"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-flask-handle-http-exception",
@@ -1996,8 +1885,7 @@
           "qualified": "Flask::handle_http_exception",
           "file": "src/flask/app.py"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-flask-url-adapter",
@@ -2011,8 +1899,7 @@
           "qualified": "Flask::create_url_adapter",
           "file": "src/flask/app.py"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-flask-json-dumps",
@@ -2026,8 +1913,7 @@
           "qualified": "DefaultJSONProvider::dumps",
           "file": "src/flask/json/provider.py"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-flask-log-exception",
@@ -2041,8 +1927,7 @@
           "qualified": "Flask::log_exception",
           "file": "src/flask/app.py"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-hono-dispatch",
@@ -2056,8 +1941,7 @@
           "qualified": "Hono::dispatch",
           "file": "src/hono-base.ts"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-hono-compose",
@@ -2071,8 +1955,7 @@
           "qualified": "compose",
           "file": "src/compose.ts"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-hono-add-route",
@@ -2086,8 +1969,7 @@
           "qualified": "Hono::addRoute",
           "file": "src/hono-base.ts"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-hono-mount",
@@ -2101,8 +1983,7 @@
           "qualified": "Hono::mount",
           "file": "src/hono-base.ts"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-hono-regexp-match",
@@ -2116,8 +1997,7 @@
           "qualified": "RegExpRouter::match",
           "file": "src/router/reg-exp-router/router.ts"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-hono-trie-insert",
@@ -2131,8 +2011,7 @@
           "qualified": "Node::insert",
           "file": "src/router/trie-router/node.ts"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-hono-trie-match",
@@ -2146,8 +2025,7 @@
           "qualified": "TrieRouter::match",
           "file": "src/router/trie-router/router.ts"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-hono-cookie-parse",
@@ -2161,8 +2039,7 @@
           "qualified": "parse",
           "file": "src/utils/cookie.ts"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-hono-cors",
@@ -2176,8 +2053,7 @@
           "qualified": "cors",
           "file": "src/middleware/cors/index.ts"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-hono-basic-auth",
@@ -2191,8 +2067,7 @@
           "qualified": "basicAuth",
           "file": "src/middleware/basic-auth/index.ts"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-hono-get-path",
@@ -2206,8 +2081,7 @@
           "qualified": "getPath",
           "file": "src/utils/url.ts"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-hono-http-exception",
@@ -2221,8 +2095,7 @@
           "qualified": "HTTPException::getResponse",
           "file": "src/http-exception.ts"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-hono-error-handler",
@@ -2236,8 +2109,7 @@
           "qualified": "errorHandler",
           "file": "src/hono-base.ts"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-hono-not-found-handler",
@@ -2251,8 +2123,7 @@
           "qualified": "notFoundHandler",
           "file": "src/hono-base.ts"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-hono-validator",
@@ -2266,8 +2137,7 @@
           "qualified": "validator",
           "file": "src/validator/validator.ts"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-hono-smart-router",
@@ -2281,8 +2151,7 @@
           "qualified": "SmartRouter::match",
           "file": "src/router/smart-router/router.ts"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-hono-serve-static",
@@ -2296,8 +2165,7 @@
           "qualified": "serveStatic",
           "file": "src/middleware/serve-static/index.ts"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-hono-merge-path",
@@ -2311,8 +2179,7 @@
           "qualified": "mergePath",
           "file": "src/utils/url.ts"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-hono-etag",
@@ -2326,8 +2193,7 @@
           "qualified": "etag",
           "file": "src/middleware/etag/index.ts"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-hono-logger",
@@ -2341,8 +2207,7 @@
           "qualified": "logger",
           "file": "src/middleware/logger/index.ts"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-hono-route-group",
@@ -2356,8 +2221,7 @@
           "qualified": "Hono::route",
           "file": "src/hono-base.ts"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-hono-base-path",
@@ -2371,8 +2235,7 @@
           "qualified": "Hono::basePath",
           "file": "src/hono-base.ts"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-gson-builder-create",
@@ -2386,8 +2249,7 @@
           "qualified": "GsonBuilder::create",
           "file": "gson/src/main/java/com/google/gson/GsonBuilder.java"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-gson-from-json",
@@ -2401,8 +2263,7 @@
           "qualified": "Gson::fromJson",
           "file": "gson/src/main/java/com/google/gson/Gson.java"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-gson-to-json",
@@ -2416,8 +2277,7 @@
           "qualified": "Gson::toJson",
           "file": "gson/src/main/java/com/google/gson/Gson.java"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-gson-register-adapter",
@@ -2431,8 +2291,7 @@
           "qualified": "GsonBuilder::registerTypeAdapter",
           "file": "gson/src/main/java/com/google/gson/GsonBuilder.java"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-gson-get-adapter",
@@ -2446,8 +2305,7 @@
           "qualified": "Gson::getAdapter",
           "file": "gson/src/main/java/com/google/gson/Gson.java"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-gson-parse-reader",
@@ -2461,8 +2319,7 @@
           "qualified": "JsonParser::parseReader",
           "file": "gson/src/main/java/com/google/gson/JsonParser.java"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-gson-parse-string",
@@ -2476,8 +2333,7 @@
           "qualified": "JsonParser::parseString",
           "file": "gson/src/main/java/com/google/gson/JsonParser.java"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-gson-peek-token",
@@ -2491,8 +2347,7 @@
           "qualified": "JsonReader::peek",
           "file": "gson/src/main/java/com/google/gson/stream/JsonReader.java"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-gson-reflective-adapter",
@@ -2506,8 +2361,7 @@
           "qualified": "ReflectiveTypeAdapterFactory::create",
           "file": "gson/src/main/java/com/google/gson/internal/bind/ReflectiveTypeAdapterFactory.java"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-gson-syntax-error",
@@ -2521,8 +2375,7 @@
           "qualified": "JsonReader::syntaxError",
           "file": "gson/src/main/java/com/google/gson/stream/JsonReader.java"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-gson-object-add",
@@ -2536,8 +2389,7 @@
           "qualified": "JsonObject::add",
           "file": "gson/src/main/java/com/google/gson/JsonObject.java"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-gson-exclude-field",
@@ -2551,8 +2403,7 @@
           "qualified": "Excluder::excludeField",
           "file": "gson/src/main/java/com/google/gson/internal/Excluder.java"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-gson-constructor",
@@ -2566,8 +2417,7 @@
           "qualified": "ConstructorConstructor::get",
           "file": "gson/src/main/java/com/google/gson/internal/ConstructorConstructor.java"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-gson-write-null",
@@ -2581,8 +2431,7 @@
           "qualified": "JsonWriter::nullValue",
           "file": "gson/src/main/java/com/google/gson/stream/JsonWriter.java"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-gson-streams-write",
@@ -2596,8 +2445,7 @@
           "qualified": "Streams::write",
           "file": "gson/src/main/java/com/google/gson/internal/Streams.java"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-gson-streams-parse",
@@ -2611,8 +2459,7 @@
           "qualified": "Streams::parse",
           "file": "gson/src/main/java/com/google/gson/internal/Streams.java"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-gson-begin-object",
@@ -2626,8 +2473,7 @@
           "qualified": "JsonWriter::beginObject",
           "file": "gson/src/main/java/com/google/gson/stream/JsonWriter.java"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-gson-next-string",
@@ -2641,8 +2487,7 @@
           "qualified": "JsonReader::nextString",
           "file": "gson/src/main/java/com/google/gson/stream/JsonReader.java"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-gson-type-token-get",
@@ -2660,8 +2505,7 @@
           "qualified": "TypeToken::TypeToken",
           "file": "gson/src/main/java/com/google/gson/reflect/TypeToken.java"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-gson-raw-type",
@@ -2675,8 +2519,7 @@
           "qualified": "$Gson$Types::getRawType",
           "file": "gson/src/main/java/com/google/gson/internal/$Gson$Types.java"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-gson-delegate-adapter",
@@ -2690,8 +2533,7 @@
           "qualified": "Gson::getDelegateAdapter",
           "file": "gson/src/main/java/com/google/gson/Gson.java"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "ask-gson-pretty-printing",
@@ -2705,8 +2547,7 @@
           "qualified": "GsonBuilder::setPrettyPrinting",
           "file": "gson/src/main/java/com/google/gson/GsonBuilder.java"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-gson-new-writer",
@@ -2720,8 +2561,7 @@
           "qualified": "Gson::newJsonWriter",
           "file": "gson/src/main/java/com/google/gson/Gson.java"
         }
-      ],
-      "split": "tuning"
+      ]
     },
     {
       "id": "ask-gson-new-reader",
@@ -2735,8 +2575,7 @@
           "qualified": "Gson::newJsonReader",
           "file": "gson/src/main/java/com/google/gson/Gson.java"
         }
-      ],
-      "split": "holdout"
+      ]
     },
     {
       "id": "callers-cobra-strip-flags",

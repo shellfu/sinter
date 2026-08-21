@@ -14,6 +14,7 @@ pub struct RepositorySpec {
     pub url: String,
     pub git_ref: String,
     pub commit: String,
+    pub ask_split: Split,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -46,7 +47,6 @@ pub enum CaseSpec {
         input: String,
         limit: usize,
         intent: String,
-        split: Split,
         relevant: Vec<SymbolKey>,
     },
     Callers {
@@ -133,11 +133,39 @@ pub struct Scorecard {
     pub schema: u32,
     pub suite_schema: u32,
     pub generated_at_unix_seconds: u64,
+    pub scope: EvaluationScope,
+    pub evaluated_binary: EvaluatedBinary,
     pub repositories: Vec<RepositoryResult>,
     pub metrics: Metrics,
     pub minimums: Minimums,
     pub regressions: Vec<String>,
     pub cases: Vec<CaseResult>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvaluationScope {
+    All,
+    Ask,
+}
+
+impl EvaluationScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Ask => "ask",
+        }
+    }
+
+    pub fn includes(self, case: &CaseSpec) -> bool {
+        self == Self::All || matches!(case, CaseSpec::Ask { .. })
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct EvaluatedBinary {
+    pub path: String,
+    pub version: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -146,6 +174,7 @@ pub struct RepositoryResult {
     pub url: String,
     pub git_ref: String,
     pub commit: String,
+    pub ask_split: Split,
     pub compiler_index: &'static str,
     pub build_duration_ms: u128,
 }
@@ -157,8 +186,24 @@ pub struct Metrics {
     pub ask_by_split: Vec<LabeledRanking>,
     pub ask_by_repository: Vec<LabeledRanking>,
     pub ask_by_intent: Vec<LabeledRanking>,
+    pub ask_holdout_confidence: ConfidenceCalibration,
     pub callers: CallerMetrics,
     pub paths: PathMetrics,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct ConfidenceCalibration {
+    pub cases: usize,
+    pub rated_cases: usize,
+    pub buckets: Vec<ConfidenceBucket>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConfidenceBucket {
+    pub level: &'static str,
+    pub cases: usize,
+    pub correct: usize,
+    pub precision: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -227,6 +272,9 @@ pub enum CaseOutcome {
         candidate_pool_size: usize,
         candidate_relevant_found: usize,
         candidate_miss: bool,
+        /// Confidence emitted by `ask`; absent for exact `query` cases.
+        top_confidence: Option<String>,
+        top_margin_permille: Option<i64>,
         /// Top result when it is not relevant; None when top-1 is correct.
         top_incorrect: Option<SymbolKey>,
         returned: Vec<RankedSymbol>,

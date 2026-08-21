@@ -1,0 +1,24 @@
+{
+  "nodes": [
+    ["file", "main.ts", "main.ts"],
+    ["class", "Handler", "main.ts"],
+    ["method", "Handler::fetch", "main.ts"],
+    ["method", "Handler::handle", "main.ts"],
+    ["function", "normalize", "main.ts"]
+  ],
+  "contains": [
+    ["main.ts", "Handler"],
+    ["Handler", "Handler::fetch"],
+    ["Handler", "Handler::handle"],
+    ["main.ts", "normalize"]
+  ],
+  "references": [
+    ["calls", "normalize"],
+    ["calls", "normalize"]
+  ],
+  "resolved": [
+    ["scope", "calls", "Handler::fetch", "normalize"],
+    ["scope", "calls", "Handler::handle", "normalize"]
+  ],
+  "unresolved_count": 0
+}

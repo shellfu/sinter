@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use super::model::{CaseOutcome, LabeledRanking, Scorecard};
+use super::model::{CaseOutcome, EvaluationScope, LabeledRanking, Scorecard};
 
 pub fn output_directory(workspace: &Path) -> PathBuf {
     std::env::var_os("SINTER_EVAL_OUT")
@@ -32,17 +32,29 @@ fn render_markdown(scorecard: &Scorecard) -> String {
         scorecard.generated_at_unix_seconds, scorecard.suite_schema
     )
     .unwrap();
+    writeln!(
+        output,
+        "Evaluated binary: `{}` (`{}`). Scope: `{}`.\n",
+        scorecard.evaluated_binary.path,
+        scorecard.evaluated_binary.version,
+        scorecard.scope.as_str()
+    )
+    .unwrap();
     writeln!(output, "## Corpus\n").unwrap();
     writeln!(
         output,
-        "| Repository | Git ref | Commit | Build |\n|---|---|---|---:|"
+        "| Repository | Ask split | Git ref | Commit | Build |\n|---|---|---|---|---:|"
     )
     .unwrap();
     for repository in &scorecard.repositories {
         writeln!(
             output,
-            "| {} | `{}` | `{}` | {} ms |",
-            repository.name, repository.git_ref, repository.commit, repository.build_duration_ms
+            "| {} | {} | `{}` | `{}` | {} ms |",
+            repository.name,
+            repository.ask_split.as_str(),
+            repository.git_ref,
+            repository.commit,
+            repository.build_duration_ms
         )
         .unwrap();
     }
@@ -52,22 +64,24 @@ fn render_markdown(scorecard: &Scorecard) -> String {
         "| Surface | Cases | Metric | Score | Minimum |\n|---|---:|---|---:|---:|"
     )
     .unwrap();
-    writeln!(
-        output,
-        "| query | {} | MRR | {:.3} | {:.3} |",
-        scorecard.metrics.query.cases,
-        scorecard.metrics.query.mean_reciprocal_rank,
-        scorecard.minimums.query_mrr
-    )
-    .unwrap();
-    writeln!(
-        output,
-        "| query | {} | recall@limit | {:.3} | {:.3} |",
-        scorecard.metrics.query.cases,
-        scorecard.metrics.query.mean_recall_at_limit,
-        scorecard.minimums.query_recall_at_limit
-    )
-    .unwrap();
+    if scorecard.scope == EvaluationScope::All {
+        writeln!(
+            output,
+            "| query | {} | MRR | {:.3} | {:.3} |",
+            scorecard.metrics.query.cases,
+            scorecard.metrics.query.mean_reciprocal_rank,
+            scorecard.minimums.query_mrr
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "| query | {} | recall@limit | {:.3} | {:.3} |",
+            scorecard.metrics.query.cases,
+            scorecard.metrics.query.mean_recall_at_limit,
+            scorecard.minimums.query_recall_at_limit
+        )
+        .unwrap();
+    }
     writeln!(
         output,
         "| ask | {} | top-1 accuracy | {:.3} | {:.3} |",
@@ -109,31 +123,34 @@ fn render_markdown(scorecard: &Scorecard) -> String {
         scorecard.metrics.ask.p95_duration_ms,
     )
     .unwrap();
-    writeln!(
-        output,
-        "| callers | {} | precision | {:.3} | {:.3} |",
-        scorecard.metrics.callers.cases,
-        scorecard.metrics.callers.precision,
-        scorecard.minimums.caller_precision
-    )
-    .unwrap();
-    writeln!(
-        output,
-        "| callers | {} | recall | {:.3} | {:.3} |",
-        scorecard.metrics.callers.cases,
-        scorecard.metrics.callers.recall,
-        scorecard.minimums.caller_recall
-    )
-    .unwrap();
-    writeln!(
-        output,
-        "| paths | {} | accuracy | {:.3} | {:.3} |",
-        scorecard.metrics.paths.cases,
-        scorecard.metrics.paths.accuracy,
-        scorecard.minimums.path_accuracy
-    )
-    .unwrap();
+    if scorecard.scope == EvaluationScope::All {
+        writeln!(
+            output,
+            "| callers | {} | precision | {:.3} | {:.3} |",
+            scorecard.metrics.callers.cases,
+            scorecard.metrics.callers.precision,
+            scorecard.minimums.caller_precision
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "| callers | {} | recall | {:.3} | {:.3} |",
+            scorecard.metrics.callers.cases,
+            scorecard.metrics.callers.recall,
+            scorecard.minimums.caller_recall
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "| paths | {} | accuracy | {:.3} | {:.3} |",
+            scorecard.metrics.paths.cases,
+            scorecard.metrics.paths.accuracy,
+            scorecard.minimums.path_accuracy
+        )
+        .unwrap();
+    }
     write_breakdown(&mut output, "Ask by split", &scorecard.metrics.ask_by_split);
+    write_confidence_calibration(&mut output, scorecard);
     write_breakdown(
         &mut output,
         "Ask by repository",
@@ -199,6 +216,30 @@ fn render_markdown(scorecard: &Scorecard) -> String {
         }
     }
     output
+}
+
+fn write_confidence_calibration(output: &mut String, scorecard: &Scorecard) {
+    let calibration = &scorecard.metrics.ask_holdout_confidence;
+    writeln!(output, "\n## Ask confidence on holdout repositories\n").unwrap();
+    writeln!(
+        output,
+        "Rated {} of {} holdout cases. Precision is top-1 correctness within each emitted confidence bucket.\n",
+        calibration.rated_cases, calibration.cases
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "| Confidence | Cases | Correct | Precision |\n|---|---:|---:|---:|"
+    )
+    .unwrap();
+    for bucket in &calibration.buckets {
+        writeln!(
+            output,
+            "| {} | {} | {} | {:.3} |",
+            bucket.level, bucket.cases, bucket.correct, bucket.precision
+        )
+        .unwrap();
+    }
 }
 
 fn write_breakdown(output: &mut String, title: &str, groups: &[LabeledRanking]) {

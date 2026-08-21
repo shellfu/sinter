@@ -45,13 +45,15 @@ pub(crate) fn annotate(hits: &mut [serde_json::Value]) {
 
 /// Caveat line for an annotated list, or None when the top hit stands clear.
 pub(crate) fn advice_for(hits: &[serde_json::Value]) -> Option<String> {
-    let top = hits.first()?;
-    let scores = hits
-        .iter()
-        .map(|hit| hit["score"].as_i64().unwrap_or(0))
-        .collect::<Vec<_>>();
-    let family_size = top["family_size"].as_u64().unwrap_or(1) as usize;
-    confidence::advice(confidence::assess(&scores)[0], family_size)
+    let hit = hits.first()?;
+    let level = confidence::Level::from_label(hit["confidence"].as_str().unwrap_or(""))?;
+    let top = confidence::Confidence {
+        level,
+        margin: hit["margin"].as_i64().unwrap_or(0),
+        margin_permille: hit["margin_permille"].as_i64().unwrap_or(0),
+    };
+    let family_size = hit["family_size"].as_u64().unwrap_or(1) as usize;
+    confidence::advice(top, family_size)
 }
 
 fn family_size(hits: &[Hit], rank: usize) -> usize {
@@ -415,4 +417,27 @@ pub fn run(repo: &Path, question: &str, limit: usize, json: bool) -> Result<bool
         println!("Next: sinter show {q} · sinter affected {q}");
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::advice_for;
+
+    #[test]
+    fn advice_uses_annotation_when_only_one_hit_is_returned() {
+        let hits = vec![json!({
+            "score": 100,
+            "confidence": "low",
+            "margin": 2,
+            "margin_permille": 20,
+            "family_size": 1
+        })];
+
+        assert_eq!(
+            advice_for(&hits).as_deref(),
+            Some("low confidence: top hit leads by 2%; inspect the top 3 before acting")
+        );
+    }
 }

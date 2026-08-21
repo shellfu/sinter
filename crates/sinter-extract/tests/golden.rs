@@ -291,6 +291,11 @@ fn golden_typescript_arrow_const() {
 }
 
 #[test]
+fn golden_typescript_class_arrow_property() {
+    check("typescript-class-arrow-property");
+}
+
+#[test]
 fn golden_typescript_default_export() {
     check("typescript-default-export");
 }

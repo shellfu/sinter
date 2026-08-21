@@ -1,8 +1,8 @@
-//! How much a ranked list should be trusted. Calibrated on the real-
-//! repository harness: the relative margin between the first and second
-//! score predicts top-1 correctness (≥0.20 → ~88%, 0.05–0.20 → ~67%,
-//! <0.05 → ~38%); coverage and family size did not. Thresholds change
-//! only with a new calibration run.
+//! How much a ranked list should be trusted. The relative margin between
+//! the first and second score predicts top-1 correctness; coverage and
+//! family size did not. The real-repository scorecard audits these fixed
+//! thresholds against repository-level holdouts. Thresholds change only
+//! with a new calibration run.
 
 use serde::Serialize;
 
@@ -18,6 +18,17 @@ pub(crate) enum Level {
     High,
     Medium,
     Low,
+}
+
+impl Level {
+    pub(crate) fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "high" => Some(Self::High),
+            "medium" => Some(Self::Medium),
+            "low" => Some(Self::Low),
+            _ => None,
+        }
+    }
 }
 
 /// Confidence facts for one ranked position.
