@@ -898,154 +898,183 @@ fn resolve_one<'a>(
     imports: Option<&Vec<Import>>,
 ) -> (Option<&'a Node>, Evidence, bool) {
     if r.relation == Relation::Imports {
-        let glob = matches!(r.alias.as_deref(), Some("*") | Some("."));
-        let raw = strip_glob(&r.name);
-        // An import naming a literal repo file binds it exactly — this is
-        // how `#include "player/character.h"` stays unambiguous even though
-        // header and impl share one module (fixture: cpp-header-impl).
-        if let Some(node) = index
-            .file_nodes
-            .get(raw.trim().trim_matches(['<', '>', '"']))
-        {
-            return (Some(node), Evidence::Import, true);
-        }
-        let segments = expand(spec, &index.roots, &r.file, (spec.absolutize)(raw, &r.file));
-        let target = if glob {
-            index.import_file(&segments)
-        } else {
-            index.resolve_path(&segments, 4)
-        };
-        let internal = target.is_some() || index.anchored(&segments);
-        return (target, Evidence::Import, internal);
+        return resolve_import_reference(index, spec, r);
     }
 
     if let Some(path) = &r.path {
-        // Document-path languages (spec.file_refs): the path names a
-        // corpus file, never a symbol — dedicated tier, no fallthrough.
-        if spec.file_refs {
-            return resolve_file_ref(index, spec, r, path);
-        }
-        // Qualified reference: receiver, typed local, shadow, absolute
-        // path, then imports — strongest local knowledge first.
-        let segments = expand(
-            spec,
-            &index.roots,
-            &r.file,
-            (spec.absolutize)(path, &r.file),
-        );
-        let prefix = segments
-            .len()
-            .checked_sub(2)
-            .and_then(|p| segments.get(p))
-            .cloned();
-        let Some(prefix) = prefix else {
-            return (None, Evidence::Import, false);
-        };
-        // Field receiver: `self.harness.check()`. The ordinary receiver
-        // tier sees `harness` as the prefix, so it cannot use the enclosing
-        // impl type. A declared field type provides the missing link.
-        if segments.len() >= 3
-            && spec
-                .receivers
-                .contains(&segments[segments.len() - 3].as_str())
-            && let Some(enclosing) = &r.enclosing
-            && let Some((type_prefix, _)) = qualified_of(enclosing.as_str()).rsplit_once("::")
+        return resolve_qualified_reference(index, spec, r, file_module, imports, path);
+    }
+
+    resolve_bare_reference(index, r, file_module, imports)
+}
+
+/// Import declarations resolve through exact files first, then absolute
+/// module/definition paths. A corpus-anchored miss remains internal.
+fn resolve_import_reference<'a>(
+    index: &Index<'a>,
+    spec: &LanguageSpec,
+    r: &Reference,
+) -> (Option<&'a Node>, Evidence, bool) {
+    let glob = matches!(r.alias.as_deref(), Some("*") | Some("."));
+    let raw = strip_glob(&r.name);
+    // An import naming a literal repo file binds it exactly — this is
+    // how `#include "player/character.h"` stays unambiguous even though
+    // header and impl share one module (fixture: cpp-header-impl).
+    if let Some(node) = index
+        .file_nodes
+        .get(raw.trim().trim_matches(['<', '>', '"']))
+    {
+        return (Some(node), Evidence::Import, true);
+    }
+    let segments = expand(spec, &index.roots, &r.file, (spec.absolutize)(raw, &r.file));
+    let target = if glob {
+        index.import_file(&segments)
+    } else {
+        index.resolve_path(&segments, 4)
+    };
+    let internal = target.is_some() || index.anchored(&segments);
+    (target, Evidence::Import, internal)
+}
+
+/// Qualified references resolve receiver and type evidence before absolute
+/// paths and named imports. The tier ordering is part of the binding contract.
+fn resolve_qualified_reference<'a>(
+    index: &Index<'a>,
+    spec: &LanguageSpec,
+    r: &Reference,
+    file_module: &[String],
+    imports: Option<&Vec<Import>>,
+    path: &str,
+) -> (Option<&'a Node>, Evidence, bool) {
+    // Document-path languages (spec.file_refs): the path names a
+    // corpus file, never a symbol — dedicated tier, no fallthrough.
+    if spec.file_refs {
+        return resolve_file_ref(index, spec, r, path);
+    }
+    // Qualified reference: receiver, typed local, shadow, absolute
+    // path, then imports — strongest local knowledge first.
+    let segments = expand(
+        spec,
+        &index.roots,
+        &r.file,
+        (spec.absolutize)(path, &r.file),
+    );
+    let prefix = segments
+        .len()
+        .checked_sub(2)
+        .and_then(|p| segments.get(p))
+        .cloned();
+    let Some(prefix) = prefix else {
+        return (None, Evidence::Import, false);
+    };
+    // Field receiver: `self.harness.check()`. The ordinary receiver
+    // tier sees `harness` as the prefix, so it cannot use the enclosing
+    // impl type. A declared field type provides the missing link.
+    if segments.len() >= 3
+        && spec
+            .receivers
+            .contains(&segments[segments.len() - 3].as_str())
+        && let Some(enclosing) = &r.enclosing
+        && let Some((type_prefix, _)) = qualified_of(enclosing.as_str()).rsplit_once("::")
+    {
+        let owner = index
+            .by_file_qualified
+            .get(&(r.file.as_str(), type_prefix))
+            .copied()
+            .or_else(|| {
+                let name = type_prefix.rsplit("::").next().unwrap_or(type_prefix);
+                index.type_def(&r.file, file_module, name)
+            });
+        if let Some(owner) = owner
+            && let Some(field) = index.field(owner, &segments[segments.len() - 2])
         {
-            let owner = index
-                .by_file_qualified
-                .get(&(r.file.as_str(), type_prefix))
-                .copied()
-                .or_else(|| {
-                    let name = type_prefix.rsplit("::").next().unwrap_or(type_prefix);
-                    index.type_def(&r.file, file_module, name)
-                });
-            if let Some(owner) = owner
-                && let Some(field) = index.field(owner, &segments[segments.len() - 2])
-            {
-                let field_spec = spec_for_path(&owner.file).unwrap_or(spec);
-                let field_module = key_of(field_spec, &index.roots, &owner.file);
-                let (target, anchored) = index.member_of_written_type(
-                    &owner.file,
-                    &field_module,
-                    &field.type_name,
-                    &r.name,
-                );
-                return (target, Evidence::Scope, anchored);
-            }
+            let field_spec = spec_for_path(&owner.file).unwrap_or(spec);
+            let field_module = key_of(field_spec, &index.roots, &owner.file);
+            let (target, anchored) =
+                index.member_of_written_type(&owner.file, &field_module, &field.type_name, &r.name);
+            return (target, Evidence::Scope, anchored);
         }
-        if spec.receivers.contains(&prefix.as_str())
-            && let Some(enclosing) = &r.enclosing
-            && let Some((type_prefix, _)) = qualified_of(enclosing.as_str()).rsplit_once("::")
-        {
-            // Sibling method in the same impl block's file: `self.m()`
-            // inside `impl T` binds `T::m` without needing T's definition
-            // in this file (struct in types.rs, impl in lib.rs).
-            let sibling = format!("{type_prefix}::{}", r.name);
-            if let Some(node) = index
-                .by_file_qualified
-                .get(&(r.file.as_str(), sibling.as_str()))
-            {
-                return (Some(node), Evidence::Scope, true);
-            }
-            if let Some(ty) = index.by_file_qualified.get(&(r.file.as_str(), type_prefix)) {
-                // Receiver type is in the corpus: any miss is internal.
-                return (index.member_of(ty, &r.name, 4), Evidence::Scope, true);
-            }
-        }
-        match index.local_at(&r.file, &prefix, r.span.start) {
-            Some(Some(type_name)) => {
-                let (target, anchored) =
-                    index.member_of_written_type(&r.file, file_module, type_name, &r.name);
-                // Known corpus type but missing member -> internal.
-                return (target, Evidence::Scope, anchored);
-            }
-            Some(None) => return (None, Evidence::Scope, false), // shadowed: correctly no edge
-            None => {}
-        }
-        // Same-scope type qualifier (Counter::new in the type's own file).
-        if let Some(ty) = index.type_def(&r.file, file_module, &prefix)
-            && let Some(node) = index.member_of(ty, &r.name, 4)
+    }
+    if spec.receivers.contains(&prefix.as_str())
+        && let Some(enclosing) = &r.enclosing
+        && let Some((type_prefix, _)) = qualified_of(enclosing.as_str()).rsplit_once("::")
+    {
+        // Sibling method in the same impl block's file: `self.m()`
+        // inside `impl T` binds `T::m` without needing T's definition
+        // in this file (struct in types.rs, impl in lib.rs).
+        let sibling = format!("{type_prefix}::{}", r.name);
+        if let Some(node) = index
+            .by_file_qualified
+            .get(&(r.file.as_str(), sibling.as_str()))
         {
             return (Some(node), Evidence::Scope, true);
         }
-        if let Some(node) = index.resolve_path_defs(&segments, 4) {
-            return (Some(node), Evidence::Import, true);
+        if let Some(ty) = index.by_file_qualified.get(&(r.file.as_str(), type_prefix)) {
+            // Receiver type is in the corpus: any miss is internal.
+            return (index.member_of(ty, &r.name, 4), Evidence::Scope, true);
         }
-        // Associated item through a path: the second-to-last segment is a
-        // *type*, not a module (`some_crate::Config::new`,
-        // `ns::Class::method`). Resolve the prefix as a path — re-export
-        // chains included — then look the leaf up as a member. Path
-        // shape, not language shape: active for every language.
-        if let Some((leaf, type_path)) = segments.split_last()
-            && type_path.len() >= 2
-            && let Some(ty) = index.resolve_path_defs(type_path, 4)
-            && let Some(node) = index.member_of(ty, leaf, 4)
-        {
-            return (Some(node), Evidence::Import, true);
-        }
-        let matching: Vec<&Import> = imports
-            .into_iter()
-            .flatten()
-            .filter(|imp| !imp.glob && imp.binding == prefix)
-            .collect();
-        let candidates: Vec<&Node> = matching
-            .iter()
-            .filter_map(|imp| {
-                let mut full = imp.segments.clone();
-                full.push(r.name.clone());
-                index.resolve_path(&full, 4)
-            })
-            .collect();
-        let internal = candidates.len() > 1
-            || index.anchored(&segments)
-            || matching.iter().any(|imp| index.anchored(&imp.segments));
-        return match candidates.as_slice() {
-            [node] => (Some(node), Evidence::Import, true),
-            _ => (None, Evidence::Import, internal),
-        };
     }
+    match index.local_at(&r.file, &prefix, r.span.start) {
+        Some(Some(type_name)) => {
+            let (target, anchored) =
+                index.member_of_written_type(&r.file, file_module, type_name, &r.name);
+            // Known corpus type but missing member -> internal.
+            return (target, Evidence::Scope, anchored);
+        }
+        Some(None) => return (None, Evidence::Scope, false), // shadowed: correctly no edge
+        None => {}
+    }
+    // Same-scope type qualifier (Counter::new in the type's own file).
+    if let Some(ty) = index.type_def(&r.file, file_module, &prefix)
+        && let Some(node) = index.member_of(ty, &r.name, 4)
+    {
+        return (Some(node), Evidence::Scope, true);
+    }
+    if let Some(node) = index.resolve_path_defs(&segments, 4) {
+        return (Some(node), Evidence::Import, true);
+    }
+    // Associated item through a path: the second-to-last segment is a
+    // *type*, not a module (`some_crate::Config::new`,
+    // `ns::Class::method`). Resolve the prefix as a path — re-export
+    // chains included — then look the leaf up as a member. Path
+    // shape, not language shape: active for every language.
+    if let Some((leaf, type_path)) = segments.split_last()
+        && type_path.len() >= 2
+        && let Some(ty) = index.resolve_path_defs(type_path, 4)
+        && let Some(node) = index.member_of(ty, leaf, 4)
+    {
+        return (Some(node), Evidence::Import, true);
+    }
+    let matching: Vec<&Import> = imports
+        .into_iter()
+        .flatten()
+        .filter(|imp| !imp.glob && imp.binding == prefix)
+        .collect();
+    let candidates: Vec<&Node> = matching
+        .iter()
+        .filter_map(|imp| {
+            let mut full = imp.segments.clone();
+            full.push(r.name.clone());
+            index.resolve_path(&full, 4)
+        })
+        .collect();
+    let internal = candidates.len() > 1
+        || index.anchored(&segments)
+        || matching.iter().any(|imp| index.anchored(&imp.segments));
+    match candidates.as_slice() {
+        [node] => (Some(node), Evidence::Import, true),
+        _ => (None, Evidence::Import, internal),
+    }
+}
 
-    // Bare name.
+/// Bare names resolve lexical scope and module scope before named and glob
+/// imports. Shadowing and every ambiguity remain evidence-or-nothing.
+fn resolve_bare_reference<'a>(
+    index: &Index<'a>,
+    r: &Reference,
+    file_module: &[String],
+    imports: Option<&Vec<Import>>,
+) -> (Option<&'a Node>, Evidence, bool) {
     if index.local_at(&r.file, &r.name, r.span.start).is_some() {
         return (None, Evidence::Scope, false); // shadowed: correctly no edge
     }

@@ -14,6 +14,11 @@ use sinter_store::EdgeFilter;
 
 use crate::lookup::{open_current, open_store};
 
+/// Per-collection output budget for agent-facing impact results. Computation
+/// always remains complete; this limit applies only when rendering the three
+/// potentially large symbol collections.
+pub const DEFAULT_LIMIT: usize = 20;
+
 #[derive(Serialize)]
 pub struct ImpactReport {
     pub rev_range: String,
@@ -156,6 +161,43 @@ fn git_diff(repo: &Path, rev_range: &str, args: &[&str]) -> Result<Output> {
         "git diff {rev_range} failed: {}",
         stderr.lines().next().unwrap_or("").trim()
     );
+}
+
+fn historical_range_endpoint(rev_range: &str) -> Option<&str> {
+    let (_, endpoint) = rev_range
+        .split_once("...")
+        .or_else(|| rev_range.split_once(".."))?;
+    let endpoint = endpoint.trim();
+    Some(if endpoint.is_empty() {
+        "HEAD"
+    } else {
+        endpoint
+    })
+}
+
+fn git_tree(repo: &Path, revision: &str) -> Result<String> {
+    let treeish = format!("{revision}^{{tree}}");
+    let output = Command::new("git")
+        .args(["rev-parse", "--verify", "--end-of-options"])
+        .arg(&treeish)
+        .current_dir(repo)
+        .output()
+        .with_context(|| format!("resolve Git tree for {revision}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "git rev-parse {revision} failed: {}",
+            stderr.lines().next().unwrap_or("").trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn historical_endpoint_matches_head(repo: &Path, rev_range: &str) -> Result<bool> {
+    let Some(endpoint) = historical_range_endpoint(rev_range) else {
+        return Ok(true);
+    };
+    Ok(git_tree(repo, endpoint)? == git_tree(repo, "HEAD")?)
 }
 
 fn file_change_kind(status: &str) -> FileChangeKind {
@@ -391,6 +433,7 @@ pub(crate) fn compute_with_store(
 ) -> Result<ImpactReport> {
     let working_tree_changes = working_tree_changes(repo)?;
     let working_tree_dirty = !working_tree_changes.is_empty();
+    let historical_endpoint_matches_head = historical_endpoint_matches_head(repo, rev_range)?;
     let mut changed_files = changed_files(repo, rev_range)?;
     // New-side hunks per file from Git. Name/status is deliberately a
     // separate command: patch text cannot represent config-only, binary,
@@ -525,6 +568,9 @@ pub(crate) fn compute_with_store(
     if rev_range.contains("..") && working_tree_dirty {
         partial_reasons.push("historical_diff_uses_a_dirty_working_tree_graph");
     }
+    if !historical_endpoint_matches_head {
+        partial_reasons.push("historical_diff_endpoint_does_not_match_graph_head");
+    }
     if working_tree_changes
         .iter()
         .any(|change| change.index_status == "untracked" || change.worktree_status == "untracked")
@@ -560,6 +606,7 @@ pub fn run(
     manifest: Option<&Path>,
     evidence: &[String],
     certain: bool,
+    limit: usize,
     json: bool,
 ) -> Result<()> {
     let filter = crate::lookup::edge_filter(evidence, certain)?;
@@ -609,7 +656,7 @@ pub fn run(
         report.blast_radius.extend(cross.into_values());
     }
     if json {
-        crate::agent_protocol::write_json(&to_json(&report))?;
+        crate::agent_protocol::write_json(&to_json(&report, limit))?;
         return Ok(());
     }
     let status = match report.analysis_status {
@@ -653,24 +700,59 @@ pub fn run(
             println!("  {:?}  {}", file.reason, file.path);
         }
     }
-    println!("changed:");
-    for s in &report.changed_symbols {
-        println!("  {} {}  {}", s.kind, s.qualified, s.file);
-    }
-    println!("blast radius:");
-    for s in &report.blast_radius {
-        println!("  {} {}  {}", s.kind, s.qualified, s.file);
-    }
-    println!("affected tests:");
-    for s in &report.affected_tests {
-        println!("  {} {}  {}", s.kind, s.qualified, s.file);
-    }
+    print_symbols("changed", &report.changed_symbols, limit);
+    print_symbols("blast radius", &report.blast_radius, limit);
+    print_symbols("affected tests", &report.affected_tests, limit);
     Ok(())
 }
 
+fn returned_count(total: usize, limit: usize) -> usize {
+    if limit == 0 { total } else { total.min(limit) }
+}
+
+fn truncated_count(total: usize, limit: usize) -> usize {
+    total - returned_count(total, limit)
+}
+
+fn print_symbols(label: &str, symbols: &[SymbolRef], limit: usize) {
+    let returned = returned_count(symbols.len(), limit);
+    let truncated = symbols.len() - returned;
+    println!(
+        "{label}: {returned} shown, {} total, {truncated} truncated",
+        symbols.len()
+    );
+    for symbol in symbols.iter().take(returned) {
+        println!("  {} {}  {}", symbol.kind, symbol.qualified, symbol.file);
+    }
+}
+
 /// Also usable by the MCP server.
-pub fn to_json(report: &ImpactReport) -> serde_json::Value {
-    serde_json::to_value(report).expect("impact report serializes")
+pub fn to_json(report: &ImpactReport, limit: usize) -> serde_json::Value {
+    let totals = serde_json::json!({
+        "changed_symbols": report.changed_symbols.len(),
+        "blast_radius": report.blast_radius.len(),
+        "affected_tests": report.affected_tests.len(),
+    });
+    let truncated = serde_json::json!({
+        "changed_symbols": truncated_count(report.changed_symbols.len(), limit),
+        "blast_radius": truncated_count(report.blast_radius.len(), limit),
+        "affected_tests": truncated_count(report.affected_tests.len(), limit),
+    });
+    let mut value = serde_json::to_value(report).expect("impact report serializes");
+    for (name, total) in [
+        ("changed_symbols", report.changed_symbols.len()),
+        ("blast_radius", report.blast_radius.len()),
+        ("affected_tests", report.affected_tests.len()),
+    ] {
+        value[name]
+            .as_array_mut()
+            .expect("impact symbol collection serializes as an array")
+            .truncate(returned_count(total, limit));
+    }
+    value["limit"] = serde_json::json!(limit);
+    value["totals"] = totals;
+    value["truncated"] = truncated;
+    value
 }
 
 #[cfg(test)]
@@ -680,8 +762,8 @@ mod tests {
     use std::process::Command;
 
     use super::{
-        AnalysisStatus, FileChangeKind, UnmappedReason, changed_files, compute, is_test,
-        working_tree_changes,
+        AnalysisStatus, FileChangeKind, ImpactReport, SymbolRef, UnmappedReason, changed_files,
+        compute, is_test, to_json, working_tree_changes,
     };
     use sinter_core::{Node, NodeId, Span, SymbolKind};
     use tempfile::TempDir;
@@ -740,6 +822,75 @@ mod tests {
         git(repo.path(), &["add", "."]);
         git(repo.path(), &["commit", "-qm", "base"]);
         repo
+    }
+
+    fn symbols(prefix: &str, count: usize) -> Vec<SymbolRef> {
+        (0..count)
+            .map(|index| SymbolRef {
+                qualified: format!("{prefix}_{index}"),
+                kind: "function",
+                file: format!("{prefix}_{index}.rs"),
+            })
+            .collect()
+    }
+
+    fn report_for_budget() -> ImpactReport {
+        ImpactReport {
+            rev_range: "HEAD~1..HEAD".to_string(),
+            analysis_status: AnalysisStatus::Complete,
+            partial_reasons: Vec::new(),
+            working_tree_dirty: false,
+            changed_files: Vec::new(),
+            working_tree_changes: Vec::new(),
+            unmapped_files: Vec::new(),
+            changed_symbols: symbols("changed", 3),
+            blast_radius: symbols("blast", 4),
+            affected_tests: symbols("test", 1),
+        }
+    }
+
+    #[test]
+    fn impact_budget_caps_each_collection_independently_and_preserves_totals() {
+        let value = to_json(&report_for_budget(), 2);
+
+        assert_eq!(value["limit"], 2);
+        assert_eq!(value["changed_symbols"].as_array().unwrap().len(), 2);
+        assert_eq!(value["blast_radius"].as_array().unwrap().len(), 2);
+        assert_eq!(value["affected_tests"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            value["totals"],
+            serde_json::json!({
+                "changed_symbols": 3,
+                "blast_radius": 4,
+                "affected_tests": 1,
+            })
+        );
+        assert_eq!(
+            value["truncated"],
+            serde_json::json!({
+                "changed_symbols": 1,
+                "blast_radius": 2,
+                "affected_tests": 0,
+            })
+        );
+    }
+
+    #[test]
+    fn zero_impact_budget_returns_every_entry() {
+        let value = to_json(&report_for_budget(), 0);
+
+        assert_eq!(value["limit"], 0);
+        assert_eq!(value["changed_symbols"].as_array().unwrap().len(), 3);
+        assert_eq!(value["blast_radius"].as_array().unwrap().len(), 4);
+        assert_eq!(value["affected_tests"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            value["truncated"],
+            serde_json::json!({
+                "changed_symbols": 0,
+                "blast_radius": 0,
+                "affected_tests": 0,
+            })
+        );
     }
 
     #[test]
@@ -865,5 +1016,54 @@ mod tests {
             .expect("untracked path");
         assert_eq!(untracked.index_status, "untracked");
         assert_eq!(untracked.worktree_status, "untracked");
+    }
+
+    #[test]
+    fn historical_impact_is_partial_when_endpoint_is_not_graph_head() {
+        let repo = repository();
+        write(repo.path(), "src/lib.rs", "pub fn value() -> u32 { 2 }\n");
+        git(repo.path(), &["add", "src/lib.rs"]);
+        git(repo.path(), &["commit", "-qm", "second"]);
+        write(repo.path(), "src/lib.rs", "pub fn value() -> u32 { 3 }\n");
+        git(repo.path(), &["add", "src/lib.rs"]);
+        git(repo.path(), &["commit", "-qm", "third"]);
+        crate::pipeline::build(repo.path(), None).expect("build fixture graph");
+
+        let report = compute(repo.path(), "HEAD~2..HEAD~1").expect("compute historical impact");
+
+        assert_eq!(report.analysis_status, AnalysisStatus::Partial);
+        assert!(
+            report
+                .partial_reasons
+                .contains(&"historical_diff_endpoint_does_not_match_graph_head")
+        );
+        assert!(!report.working_tree_dirty);
+    }
+
+    #[test]
+    fn historical_impact_is_complete_when_endpoint_is_graph_head() {
+        let repo = repository();
+        write(repo.path(), "src/lib.rs", "pub fn value() -> u32 { 2 }\n");
+        git(repo.path(), &["add", "src/lib.rs"]);
+        git(repo.path(), &["commit", "-qm", "second"]);
+        crate::pipeline::build(repo.path(), None).expect("build fixture graph");
+
+        let report = compute(repo.path(), "HEAD~1..HEAD").expect("compute current impact");
+
+        assert_eq!(report.analysis_status, AnalysisStatus::Complete);
+        assert!(report.partial_reasons.is_empty());
+    }
+
+    #[test]
+    fn working_tree_impact_remains_complete_for_tracked_edits() {
+        let repo = repository();
+        write(repo.path(), "src/lib.rs", "pub fn value() -> u32 { 2 }\n");
+        crate::pipeline::build(repo.path(), None).expect("build fixture graph");
+
+        let report = compute(repo.path(), "HEAD").expect("compute working-tree impact");
+
+        assert_eq!(report.analysis_status, AnalysisStatus::Complete);
+        assert!(report.working_tree_dirty);
+        assert!(report.partial_reasons.is_empty());
     }
 }

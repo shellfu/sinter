@@ -26,7 +26,7 @@ fn build_fixture(repo: &Path) {
     std::fs::create_dir_all(repo.join("src")).unwrap();
     std::fs::write(
         repo.join("src/lib.rs"),
-        "mod util;\nuse crate::util::core_fn;\n\n/// Entry point.\npub fn entry() -> u32 {\n    core_fn()\n}\n\npub fn unrelated() -> u32 {\n    missing_fn()\n}\n",
+        "mod util;\nuse crate::util::core_fn;\n\n/// Entry point.\npub fn entry() -> u32 {\n    core_fn()\n}\n\npub fn unrelated() -> u32 {\n    missing_fn()\n}\n\npub fn target() {}\n\npub fn unresolved_receiver(receiver: &UnknownReceiver) {\n    receiver.target();\n}\n",
     )
     .unwrap();
     std::fs::write(
@@ -156,4 +156,62 @@ fn unresolved_lists_and_filters_gaps() {
         }),
         "{out}"
     );
+}
+
+#[test]
+fn negative_traversals_lead_with_not_proven_and_keep_observed_counts() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    build_fixture(repo);
+
+    let (ok, out) = sinter(repo, &["affected", "target"]);
+    assert!(
+        !ok,
+        "a valid empty traversal keeps grep-style exit 1: {out}"
+    );
+    assert!(out.starts_with("not proven: 0 dependents"), "{out}");
+    assert!(
+        out.contains("unresolved ref(s) also name `target`"),
+        "{out}"
+    );
+
+    let (ok, out) = sinter(repo, &["affected", "target", "--json"]);
+    assert!(!ok, "{out}");
+    let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(value["status"], "not_proven", "{out}");
+    assert_eq!(value["total"], 0, "{out}");
+    assert!(value["unresolved_refs_matching_name"].as_u64().unwrap() >= 1);
+
+    let (ok, out) = sinter(repo, &["deps", "unresolved_receiver"]);
+    assert!(!ok, "{out}");
+    assert!(out.starts_with("not proven: 0 dependencies"), "{out}");
+
+    let (ok, out) = sinter(repo, &["deps", "unresolved_receiver", "--json"]);
+    assert!(!ok, "{out}");
+    let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(value["status"], "not_proven", "{out}");
+    assert_eq!(value["total"], 0, "{out}");
+    assert!(value["unresolved_refs_in_symbol"].as_u64().unwrap() >= 1);
+
+    let (ok, out) = sinter(repo, &["path", "unresolved_receiver", "target"]);
+    assert!(!ok, "{out}");
+    assert!(out.starts_with("not proven: no path"), "{out}");
+    assert!(
+        out.contains("unresolved ref(s) on the forward frontier"),
+        "{out}"
+    );
+
+    let (ok, out) = sinter(repo, &["path", "unresolved_receiver", "target", "--json"]);
+    assert!(!ok, "{out}");
+    let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(value["status"], "not_proven", "{out}");
+    assert_eq!(value["found"], false, "{out}");
+    assert!(
+        value["miss"]["unresolved_matching_target"]
+            .as_u64()
+            .unwrap()
+            >= 1,
+        "{out}"
+    );
+    assert_eq!(value["coverage"]["status"], "not_proven", "{out}");
 }

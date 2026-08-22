@@ -79,6 +79,7 @@ pub fn run(
         let mut symbol_json = node_json(&node);
         symbol_json["scope"] = serde_json::json!(scope_of(&node.file).as_str());
         let mut out = serde_json::json!({
+            "status": if total > 0 { "found" } else { "not_proven" },
             "symbol": symbol_json,
             "snapshot": snapshot,
             "total": total,
@@ -95,12 +96,20 @@ pub fn run(
         return Ok(total > 0);
     }
     reached.truncate(limit);
-    println!(
-        "{} dependencies of {} ({})",
-        total,
-        qualified_of(node.id.as_str()),
-        node.file
-    );
+    if total == 0 {
+        println!(
+            "not proven: 0 dependencies observed for {} ({})",
+            qualified_of(node.id.as_str()),
+            node.file
+        );
+    } else {
+        println!(
+            "{} dependencies of {} ({})",
+            total,
+            qualified_of(node.id.as_str()),
+            node.file
+        );
+    }
     // Same tree rendering as affected, keyed by the node each dependency
     // was reached from (via.src).
     let mut children: std::collections::HashMap<&str, Vec<&sinter_store::Reached>> =

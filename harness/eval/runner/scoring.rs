@@ -14,6 +14,7 @@ pub fn score_ranking(
     relevant: &[SymbolKey],
     results: &[serde_json::Value],
     candidate_results: &[serde_json::Value],
+    ranking_context: Option<&serde_json::Value>,
 ) -> Result<CaseOutcome> {
     let returned = results
         .iter()
@@ -60,19 +61,19 @@ pub fn score_ranking(
         .first()
         .and_then(|result| result.pointer("/ranking_margin/permille"))
         .and_then(serde_json::Value::as_i64);
-    let top_calibration_version = results
-        .first()
-        .and_then(|result| result.pointer("/calibration/version"))
+    let calibration = ranking_context
+        .and_then(|context| context.pointer("/confidence/calibration"))
+        .or_else(|| results.first().and_then(|result| result.get("calibration")));
+    let top_calibration_version = calibration
+        .and_then(|calibration| calibration.get("version"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned);
-    let top_calibration_sample_size = results
-        .first()
-        .and_then(|result| result.pointer("/calibration/sample_size"))
+    let top_calibration_sample_size = calibration
+        .and_then(|calibration| calibration.get("sample_size"))
         .and_then(serde_json::Value::as_u64)
         .map(|value| value as usize);
-    let top_calibration_measured_precision = results
-        .first()
-        .and_then(|result| result.pointer("/calibration/measured_precision"))
+    let top_calibration_measured_precision = calibration
+        .and_then(|calibration| calibration.get("measured_precision"))
         .and_then(serde_json::Value::as_f64);
     let top_term_coverage_permille = results
         .first()
@@ -479,7 +480,7 @@ mod tests {
         let relevant = vec![label("wanted"), label("also_wanted")];
         let top = vec![result("noise"), result("wanted")];
         let candidates = vec![result("noise"), result("wanted"), result("also_wanted")];
-        let outcome = score_ranking("question", 2, &relevant, &top, &candidates).unwrap();
+        let outcome = score_ranking("question", 2, &relevant, &top, &candidates, None).unwrap();
         let CaseOutcome::Ranking {
             first_relevant_rank,
             top_1_correct,
@@ -511,6 +512,15 @@ mod tests {
 
     #[test]
     fn confidence_is_calibrated_only_from_holdout_ask_cases() {
+        let ranking_context = json!({
+            "confidence": {
+                "calibration": {
+                    "version": "ask-holdout-2026-08-21.v1",
+                    "sample_size": 25,
+                    "measured_precision": 0.88
+                }
+            }
+        });
         let scored = score_ranking(
             "question",
             1,
@@ -520,15 +530,11 @@ mod tests {
                 "file": "src/lib.rs",
                 "confidence": "high",
                 "ranking_margin": {"absolute": 10, "permille": 250},
-                "calibration": {
-                    "version": "ask-holdout-2026-08-21.v1",
-                    "sample_size": 25,
-                    "measured_precision": 0.88
-                },
                 "term_coverage": {"permille": 1000},
                 "verify_required": true
             })],
             &[result("wanted")],
+            Some(&ranking_context),
         )
         .unwrap();
         let holdout = CaseResult {

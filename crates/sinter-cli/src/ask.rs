@@ -183,13 +183,19 @@ pub fn run_workspace(
     question: &str,
     limit: usize,
     json: bool,
+    explain: bool,
     scopes: &ScopeSelection,
 ) -> Result<bool> {
     if json {
         let response = crate::workspace_tools::call(
             manifest,
             "ask",
-            &json!({"question": question, "limit": limit, "scope": scopes.labels()}),
+            &json!({
+                "question": question,
+                "limit": limit,
+                "scope": scopes.labels(),
+                "explain": explain,
+            }),
         )?;
         let found = response["returned"].as_u64().unwrap_or(0) > 0;
         crate::agent_protocol::write_json(&response)?;
@@ -297,10 +303,11 @@ pub fn ask_response_json(
     question: &str,
     limit: usize,
     scopes: &ScopeSelection,
+    explain: bool,
 ) -> Result<serde_json::Value> {
     let repo = repo.canonicalize()?;
     let store = open_store(&repo)?;
-    ask_response_with_store(&repo, &store, question, limit, scopes)
+    ask_response_with_store(&repo, &store, question, limit, scopes, explain)
 }
 
 pub(crate) fn ask_response_json_current(
@@ -308,10 +315,11 @@ pub(crate) fn ask_response_json_current(
     question: &str,
     limit: usize,
     scopes: &ScopeSelection,
+    explain: bool,
 ) -> Result<serde_json::Value> {
     let repo = repo.canonicalize()?;
     let store = crate::lookup::open_current(&repo)?;
-    ask_response_with_store(&repo, &store, question, limit, scopes)
+    ask_response_with_store(&repo, &store, question, limit, scopes, explain)
 }
 
 fn ask_response_with_store(
@@ -320,6 +328,7 @@ fn ask_response_with_store(
     question: &str,
     limit: usize,
     scopes: &ScopeSelection,
+    explain: bool,
 ) -> Result<serde_json::Value> {
     let clauses = clauses_of(question);
     if clauses.is_empty() {
@@ -330,7 +339,7 @@ fn ask_response_with_store(
     let mut topics = Vec::with_capacity(groups.len());
     for (((label, query), (_, hits)), topic_limit) in clauses.iter().zip(groups.iter()).zip(limits)
     {
-        topics.push(topic_json(repo, label, query, hits, topic_limit));
+        topics.push(topic_json(repo, label, query, hits, topic_limit, explain));
     }
     Ok(response_json(question, limit, scopes, topics))
 }
@@ -382,6 +391,7 @@ fn topic_json(
     query: &Query,
     hits: &[Hit],
     limit: usize,
+    explain: bool,
 ) -> serde_json::Value {
     let rendered = hits
         .iter()
@@ -397,6 +407,7 @@ fn topic_json(
         rendered,
         limit,
         hits.len(),
+        explain,
     )
 }
 
@@ -406,6 +417,7 @@ fn topic_from_rendered(
     mut hits: Vec<serde_json::Value>,
     limit: usize,
     candidate_count: usize,
+    explain: bool,
 ) -> serde_json::Value {
     if hits.is_empty() || limit == 0 {
         let assessment = confidence::assess_top(&[], 0, query_terms.len());
@@ -453,6 +465,16 @@ fn topic_from_rendered(
     let ranking_margin = hits[0]["ranking_margin"].clone();
     let term_coverage = hits[0]["term_coverage"].clone();
     hits.truncate(limit);
+    for hit in &mut hits {
+        if let Some(object) = hit.as_object_mut() {
+            // Calibration describes the topic-level ranking decision, not an
+            // individual candidate. Keep the one authoritative copy above.
+            object.remove("calibration");
+            if !explain {
+                object.remove("score_breakdown");
+            }
+        }
+    }
     json!({
         "topic": label,
         "query_terms": query_terms,
@@ -477,6 +499,7 @@ pub(crate) fn merge_workspace_responses(
     limit: usize,
     scopes: &ScopeSelection,
     responses: Vec<(String, serde_json::Value)>,
+    explain: bool,
 ) -> serde_json::Value {
     let mut groups: Vec<(String, Vec<String>, Vec<serde_json::Value>, usize)> = Vec::new();
     for (member, response) in responses {
@@ -527,7 +550,7 @@ pub(crate) fn merge_workspace_responses(
                             .cmp(&b["span"]["start"].as_u64())
                     })
             });
-            topic_from_rendered(&label, terms, hits, topic_limit, candidate_count)
+            topic_from_rendered(&label, terms, hits, topic_limit, candidate_count, explain)
         })
         .collect();
     response_json(question, limit, scopes, topics)
@@ -632,13 +655,14 @@ pub fn run(
     question: &str,
     limit: usize,
     json: bool,
+    explain: bool,
     scopes: &ScopeSelection,
 ) -> Result<bool> {
     let repo = repo.canonicalize()?;
     if json {
         // ask_response_json opens the store itself; must run before this function
         // takes its own handle (redb forbids a second in-process open).
-        let response = ask_response_json(&repo, question, limit, scopes)?;
+        let response = ask_response_json(&repo, question, limit, scopes, explain)?;
         let found = response["returned"].as_u64().unwrap_or(0) > 0;
         crate::agent_protocol::write_json(&response)?;
         return Ok(found);

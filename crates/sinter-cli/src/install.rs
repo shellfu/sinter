@@ -51,12 +51,20 @@ function-body behavior.
 
 | Question | Command |
 |---|---|
-| Vague/conceptual: "where is X handled" | `sinter ask "<question>"` |
-| Orient on a symbol (signature, docs, callers) | `sinter show <symbol>` |
+| First look in an unfamiliar repo (modules, hubs, docs) | `sinter map` |
+| Vague/conceptual discovery (calibrated lexical search) | `sinter ask "<question>"` (`--explain` adds ranking diagnostics) |
+| Exact or fuzzy symbol lookup | `sinter query <symbol>` |
+| Inspect one symbol (signature, docs, callers) | `sinter show <symbol>` |
 | What depends on X / blast radius | `sinter affected <symbol>` |
 | What does X depend on (forward) | `sinter deps <symbol>` |
 | How does A reach B | `sinter path <A> <B>` |
-| What does this commit/diff/PR affect downstream | `sinter impact <rev-range>` (e.g. `HEAD~1..HEAD`; `HEAD` = uncommitted tracked edits) |
+| Check gaps before a negative proof | `sinter unresolved [--file <f>] [--name <n>]` |
+| What does this commit/diff/PR affect downstream | `sinter impact <rev-range>` (default is capped; `--limit 0` returns all) |
+| Where do proposed changes overlap | `sinter overlap <rangeA> <rangeB> ...` |
+| Build a cross-repo graph | `sinter workspace <manifest.toml>`; then add `--workspace <manifest.toml>` to reads |
+| Create missing derived graph state | `sinter ensure <repo>` |
+| Diagnose graph or integration problems | `sinter doctor <repo>` |
+| Add compiler-grade call/type evidence | `sinter scip <repo>` |
 
 - Every read verb takes `--json` and exits grep-style (0 results,
   1 none, 2 error) — branch on the code, not the prose. Results carry
@@ -65,17 +73,17 @@ function-body behavior.
   import noise from a blast radius.
 - Queries self-sync before answering — no manual refresh needed
   (`sinter build` remains for CI/scripts; git hooks refresh on commit).
-- "unresolved" and candidate lists are real answers — refine and rerun,
-  never guess a binding; `sinter unresolved` lists the graph's gaps.
+- `not_proven`, unresolved references, and candidate lists are real answers —
+  refine and rerun, never report zero or guess a binding. Receiver-typed call
+  coverage may require `sinter scip`; `sinter unresolved` lists the gaps.
   Ambiguous symbol? Rerun as `name@file-suffix` (e.g. `run@init.rs`).
 - Spawning subagents? Their prompts must mandate sinter for structure
   claims (callers, dependencies, blast radius, "no usages" proofs) and
   reserve grep/rg for content-only searches.
-- Cross-repo workspace? Add `--workspace <manifest.toml>`; symbols may
-  be `member:Symbol`.
-- Graph missing? `sinter ensure <repo>` creates only derived `.sinter/`
-  state. Run `sinter init <repo>` only when full hook and client integration
-  installation was explicitly requested.
+- Cross-repo symbols may be `member:Symbol`.
+- `sinter ensure <repo>` creates only derived `.sinter/` state. Run
+  `sinter init <repo>` only when full hook and client integration installation
+  was explicitly requested.
 - MCP registered? `mcp__sinter__*` tools (ask/show/query/affected/deps/
   path/unresolved/impact/overlap/map) answer the same questions as the
   CLI verbs above — either route is fine.
@@ -312,10 +320,12 @@ pub(crate) fn claude_home() -> Option<PathBuf> {
 /// checkout path. None = global scope: ~/.claude, absolute command.
 ///
 /// `strict` opts the two grep entries into the script's `-strict` modes
-/// (first search of a session is denied with a sinter redirect; later
-/// ones get the nudge). Switching strictness is idempotent: the same
-/// settings slot is replaced either way. Strict uses only
-/// permissionDecision "deny" — the hooks never emit "allow".
+/// (first search of a session is denied with a sinter redirect; its retry
+/// gets the session's one search nudge). Search, git-archaeology, and task
+/// nudges are otherwise emitted at most once per session. Switching
+/// strictness is idempotent: the same settings slot is replaced either way.
+/// Strict uses only permissionDecision "deny" — the hooks never emit
+/// "allow".
 pub fn enforce(repo: Option<&Path>, strict: bool) -> Result<()> {
     let claude = match repo {
         Some(repo) => repo.canonicalize()?.join(".claude"),
@@ -491,6 +501,36 @@ mod tests {
     #[test]
     fn agents_block_routes_match_card() {
         let card = card_body();
+        let durable = [AGENTS_CARD, card];
+        for command in [
+            "sinter map",
+            "sinter ask",
+            "sinter query",
+            "sinter show",
+            "sinter affected",
+            "sinter deps",
+            "sinter path",
+            "sinter unresolved",
+            "sinter impact",
+            "sinter overlap",
+            "sinter workspace",
+            "sinter ensure",
+            "sinter doctor",
+            "sinter scip",
+        ] {
+            for text in durable {
+                assert!(text.contains(command), "durable card lost `{command}`");
+            }
+        }
+        for text in durable {
+            assert!(
+                text.find("sinter map") < text.find("sinter ask"),
+                "orientation must route to map before ask"
+            );
+            for contract in ["--explain", "--limit 0", "not_proven"] {
+                assert!(text.contains(contract), "durable card lost `{contract}`");
+            }
+        }
         for chunk in AGENTS_CARD.split("`sinter ").skip(1) {
             let verb = chunk.split([' ', '`', '\n']).next().unwrap();
             if verb.starts_with('-') {
@@ -533,5 +573,22 @@ mod tests {
             codex["mcp_servers"]["sinter"]["required"].as_bool(),
             Some(false)
         );
+    }
+
+    #[test]
+    fn enforcement_install_writes_session_deduplicating_platform_hook() {
+        let repo = tempfile::tempdir().unwrap();
+
+        enforce(Some(repo.path()), false).unwrap();
+
+        let (hook_name, hook_body) = PLATFORM_HOOK;
+        let installed =
+            std::fs::read_to_string(repo.path().join(".claude").join("hooks").join(hook_name))
+                .unwrap();
+        assert_eq!(installed, hook_body);
+        assert!(ENFORCE_HOOK.contains("mark_session_once"));
+        assert!(ENFORCE_HOOK_PS1.contains("New-SessionMarker"));
+        assert!(!ENFORCE_HOOK.contains("permissionDecision\":\"allow"));
+        assert!(!ENFORCE_HOOK_PS1.contains("permissionDecision\":\"allow"));
     }
 }

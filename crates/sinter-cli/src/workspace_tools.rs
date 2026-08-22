@@ -97,16 +97,22 @@ fn ask(workspace: &crate::workspace::Workspace, args: &Value) -> Result<Value> {
         args,
         crate::corpus::ScopeSelection::agent_default(),
     )?;
+    let explain = args
+        .get("explain")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let candidate_limit = crate::ask::workspace_candidate_limit(&question, limit);
     let mut responses = Vec::new();
     for (member, repo) in &workspace.members {
         responses.push((
             member.clone(),
-            crate::ask::ask_response_json(repo, &question, candidate_limit, &scopes)?,
+            // Workspace reranking needs every candidate's diagnostic inputs;
+            // only the final merged response applies the requested shape.
+            crate::ask::ask_response_json(repo, &question, candidate_limit, &scopes, true)?,
         ));
     }
     Ok(crate::ask::merge_workspace_responses(
-        &question, limit, &scopes, responses,
+        &question, limit, &scopes, responses, explain,
     ))
 }
 
@@ -164,6 +170,7 @@ fn show(workspace: &crate::workspace::Workspace, args: &Value) -> Result<Value> 
 }
 
 fn impact(workspace: &crate::workspace::Workspace, args: &Value) -> Result<Value> {
+    let limit = limit(args, crate::impact::DEFAULT_LIMIT);
     let member = required_string(args, "member")?;
     let repo = workspace
         .members
@@ -213,7 +220,7 @@ fn impact(workspace: &crate::workspace::Workspace, args: &Value) -> Result<Value
         }
     }
     report.blast_radius.extend(cross.into_values());
-    Ok(crate::impact::to_json(&report))
+    Ok(crate::impact::to_json(&report, limit))
 }
 
 fn unresolved(workspace: &crate::workspace::Workspace, args: &Value) -> Result<Value> {
@@ -334,6 +341,11 @@ fn affected(workspace: &crate::workspace::Workspace, args: &Value) -> Result<Val
         (reached.len(), direct.len(), direct_files),
         limit,
     );
+    out["status"] = json!(if reached.is_empty() {
+        "not_proven"
+    } else {
+        "found"
+    });
     out["coverage"] =
         crate::coverage::workspace_json(workspace, &filter, evidence, !reached.is_empty())?;
     Ok(out)
@@ -358,6 +370,7 @@ fn path(workspace: &crate::workspace::Workspace, args: &Value) -> Result<Value> 
         0,
     );
     let mut out = json!({
+        "status": if steps.is_some() { "found" } else { "not_proven" },
         "found": steps.is_some(),
         "steps": steps.iter().flatten().map(
             |(from_member, from_id, relation, evidence, to_member, to_id)| json!({

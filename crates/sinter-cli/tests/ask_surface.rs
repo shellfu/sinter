@@ -167,19 +167,42 @@ fn ask_zero_hits_and_stopword_only() {
 }
 
 #[test]
-fn ask_json_carries_span_and_score() {
+fn ask_json_is_compact_unless_explanation_is_requested() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path();
     controller_fixture(repo);
     sinter(repo, &["build"]);
     let (ok, out) = sinter(repo, &["ask", "character controller", "--json"]);
     assert!(ok, "{out}");
-    let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid json");
-    let first = &parsed["topics"][0]["hits"][0];
+    let compact: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+    let first = &compact["topics"][0]["hits"][0];
     assert_eq!(first["name"], "PlayerCharacterV2");
     assert!(first["span"]["end"].as_u64().unwrap() > 0);
     assert!(first["score"].as_i64().unwrap() > 0);
     assert!(first["matched"].as_array().unwrap().len() == 2);
+    assert!(first.get("score_breakdown").is_none(), "{out}");
+    assert!(first.get("calibration").is_none(), "{out}");
+    assert!(compact["topics"][0]["confidence"]["calibration"].is_object());
+
+    let (ok, out) = sinter(
+        repo,
+        &["ask", "character controller", "--json", "--explain"],
+    );
+    assert!(ok, "{out}");
+    let mut explained: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+    let explained_first = &explained["topics"][0]["hits"][0];
+    assert_eq!(
+        explained_first["score"],
+        explained_first["score_breakdown"]["final_score"]
+    );
+    assert!(explained_first.get("calibration").is_none(), "{out}");
+
+    for topic in explained["topics"].as_array_mut().unwrap() {
+        for hit in topic["hits"].as_array_mut().unwrap() {
+            hit.as_object_mut().unwrap().remove("score_breakdown");
+        }
+    }
+    assert_eq!(explained, compact, "--explain changed semantic decisions");
 }
 
 #[test]
@@ -233,6 +256,12 @@ fn agent_protocol_matches_cli_and_mcp() {
     assert!(ok, "{cli}");
     assert!(!cli.contains("\n  "), "agent JSON must be compact: {cli}");
     let cli: serde_json::Value = serde_json::from_str(&cli).unwrap();
+    let (ok, cli_explained) = sinter(
+        repo,
+        &["ask", "character controller", "--json", "--explain"],
+    );
+    assert!(ok, "{cli_explained}");
+    let cli_explained: serde_json::Value = serde_json::from_str(&cli_explained).unwrap();
     let (ok, cli_query) = sinter(
         repo,
         &["query", "PlayerCharacterV2", "--limit", "5", "--json"],
@@ -263,6 +292,7 @@ fn agent_protocol_matches_cli_and_mcp() {
         writeln!(stdin, r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"ask","arguments":{{"question":"character controller"}}}}}}"#).unwrap();
         writeln!(stdin, r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"show","arguments":{{"symbol":"collide"}}}}}}"#).unwrap();
         writeln!(stdin, r#"{{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{{"name":"query","arguments":{{"symbol":"PlayerCharacterV2","limit":5}}}}}}"#).unwrap();
+        writeln!(stdin, r#"{{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{{"name":"ask","arguments":{{"question":"character controller","explain":true}}}}}}"#).unwrap();
     }
     drop(child.stdin.take());
     let output = child.wait_with_output().unwrap();
@@ -297,10 +327,34 @@ fn agent_protocol_matches_cli_and_mcp() {
                     && required.iter().any(|field| field == "scope")
             })
     );
+    let ask_tool = responses[0]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "ask")
+        .unwrap();
+    assert_eq!(
+        ask_tool["inputSchema"]["properties"]["explain"]["type"],
+        "boolean"
+    );
+    assert_eq!(
+        ask_tool["inputSchema"]["properties"]["explain"]["default"],
+        false
+    );
     let structured = &responses[1]["result"]["structuredContent"];
     assert_eq!(structured["protocol"], "sinter.agent.v1");
     assert_eq!(structured["operation"], "ask");
     assert_eq!(structured["data"], cli);
+    assert!(
+        structured["data"]["topics"][0]["hits"][0]
+            .get("score_breakdown")
+            .is_none()
+    );
+    assert!(
+        structured["data"]["topics"][0]["hits"][0]
+            .get("calibration")
+            .is_none()
+    );
 
     let ambiguity = &responses[2]["error"]["data"];
     assert_eq!(ambiguity["protocol"], "sinter.agent.v1");
@@ -321,6 +375,17 @@ fn agent_protocol_matches_cli_and_mcp() {
     for transport_field in ["protocol", "operation", "outcome"] {
         assert!(query["data"].get(transport_field).is_none());
     }
+
+    let explained = &responses[4]["result"]["structuredContent"];
+    assert_eq!(explained["protocol"], "sinter.agent.v1");
+    assert_eq!(explained["operation"], "ask");
+    assert_eq!(explained["data"], cli_explained);
+    assert!(explained["data"]["topics"][0]["hits"][0]["score_breakdown"].is_object());
+    assert!(
+        explained["data"]["topics"][0]["hits"][0]
+            .get("calibration")
+            .is_none()
+    );
 }
 
 /// Skaffold-trial finding #2: embedded third-party source must not outrank
@@ -625,10 +690,35 @@ fn install_writes_skill_card() {
     assert!(out.status.success());
     let card = std::fs::read_to_string(target.join("SKILL.md")).unwrap();
     assert!(card.contains("name: sinter"), "frontmatter missing");
-    assert!(card.contains("sinter ask"), "routing missing");
+    for command in [
+        "sinter map",
+        "sinter ask",
+        "sinter query",
+        "sinter show",
+        "sinter affected",
+        "sinter deps",
+        "sinter path",
+        "sinter unresolved",
+        "sinter impact",
+        "sinter overlap",
+        "sinter workspace",
+        "sinter ensure",
+        "sinter doctor",
+        "sinter scip",
+    ] {
+        assert!(card.contains(command), "installed card lost {command}");
+    }
     assert!(
-        !card.to_lowercase().contains("retry"),
-        "no orchestration in prose"
+        card.find("sinter map") < card.find("sinter ask"),
+        "map must be the first unfamiliar-repo route"
+    );
+    for contract in ["--explain", "--limit 0", "not_proven"] {
+        assert!(card.contains(contract), "installed card lost {contract}");
+    }
+    assert!(
+        card.contains("advisory at most once per session")
+            && card.contains("Calls without a session ID remain"),
+        "hook session behavior missing from installed card: {card}"
     );
 }
 
@@ -791,15 +881,31 @@ fn install_for_cursor_and_agents() {
     assert!(skill.contains(body_line) && rule.contains(body_line));
     assert!(!agents.contains(body_line), "AGENTS.md got the full card");
     for verb in [
+        "sinter map",
         "sinter ask",
+        "sinter query",
+        "sinter show",
         "sinter affected",
+        "sinter deps",
         "sinter path",
+        "sinter unresolved",
         "sinter impact",
+        "sinter overlap",
+        "sinter workspace",
+        "sinter ensure",
+        "sinter doctor",
+        "sinter scip",
     ] {
         assert!(
             agents.contains(verb) && skill.contains(verb),
             "{verb} missing"
         );
+    }
+    for text in [&agents, &skill] {
+        assert!(text.find("sinter map") < text.find("sinter ask"), "{text}");
+        for contract in ["--explain", "--limit 0", "not_proven"] {
+            assert!(text.contains(contract), "{contract} missing: {text}");
+        }
     }
 }
 
@@ -1358,8 +1464,9 @@ fn ask_codex_shaped_question_splits_sanely() {
 
 /// Strict-mode hook behavior, pipe-tested against the real bash script:
 /// first matching search of a session is denied with a sinter redirect,
-/// the retry (and every later search) gets the advisory nudge, a new
-/// session is denied again, and a missing session_id never denies.
+/// the retry gets one advisory nudge, later searches are silent, a new
+/// session is denied again, and a missing session_id never denies or
+/// silently loses the nudge.
 #[cfg(unix)]
 #[test]
 fn strict_hook_denies_first_search_then_nudges() {
@@ -1416,6 +1523,11 @@ fn strict_hook_denies_first_search_then_nudges() {
     assert!(second.contains("additionalContext"), "{second}");
     assert!(!second.contains("deny"), "{second}");
 
+    // Once both strict denial and the search nudge have been seen, later
+    // searches in the same session stay out of the agent's context.
+    let third = run("grep-strict", &input(Some("sess-x")));
+    assert!(third.is_empty(), "{third}");
+
     // A different session gets its own first-search deny.
     let other = run("grep-strict", &input(Some("sess-y")));
     assert!(other.contains("\"permissionDecision\":\"deny\""), "{other}");
@@ -1424,6 +1536,9 @@ fn strict_hook_denies_first_search_then_nudges() {
     let anon = run("grep-strict", &input(None));
     assert!(anon.contains("additionalContext"), "{anon}");
     assert!(!anon.contains("deny"), "{anon}");
+    let anon_again = run("grep-strict", &input(None));
+    assert!(anon_again.contains("additionalContext"), "{anon_again}");
+    assert!(!anon_again.contains("deny"), "{anon_again}");
 
     // Git archaeology stays advisory even in strict mode.
     let git = run(
@@ -1432,6 +1547,11 @@ fn strict_hook_denies_first_search_then_nudges() {
     );
     assert!(git.contains("additionalContext"), "{git}");
     assert!(!git.contains("deny"), "{git}");
+    let git_again = run(
+        "grep-strict",
+        r#"{"session_id":"sess-git","tool_input":{"command":"git diff"}}"#,
+    );
+    assert!(git_again.is_empty(), "{git_again}");
 
     // greptool-strict follows the same lifecycle.
     let gt_first = run("greptool-strict", r#"{"session_id":"sess-gt"}"#);
@@ -1442,11 +1562,143 @@ fn strict_hook_denies_first_search_then_nudges() {
     let gt_second = run("greptool-strict", r#"{"session_id":"sess-gt"}"#);
     assert!(gt_second.contains("additionalContext"), "{gt_second}");
     assert!(!gt_second.contains("deny"), "{gt_second}");
+    let gt_third = run("greptool-strict", r#"{"session_id":"sess-gt"}"#);
+    assert!(gt_third.is_empty(), "{gt_third}");
+}
+
+/// Advisory hooks deduplicate each class per session. Shell recursive search
+/// and the Grep tool intentionally share one search class, while git
+/// archaeology and subagent-task prompts have independent lifecycles.
+#[cfg(unix)]
+#[test]
+fn advisory_hook_nudges_are_session_deduplicated() {
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/skill/sinter-first.sh");
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(repo.path().join(".sinter")).unwrap();
+    std::fs::write(repo.path().join(".sinter/graph.redb"), "").unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+
+    let run = |mode: &str, stdin: &str| -> String {
+        use std::io::Write;
+        let mut child = Command::new("bash")
+            .args([script, mode])
+            .current_dir(repo.path())
+            .env("TMPDIR", tmp.path())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn hook");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(stdin.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().expect("run hook");
+        assert!(out.status.success());
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let shell_search = |sid: Option<&str>| match sid {
+        Some(sid) => format!(r#"{{"session_id":"{sid}","tool_input":{{"command":"rg foo"}}}}"#),
+        None => r#"{"tool_input":{"command":"rg foo"}}"#.to_string(),
+    };
+
+    let search = run("grep", &shell_search(Some("shared-search")));
+    assert!(search.contains("additionalContext"), "{search}");
+    let same_class = run("greptool", r#"{"session_id":"shared-search"}"#);
+    assert!(same_class.is_empty(), "{same_class}");
+    let other_search = run("greptool", r#"{"session_id":"other-search"}"#);
+    assert!(other_search.contains("additionalContext"), "{other_search}");
+
+    let git_input = r#"{"session_id":"git-session","tool_input":{"command":"git show HEAD"}}"#;
+    assert!(run("grep", git_input).contains("additionalContext"));
+    assert!(run("grep", git_input).is_empty());
+    let other_git = r#"{"session_id":"other-git","tool_input":{"command":"git log"}}"#;
+    assert!(run("grep", other_git).contains("additionalContext"));
+
+    let task_input = r#"{"session_id":"task-session"}"#;
+    assert!(run("task", task_input).contains("additionalContext"));
+    assert!(run("task", task_input).is_empty());
+    assert!(run("task", r#"{"session_id":"other-task"}"#).contains("additionalContext"));
+
+    // Without a usable session ID, hooks cannot safely deduplicate. They keep
+    // nudging rather than silently disappearing, but never deny.
+    for mode in ["grep", "greptool", "task"] {
+        let input = if mode == "grep" {
+            shell_search(None)
+        } else {
+            r#"{"tool_input":{}}"#.to_string()
+        };
+        for _ in 0..2 {
+            let out = run(mode, &input);
+            assert!(out.contains("additionalContext"), "{mode}: {out}");
+            assert!(!out.contains("permissionDecision"), "{mode}: {out}");
+        }
+    }
+
+    // Raw session IDs never become path components. The marker name contains
+    // only the advisory class and a digest.
+    let hostile = r#"{"session_id":"../../outside session","tool_input":{"command":"git diff"}}"#;
+    assert!(run("grep", hostile).contains("additionalContext"));
+    let marker_dir = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("sinter-hooks-"))
+        })
+        .expect("per-user hook marker directory");
+    for marker in std::fs::read_dir(marker_dir).unwrap() {
+        let name = marker.unwrap().file_name().to_string_lossy().into_owned();
+        assert!(!name.contains("outside") && !name.contains(".."), "{name}");
+        assert!(
+            name.chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-'),
+            "{name}"
+        );
+    }
 }
 
 /// SECURITY INVARIANT regression guard: neither hook script may ever
 /// contain the JSON for permissionDecision "allow" — that would
 /// auto-approve an entire Bash command, destructive parts included.
+#[test]
+fn hook_scripts_share_compact_agent_routing() {
+    let scripts = [
+        std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/skill/sinter-first.sh"
+        ))
+        .unwrap(),
+        std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/skill/sinter-first.ps1"
+        ))
+        .unwrap(),
+    ];
+    for body in scripts {
+        for route in [
+            "map first",
+            "vague discovery",
+            "query/show",
+            "affected/deps/path",
+            "unresolved",
+            "not_proven",
+            "impact/overlap",
+            "--workspace",
+            "ensure/doctor/scip",
+            "function bodies",
+        ] {
+            assert!(body.contains(route), "hook lost `{route}`: {body}");
+        }
+        assert!(
+            !body.contains("--explain") && !body.contains("--limit 0"),
+            "durable-card diagnostics leaked into always-on hook copy"
+        );
+    }
+}
+
 #[test]
 fn hook_scripts_never_emit_allow() {
     for script in ["/skill/sinter-first.sh", "/skill/sinter-first.ps1"] {

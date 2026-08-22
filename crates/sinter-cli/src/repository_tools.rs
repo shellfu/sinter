@@ -19,7 +19,8 @@ use crate::lookup::{Found, ensure_snapshot, find_symbol, open_current, unique_sy
 pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
     if name == "impact" {
         let report = crate::impact::compute_current(repo, &required_string(args, "rev_range")?)?;
-        return Ok(crate::impact::to_json(&report));
+        let limit = limit(args, crate::impact::DEFAULT_LIMIT);
+        return Ok(crate::impact::to_json(&report, limit));
     }
     if name == "ask" {
         let limit = limit(args, 5);
@@ -27,11 +28,16 @@ pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
             args,
             crate::corpus::ScopeSelection::agent_default(),
         )?;
+        let explain = args
+            .get("explain")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         return crate::ask::ask_response_json_current(
             repo,
             &required_string(args, "question")?,
             limit,
             &scopes,
+            explain,
         );
     }
     if name == "overlap" {
@@ -165,7 +171,14 @@ fn affected(repo: &Path, store: &sinter_store::Store, args: &Value) -> Result<Va
                 )
             })
             .collect();
-        return Ok(json!({"results": results}));
+        let status = if results.iter().any(|result| result.get("error").is_some()) {
+            "partial"
+        } else if results.iter().any(|result| result["status"] == "found") {
+            "found"
+        } else {
+            "not_proven"
+        };
+        return Ok(json!({"status": status, "results": results}));
     }
     one(&required_string(args, "symbol")?)
 }
@@ -188,6 +201,7 @@ fn affected_one(
             }
             let unresolved = sites.iter().map(|site| site.refs).sum();
             let mut out = json!({
+                "status": "found",
                 "external": true,
                 "note": "symbol is not defined in this repo; sites reference it (dependency blast radius at the repo boundary)",
                 "sites": sites.iter().map(|site| json!({
@@ -267,6 +281,11 @@ fn affected_one(
         },
         limit,
     );
+    out["status"] = json!(if reached.is_empty() {
+        "not_proven"
+    } else {
+        "found"
+    });
     out["coverage"] =
         crate::coverage::traversal_json(repo, store, filter, evidence, !reached.is_empty())?;
     Ok(out)
@@ -313,6 +332,7 @@ fn dependencies(repo: &Path, store: &sinter_store::Store, args: &Value) -> Resul
         })
         .collect();
     let mut out = json!({
+        "status": if reached.is_empty() { "not_proven" } else { "found" },
         "symbol": scoped_node_json(&node, &scopes),
         "total": reached.len(),
         "unresolved_refs_in_symbol": unresolved,
@@ -343,11 +363,17 @@ fn path(repo: &Path, store: &sinter_store::Store, args: &Value) -> Result<Value>
             .copied()
             .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(file))
     };
+    let miss = path
+        .is_none()
+        .then(|| crate::pathcmd::explain_miss(store, &from, &to, &filter))
+        .transpose()?;
     let evidence = crate::coverage::TraversalEvidence::from_confidences(
         path.iter().flatten().map(|edge| edge.confidence),
-        0,
+        miss.as_ref()
+            .map_or(0, |miss| miss.unresolved_matching_target),
     );
     let mut out = json!({
+        "status": if path.is_some() { "found" } else { "not_proven" },
         "found": path.is_some(),
         "steps": path.iter().flatten().map(|edge| json!({
             "from": qualified_of(edge.src.as_str()),
@@ -363,9 +389,8 @@ fn path(repo: &Path, store: &sinter_store::Store, args: &Value) -> Result<Value>
             "site": crate::render::site_json(repo, edge),
         })).collect::<Vec<_>>(),
     });
-    if path.is_none() {
-        let miss = crate::pathcmd::explain_miss(store, &from, &to, &filter)?;
-        out["miss"] = crate::pathcmd::miss_json(repo, &miss);
+    if let Some(miss) = &miss {
+        out["miss"] = crate::pathcmd::miss_json(repo, miss);
     }
     out["coverage"] =
         crate::coverage::traversal_json(repo, store, &filter, evidence, path.is_some())?;

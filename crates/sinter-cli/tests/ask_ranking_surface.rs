@@ -112,7 +112,20 @@ fn json_results_explain_the_score() {
     let (ok, output) = sinter(directory.path(), &["build"]);
     assert!(ok, "{output}");
 
-    let hits = ask_json(directory.path(), "where are child commands registered");
+    let (ok, output) = sinter(
+        directory.path(),
+        &[
+            "ask",
+            "where are child commands registered",
+            "--json",
+            "--explain",
+            "--limit",
+            "10",
+        ],
+    );
+    assert!(ok, "{output}");
+    let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let hits = value["topics"][0]["hits"].as_array().unwrap();
     let top = &hits[0];
     assert!(
         top["channels"]

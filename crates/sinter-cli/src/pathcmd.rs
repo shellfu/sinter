@@ -34,13 +34,19 @@ pub fn run(
             .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(file))
     };
     let root = crate::pipeline::discover_root(repo);
+    let miss = path
+        .is_none()
+        .then(|| explain_miss(&store, &from_node, &to_node, filter))
+        .transpose()?;
     let evidence = crate::coverage::TraversalEvidence::from_confidences(
         path.iter().flatten().map(|edge| edge.confidence),
-        0,
+        miss.as_ref()
+            .map_or(0, |miss| miss.unresolved_matching_target),
     );
     if json {
         // Same shape as the MCP `path` tool.
         let mut out = serde_json::json!({
+            "status": if path.is_some() { "found" } else { "not_proven" },
             "snapshot": snapshot,
             "found": path.is_some(),
             "steps": path.iter().flatten().map(|e| serde_json::json!({
@@ -57,8 +63,8 @@ pub fn run(
                 "site": crate::render::site_json(&root, e),
             })).collect::<Vec<_>>(),
         });
-        if path.is_none() {
-            out["miss"] = miss_json(&root, &explain_miss(&store, &from_node, &to_node, filter)?);
+        if let Some(miss) = &miss {
+            out["miss"] = miss_json(&root, miss);
         }
         out["coverage"] =
             crate::coverage::traversal_json(&root, &store, filter, evidence, path.is_some())?;
@@ -68,7 +74,7 @@ pub fn run(
     match path {
         None => {
             println!(
-                "no path {} -> {}",
+                "not proven: no path {} -> {} observed",
                 qualified_of(from_node.id.as_str()),
                 qualified_of(to_node.id.as_str())
             );
@@ -76,7 +82,7 @@ pub fn run(
                 &root,
                 &from_node,
                 &to_node,
-                &explain_miss(&store, &from_node, &to_node, filter)?,
+                miss.as_ref().expect("a missing path has miss evidence"),
             );
             println!("  snapshot: {snapshot}");
             crate::coverage::print_traversal(&root, &store, filter, evidence, false)?;
@@ -134,7 +140,7 @@ pub fn run_workspace(
     match path {
         None => {
             println!(
-                "no path {from_member}:{} -> {to_member}:{}",
+                "not proven: no path {from_member}:{} -> {to_member}:{} observed",
                 qualified_of(from_node.id.as_str()),
                 qualified_of(to_node.id.as_str())
             );
@@ -169,6 +175,7 @@ pub struct Miss {
     pub forward_reached: usize,
     pub reached_by: Vec<sinter_core::Edge>,
     pub excluded_by_filter: usize,
+    pub unresolved_matching_target: usize,
 }
 
 pub fn explain_miss(
@@ -177,7 +184,26 @@ pub fn explain_miss(
     to: &sinter_core::Node,
     filter: &EdgeFilter,
 ) -> Result<Miss> {
-    let forward_reached = store.dependencies(&from.id, filter, usize::MAX)?.len();
+    let forward = store.dependencies(&from.id, filter, usize::MAX)?;
+    let forward_reached = forward.len();
+    let mut reachable = std::collections::HashSet::from([from.id.clone()]);
+    reachable.extend(forward.iter().map(|reached| reached.node.id.clone()));
+    let mut files = std::collections::BTreeSet::from([from.file.as_str()]);
+    files.extend(forward.iter().map(|reached| reached.node.file.as_str()));
+    let mut unresolved_matching_target = 0;
+    for file in files {
+        unresolved_matching_target += store
+            .references_in(file)?
+            .iter()
+            .filter(|reference| {
+                reference
+                    .enclosing
+                    .as_ref()
+                    .is_some_and(|enclosing| reachable.contains(enclosing))
+                    && name_tail_matches(&reference.name, &to.name)
+            })
+            .count();
+    }
     let inn = store.in_edges(&to.id)?;
     let candidates: Vec<&sinter_core::Edge> = inn
         .iter()
@@ -193,6 +219,7 @@ pub fn explain_miss(
         forward_reached,
         reached_by,
         excluded_by_filter,
+        unresolved_matching_target,
     })
 }
 
@@ -207,6 +234,7 @@ pub fn miss_json(root: &Path, miss: &Miss) -> serde_json::Value {
             "site": crate::render::site_json(root, e),
         })).collect::<Vec<_>>(),
         "excluded_by_filter": miss.excluded_by_filter,
+        "unresolved_matching_target": miss.unresolved_matching_target,
     })
 }
 
@@ -248,4 +276,16 @@ fn print_miss(root: &Path, from: &sinter_core::Node, to: &sinter_core::Node, mis
             miss.excluded_by_filter
         );
     }
+    if miss.unresolved_matching_target > 0 {
+        println!(
+            "  {} unresolved ref(s) on the forward frontier name `{}` — the path may be missing; `sinter scip` would bind them",
+            miss.unresolved_matching_target, to.name,
+        );
+    }
+}
+
+fn name_tail_matches(written: &str, name: &str) -> bool {
+    let tail = written.rsplit("::").next().unwrap_or(written);
+    let tail = tail.rsplit(['/', '.']).next().unwrap_or(tail);
+    tail == name
 }

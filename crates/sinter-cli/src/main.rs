@@ -221,6 +221,9 @@ enum Command {
         /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`)
         #[arg(long)]
         json: bool,
+        /// Include per-hit scoring diagnostics in JSON output
+        #[arg(long, requires = "json")]
+        explain: bool,
     },
     /// One-screen orientation card for a symbol or file
     Show {
@@ -371,6 +374,10 @@ enum Command {
         /// Traverse across the workspace (path to manifest)
         #[arg(long)]
         workspace: Option<PathBuf>,
+        /// Maximum entries returned independently for changed symbols, blast
+        /// radius, and affected tests; 0 returns all entries
+        #[arg(long, default_value_t = impact::DEFAULT_LIMIT)]
+        limit: usize,
         /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`)
         #[arg(long)]
         json: bool,
@@ -659,14 +666,15 @@ fn main() -> ExitCode {
             limit,
             scope,
             json,
+            explain,
         } => {
             let result =
                 corpus::ScopeSelection::parse(&scope, corpus::ScopeSelection::agent_default())
                     .and_then(|scopes| match workspace {
                         Some(manifest) => {
-                            ask::run_workspace(&manifest, &question, limit, json, &scopes)
+                            ask::run_workspace(&manifest, &question, limit, json, explain, &scopes)
                         }
-                        None => ask::run(&repo, &question, limit, json, &scopes),
+                        None => ask::run(&repo, &question, limit, json, explain, &scopes),
                     });
             return if json {
                 grep_exit_json("ask", result)
@@ -813,6 +821,7 @@ fn main() -> ExitCode {
             rev_range,
             repo,
             workspace,
+            limit,
             json,
             filter,
         } => {
@@ -822,6 +831,7 @@ fn main() -> ExitCode {
                 workspace.as_deref(),
                 &filter.evidence,
                 filter.certain,
+                limit,
                 json,
             );
             if json {

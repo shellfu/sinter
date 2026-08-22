@@ -13,11 +13,14 @@ in prose. If the user types `/sinter`, use this card before anything else.
 
 ## Rules
 
-- For codebase questions, query sinter first whenever `.sinter/` exists:
-  `sinter ask` for concepts, `sinter path` for how two symbols relate,
-  `sinter affected` for blast radius. Results are scoped and ranked —
-  usually much smaller than raw grep output, and content-bearing enough
-  to answer without opening files.
+- In an unfamiliar repository, run `sinter map` first. It returns the module
+  tree, documentation entry points, and structural hubs without broad file
+  listing or speculative reads.
+- For later codebase questions, query sinter first whenever `.sinter/` exists:
+  use `sinter ask` as a calibrated lexical navigator for vague discovery,
+  `sinter query`/`show` for exact symbols, and the traversal verbs for graph
+  relationships. Results are scoped and ranked — usually much smaller than
+  raw grep output. Read source for behavior inside a function body.
 - Queries self-sync: every command refreshes the graph incrementally
   before answering, so results reflect uncommitted edits with no manual
   step. `sinter build <repo>` remains for CI, scripting, and hooks.
@@ -41,13 +44,21 @@ the user explicitly asks for full onboarding (git hooks, agent integration,
 MCP registration, and a doctor pass). `sinter build <repo>` remains the
 explicit build/refresh command for CI and scripts.
 
+If a graph exists but its health is uncertain, run `sinter doctor <repo>` and
+follow the named repair. When traversal reports missing compiler evidence or
+cannot prove a receiver-typed call, run `sinter scip <repo>` to add
+compiler-grade bindings. A negative result with incomplete coverage is
+`not_proven`, never proof of zero callers or dependencies.
+
 `sinter install enforce --strict` opts into strict enforcement: the first
 raw recursive search (grep/rg or the Grep tool) of a Claude Code session
 is blocked with a redirect to `sinter ask/show/affected/deps/path/impact`;
-running the same search again passes with an advisory nudge, as does
-every later one — sinter-first, grep-second, never grep-never. Strict mode only
-ever denies (it never auto-approves anything); default installs remain
-advisory context injection only.
+the retry passes with a one-time advisory nudge, and later searches in that
+class are silent for the session — sinter-first, grep-second, never
+grep-never. Strict mode only ever denies (it never auto-approves anything);
+default installs inject each search, git-archaeology, and subagent-prompt
+advisory at most once per session. Calls without a session ID remain
+nudge-only.
 
 ## Routing
 
@@ -61,14 +72,20 @@ advisory context injection only.
 | What does X depend on (forward, before touching X) | `sinter deps <symbol> --repo <repo>` |
 | Where is the graph blind (honesty check, negative proofs) | `sinter unresolved [--file <f>] [--name <n>] --repo <repo>` |
 | How does A reach B | `sinter path <A> <B> --repo <repo>` |
-| What does this commit/diff/PR affect downstream ("what changed recently and what does it touch") | `sinter impact <rev-range> --repo <repo>` (e.g. `HEAD~1..HEAD`; a single rev such as `HEAD` also reports staged, unstaged, deleted, renamed, and untracked working-tree entries) — prefer over `git show`/`git log` archaeology |
+| What does this commit/diff/PR affect downstream ("what changed recently and what does it touch") | `sinter impact <rev-range> --repo <repo>` (e.g. `HEAD~1..HEAD`; each symbol collection returns 20 entries by default with full totals/truncation metadata; use `--limit 0` for all entries; a single rev such as `HEAD` also reports staged, unstaged, deleted, renamed, and untracked working-tree entries) — prefer over `git show`/`git log` archaeology |
 | Where do open PRs collide / merge risk | `sinter overlap <base...prA> <base...prB> ... --repo <repo>` |
+| Build or refresh a cross-repo graph | `sinter workspace <manifest.toml>` |
 | Cross-repo (distributed system) versions of the above | add `--workspace <manifest.toml>`; symbols may be `member:Symbol` |
+| Create missing derived graph state | `sinter ensure <repo>` |
+| Diagnose graph or integration problems | `sinter doctor <repo>` |
+| Add compiler-grade call/type evidence | `sinter scip <repo>` |
 
 Focused `ask` questions minimize output, but multi-topic questions are safe:
 the agent payload returns explicit `topics[]`, applies one global hit budget,
 and gives every topic independent calibration, advice, and abstention state.
 Phrase topics with words expected in identifiers or doc comments.
+Use `sinter ask "<question>" --explain` only when ranking diagnostics are
+needed; default agent JSON omits the score breakdown to conserve context.
 
 Agents should always pass `--json`: it emits the compact data payload from
 the versioned `sinter.agent.v1` contract. Omitting `--json` selects the
@@ -101,8 +118,8 @@ do not infer production ownership from a path string.
   binds the reference — say so rather than guessing. Every positive or
   negative `affected`/`deps`/`path` result includes `coverage` with evidence
   sources, filters, certain/possible/unresolved counts, gaps, and bounded
-  completeness. `conclusive: false` forbids exhaustive negative claims;
-  `sinter unresolved` lists the gaps themselves.
+  completeness. A `not_proven` outcome or `conclusive: false` forbids
+  exhaustive negative claims; `sinter unresolved` lists the gaps themselves.
 - `affected`/`deps` cap output at `--limit` (default 200) and print a
   footer with the exact `--limit` rerun that widens it.
 - Agent-facing `id` is a stable symbol key; `snapshot_id` is the byte-offset
@@ -118,7 +135,8 @@ available as `mcp__sinter__*` tools (`ask`, `show`, `query`, `affected`,
 `deps`, `path`, `unresolved`, `impact`, `overlap`, `map`). Every tool has a
 closed input schema and a versioned output schema. Read
 `structuredContent.data` as the CLI `--json` payload and inspect `outcome`
-before acting: `partial` and `not_found` are not complete negative proofs.
+before acting: `not_proven` is explicitly non-conclusive, and neither
+`partial` nor `not_found` may be silently upgraded into a negative proof.
 
 ## Orchestrating subagents
 

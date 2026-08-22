@@ -74,6 +74,82 @@ fn body(response: &serde_json::Value) -> &str {
         .unwrap_or_else(|| panic!("missing MCP text body: {response}"))
 }
 
+fn cli_impact(repo: &Path, limit: Option<usize>) -> serde_json::Value {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sinter"));
+    command
+        .args(["impact", "HEAD~1..HEAD", "--json", "--repo"])
+        .arg(repo);
+    if let Some(limit) = limit {
+        command.args(["--limit", &limit.to_string()]);
+    }
+    let output = command.output().expect("run impact CLI");
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("parse impact CLI JSON")
+}
+
+#[test]
+fn impact_budget_has_cli_mcp_parity_and_zero_means_all() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = build_repo(dir.path());
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["add", "go.mod", "lib.go", "more.go"]);
+    git(&["commit", "-qm", "base"]);
+    let source = std::fs::read_to_string(repo.join("lib.go")).unwrap();
+    std::fs::write(repo.join("lib.go"), source.replace("return 1", "return 10")).unwrap();
+    git(&["add", "lib.go"]);
+    git(&["commit", "-qm", "change Base"]);
+
+    let cli_default = cli_impact(&repo, None);
+    let cli_all = cli_impact(&repo, Some(0));
+    let responses = serve(
+        &repo,
+        &[
+            call_tool(
+                1,
+                "impact",
+                serde_json::json!({"rev_range": "HEAD~1..HEAD"}),
+            ),
+            call_tool(
+                2,
+                "impact",
+                serde_json::json!({"rev_range": "HEAD~1..HEAD", "limit": 0}),
+            ),
+        ],
+    );
+    let mcp_default = &responses[0]["result"]["structuredContent"]["data"];
+    let mcp_all = &responses[1]["result"]["structuredContent"]["data"];
+
+    assert_eq!(cli_default["limit"], 20);
+    assert_eq!(cli_default, *mcp_default);
+    assert_eq!(cli_all, *mcp_all);
+    assert_eq!(cli_all["limit"], 0);
+    for collection in ["changed_symbols", "blast_radius", "affected_tests"] {
+        assert_eq!(
+            cli_all[collection].as_array().unwrap().len() as u64,
+            cli_all["totals"][collection].as_u64().unwrap(),
+            "limit 0 omitted {collection}: {cli_all}"
+        );
+        assert_eq!(cli_all["truncated"][collection], 0);
+    }
+}
+
 #[test]
 fn affected_is_terse_capped_and_batchable() {
     let dir = tempfile::tempdir().unwrap();

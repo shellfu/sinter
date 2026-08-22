@@ -4,21 +4,28 @@
 
 # sinter
 
-A code knowledge-graph engine in one static binary. sinter builds a typed,
-directed graph of a repository's symbols with tree-sitter, keeps it fresh
-incrementally, and answers the structural questions that grep, an LSP, or an
-agent reading files cannot:
+A local code knowledge graph for coding agents, shipped as one static binary.
+sinter builds a typed, directed graph of a repository's symbols with
+tree-sitter and keeps it fresh incrementally. Start in an unfamiliar repository
+with `sinter map`: it returns a one-screen module tree, the most depended-on
+symbols, and documentation entry points. Then use the graph for focused work:
 
 - **Reverse blast radius** — what transitively depends on a symbol,
   cross-file and cross-language (`sinter affected`).
 - **Paths** — how one symbol reaches another (`sinter path`).
 - **Diff impact** — which symbols and tests a changeset can affect
   (`sinter impact`).
-- **Polyglot, zero setup** — works on repositories with no LSP configured,
-  across every supported language at once.
-- **Agent entry point** — a vague question returns calibrated, content-bearing
-  topic results with explicit verification or abstention guidance (`sinter ask`,
-  `sinter show`).
+- **Polyglot, zero setup** — syntax-only graphs work without an LSP. When the
+  syntax provides the necessary type information, sinter resolves self
+  receivers, locally typed receivers, typed fields, and explicit static/class
+  calls. Complete receiver-call binding often requires a fresh SCIP index;
+  zero setup is not compiler-complete resolution.
+- **Calibrated lexical navigation** — `sinter ask` ranks content-bearing
+  starting points from names, docs, paths, signatures, and limited call
+  evidence. It reports measured top-result calibration and explicit
+  verify-or-abstain guidance; it is a navigator, not a semantic answer engine.
+- **Symbol orientation** — `sinter show` turns a selected symbol into a compact
+  card with its definition and graph neighborhood.
 - **Cross-repo workspaces** — federated graphs over many repos for
   distributed systems: blast radius, paths, and PR impact across service
   boundaries (`--workspace`).
@@ -117,6 +124,16 @@ cross-check (what share of internally-bound refs agree with the
 compiler) and internal recall vs the compiler (how many compiler-bound
 refs sinter found without SCIP).
 
+Orient before searching so the next query uses the repository's own module and
+symbol vocabulary:
+
+```
+sinter map /path/to/repo
+```
+
+The map is the first-pass inventory. Use `ask` next when the target is still a
+concept rather than a known symbol.
+
 Ask a question against the graph (output shown for this repository):
 
 ```
@@ -128,8 +145,10 @@ $ sinter ask "where is the trigram search"
    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Node>, StoreError>
 ```
 
-Every hit shows its match provenance. Agent JSON groups results by topic,
-applies one strict result budget, and reports `ranking_margin`, query-term
+`ask` is a calibrated lexical navigator, so treat its hits as places to inspect
+rather than generated answers. Every hit shows its match provenance. Agent JSON
+groups results by topic under one strict result budget and reports
+`ranking_margin`, query-term
 coverage, the named holdout calibration, `verify_required`, and topic-level
 advice. Weak singletons, low term coverage, and undersampled confidence
 buckets abstain. CLI JSON and MCP `structuredContent.data` use the same
@@ -154,12 +173,13 @@ silently rebinding.
 | Command | Purpose |
 |---|---|
 | `sinter ensure [repo]` | Build or refresh only the derived graph; does not install hooks or edit agent/client configuration |
+| `sinter map [repo]` | First action in an unfamiliar repo: one-screen module tree, hub symbols, and doc entry points (`--json`) |
 | `sinter init [repo]` | Onboard a repo: build + hooks + agent integration + doctor (`--scip`/`--no-scip` answer the indexer consent up front; `-g` also installs enforcement hooks globally) |
 | `sinter uninit [repo]` | Offboard completely: remove the graph and every sinter-managed artifact (`-g` also removes global skill + hooks) |
 | `sinter build [repo]` | Build or incrementally refresh the graph |
 | `sinter watch [repo]` | Keep the graph fresh from filesystem events |
 | `sinter hooks install` | Git hooks that refresh after commit/checkout/merge |
-| `sinter ask "<question>"` | Ranked, content-bearing answers to vague questions |
+| `sinter ask "<question>"` | Calibrated lexical starting points for a vague question, with verify/abstain guidance |
 | `sinter show <symbol>` | One-screen orientation card for a symbol or file |
 | `sinter query <symbol>` | Exact + fuzzy symbol search |
 | `sinter affected <symbol>` | Reverse blast radius, evidence-filterable |
@@ -174,7 +194,6 @@ silently rebinding.
 | `sinter install [targets]` | Write agent cards (claude, cursor, agents/AGENTS.md, enforce (`--strict` available), all); `--mcp` registers the server for Claude Code, Cursor, and Codex |
 | `sinter scip [repo]` | Run every matching compiler indexer, merge into `.sinter/index.scip`, rebuild; no-op when fresh (`--force` reindexes); `scip check` is the CI freshness guard |
 | `sinter doctor [repo]` | Diagnose installation + graph (including an MCP handshake and lock-held reporting); every finding names its fix; `--fix` applies the safe ones |
-| `sinter map [repo]` | One-screen orientation: module tree, hub symbols, doc entry points (`--json`) |
 | `sinter update` | Self-update to the latest release, checksum-verified (`--dry-run` reports only) |
 | `sinter completion <shell>` | Shell completions |
 | `sinter version` | Version, graph schema, language packs |

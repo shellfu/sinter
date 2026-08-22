@@ -17,9 +17,9 @@
 #              sinter for structure claims instead of steering to grep
 #   grep-strict / greptool-strict — opt-in strict variants: the FIRST
 #              matching search of a session is denied with a redirect to
-#              sinter (marker file ${TMPDIR:-/tmp}/sinter-strict-<session>);
-#              every later one falls through to the nudge. Sinter-first,
-#              grep-second, never grep-never. No session_id → nudge only.
+#              sinter; the retry gets one advisory nudge, and later searches
+#              in that session are silent. Sinter-first, grep-second, never
+#              grep-never. No session_id → nudge only.
 root=""
 d="$PWD"
 while [ "$d" != "/" ]; do
@@ -28,21 +28,61 @@ while [ "$d" != "/" ]; do
 done
 [ -z "$root" ] && exit 0
 
-NUDGE="sinter graph available: if this search asks a structure question (symbol location, callers, blast radius, impact), one sinter call (CLI verb or mcp__sinter__ tool) answers it ranked and evidence-backed. Grep remains right for content/function-body text."
-TASK_NUDGE="sinter graph available: you are writing a subagent prompt. Structure claims (who calls X, is Y a dependency of Z, blast radius, any *no callers/no usages* proof) must be answered by sinter ask/show/affected/deps/path/impact, never by grep. Mandate that routing in the subagent prompt; steer grep/rg to content-only searches."
-GIT_NUDGE="sinter graph available: if you are assessing what a commit or diff changes or affects downstream, sinter impact <rev-range> (e.g. HEAD~1..HEAD) answers changed symbols, blast radius, and affected tests in one call."
-DENY_REASON="This repo has a sinter code graph: query sinter first for structure questions — sinter ask \\\"<question>\\\", sinter show <symbol>, sinter affected <symbol>, sinter path <A> <B>, sinter impact <rev-range>. If sinter was insufficient, rerun this exact search and it will be allowed."
+NUDGE="sinter graph: unfamiliar repo -> map; vague discovery -> ask; exact symbol -> query/show; relations -> affected/deps/path; negative proof -> unresolved, with incomplete coverage reported as not_proven. Grep remains for content/function bodies."
+TASK_NUDGE="sinter graph: require subagents to run map first when unfamiliar, then route structure through ask/query/show/affected/deps/path; use unresolved for negative proofs and report incomplete coverage as not_proven; use impact/overlap for changes. Reserve grep/rg for content."
+GIT_NUDGE="sinter graph: use impact <rev-range> for changed symbols, downstream effects, and tests; use overlap for collision risk; add --workspace for cross-repo analysis."
+DENY_REASON="This repo has a sinter graph. Run sinter map first if unfamiliar; use sinter ask for vague discovery, sinter query/show for exact symbols, sinter affected/deps/path for relations, sinter unresolved for negative proofs (incomplete coverage is not_proven), or sinter impact for diffs. If insufficient, rerun this exact search."
 
-# strict_deny <input-json>: succeed (0) when this call is the session's
-# first matching search — creates the marker so the retry passes. Never
-# denies without a session_id to scope the marker.
-strict_deny() {
-  sid=$(printf '%s' "$1" | jq -r '.session_id // empty' 2>/dev/null | tr -cd 'A-Za-z0-9._-')
+# Print a marker path for a valid session without placing the raw session ID
+# in the filesystem. The per-user directory is private; refusing an unsafe
+# directory makes callers use the visible no-session fallback.
+session_marker_path() {
+  local class=$1 input=$2 sid token uid marker_dir old_umask made_dir
+  sid=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
   [ -z "$sid" ] && return 1
-  marker="${TMPDIR:-/tmp}/sinter-strict-$sid"
-  [ -e "$marker" ] && return 1
-  : > "$marker"
-  return 0
+  if command -v sha256sum >/dev/null 2>&1; then
+    token=$(printf '%s' "$sid" | sha256sum | awk '{print $1}')
+  elif command -v shasum >/dev/null 2>&1; then
+    token=$(printf '%s' "$sid" | shasum -a 256 | awk '{print $1}')
+  else
+    return 1
+  fi
+  uid=$(id -u 2>/dev/null) || return 1
+  marker_dir="${TMPDIR:-/tmp}/sinter-hooks-$uid"
+  [ -L "$marker_dir" ] && return 1
+  old_umask=$(umask)
+  umask 077
+  mkdir -p -- "$marker_dir" 2>/dev/null
+  made_dir=$?
+  umask "$old_umask"
+  [ "$made_dir" -eq 0 ] && [ -d "$marker_dir" ] && [ -O "$marker_dir" ] || return 1
+  printf '%s/%s-%s' "$marker_dir" "$class" "$token"
+}
+
+# Succeed only for the first marker in a valid session. Marker directories
+# make the check-and-create atomic across concurrent hook processes. Return 2
+# when there is no safe session marker so advisory callers remain visible.
+mark_session_once() {
+  local marker
+  marker=$(session_marker_path "$1" "$2") || return 2
+  if mkdir -- "$marker" 2>/dev/null; then
+    return 0
+  fi
+  [ -d "$marker" ] && [ ! -L "$marker" ] && return 1
+  return 2
+}
+
+strict_deny() {
+  mark_session_once strict "$1"
+}
+
+emit_once() {
+  local class=$1 input=$2 text=$3 marked
+  mark_session_once "$class" "$input"
+  marked=$?
+  if [ "$marked" -eq 0 ] || [ "$marked" -eq 2 ]; then
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"%s"}}' "$text"
+  fi
 }
 emit_deny() {
   printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}' "$DENY_REASON"
@@ -50,7 +90,7 @@ emit_deny() {
 
 case "$1" in
   prompt)
-    echo "This repo has a sinter code graph. For structure questions (where is X, who calls X, blast radius, how A reaches B, what a commit/diff affects) query sinter before grep or git archaeology: sinter ask/query/show/affected/deps/path/impact. Queries self-sync against uncommitted edits."
+    echo "This repo has a sinter graph. Unfamiliar repo: sinter map first. Then use ask for vague discovery; query/show for exact symbols; affected/deps/path for relations; unresolved for negative proofs (incomplete coverage is not_proven); impact/overlap for changes; workspace/--workspace across repos. Use ensure/doctor/scip for setup or repair; read source for function bodies."
     ;;
   grep|grep-strict)
     input=$(cat)
@@ -59,22 +99,24 @@ case "$1" in
       if [ "$1" = "grep-strict" ] && strict_deny "$input"; then
         emit_deny
       else
-        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"%s"}}' "$NUDGE"
+        emit_once search "$input" "$NUDGE"
       fi
     elif printf '%s' "$cmd" | grep -qE '(^|[|;& ])git +(show|diff|diff-tree|log)\b'; then
       # Git archaeology stays advisory in both modes.
-      printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"%s"}}' "$GIT_NUDGE"
+      emit_once git "$input" "$GIT_NUDGE"
     fi
     ;;
   greptool|greptool-strict)
-    if [ "$1" = "greptool-strict" ] && strict_deny "$(cat)"; then
+    input=$(cat)
+    if [ "$1" = "greptool-strict" ] && strict_deny "$input"; then
       emit_deny
     else
-      printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"%s"}}' "$NUDGE"
+      emit_once search "$input" "$NUDGE"
     fi
     ;;
   task)
-    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"%s"}}' "$TASK_NUDGE"
+    input=$(cat)
+    emit_once task "$input" "$TASK_NUDGE"
     ;;
 esac
 exit 0

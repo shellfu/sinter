@@ -36,6 +36,7 @@ pub fn run(
                 // Same shape as the MCP `affected` tool's external answer.
                 let unresolved: usize = sites.iter().map(|site| site.refs).sum();
                 let mut out = serde_json::json!({
+                    "status": "found",
                     "snapshot": snapshot,
                     "external": true,
                     "note": "symbol is not defined in this repo; sites reference it (dependency blast radius at the repo boundary)",
@@ -136,6 +137,7 @@ pub fn run(
         let mut symbol_json = node_json(&node);
         symbol_json["scope"] = serde_json::json!(scope_of(&node.file).as_str());
         let mut out = serde_json::json!({
+            "status": if total > 0 { "found" } else { "not_proven" },
             "symbol": symbol_json,
             "snapshot": snapshot,
             "total": total,
@@ -155,13 +157,21 @@ pub fn run(
         return Ok(total > 0);
     }
     reached.truncate(limit);
-    println!(
-        "{} dependents of {} ({}): {direct} direct in {direct_files} file(s), {} transitive",
-        total,
-        qualified_of(node.id.as_str()),
-        node.file,
-        total - direct,
-    );
+    if total == 0 {
+        println!(
+            "not proven: 0 dependents observed for {} ({})",
+            qualified_of(node.id.as_str()),
+            node.file,
+        );
+    } else {
+        println!(
+            "{} dependents of {} ({}): {direct} direct in {direct_files} file(s), {} transitive",
+            total,
+            qualified_of(node.id.as_str()),
+            node.file,
+            total - direct,
+        );
+    }
     // Render as a real tree: each dependent indents under the node it
     // actually reaches (via.dst), not under whatever BFS printed last.
     let mut children: std::collections::HashMap<&str, Vec<&sinter_store::Reached>> =
@@ -234,12 +244,20 @@ pub fn run_workspace(
         0,
     );
     reached.truncate(limit);
-    println!(
-        "{} dependents of {member}:{} ({})",
-        total,
-        qualified_of(node.id.as_str()),
-        node.file
-    );
+    if total == 0 {
+        println!(
+            "not proven: 0 dependents observed for {member}:{} ({})",
+            qualified_of(node.id.as_str()),
+            node.file
+        );
+    } else {
+        println!(
+            "{} dependents of {member}:{} ({})",
+            total,
+            qualified_of(node.id.as_str()),
+            node.file
+        );
+    }
     let mut children: std::collections::HashMap<(&str, &str), Vec<&crate::workspace::WsReached>> =
         std::collections::HashMap::new();
     for r in &reached {

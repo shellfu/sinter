@@ -208,7 +208,7 @@ fn evaluate_case(
                 .context("query JSON is missing results")?;
             (
                 "query",
-                scoring::score_ranking(input, *limit, relevant, results, results)?,
+                scoring::score_ranking(input, *limit, relevant, results, results, None)?,
                 started.elapsed().as_millis(),
             )
         }
@@ -264,7 +264,14 @@ fn evaluate_case(
             })?;
             (
                 "ask",
-                scoring::score_ranking(input, *limit, relevant, results, candidate_results)?,
+                scoring::score_ranking(
+                    input,
+                    *limit,
+                    relevant,
+                    results,
+                    candidate_results,
+                    Some(topic),
+                )?,
                 primary_duration.as_millis(),
             )
         }

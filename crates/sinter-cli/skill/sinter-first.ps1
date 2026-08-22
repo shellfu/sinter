@@ -16,9 +16,9 @@
 #              sinter for structure claims instead of steering to grep
 #   grep-strict / greptool-strict — opt-in strict variants: the FIRST
 #              matching search of a session is denied with a redirect to
-#              sinter (marker file <temp>/sinter-strict-<session>); every
-#              later one falls through to the nudge. Sinter-first,
-#              grep-second, never grep-never. No session_id → nudge only.
+#              sinter; the retry gets one advisory nudge, and later searches
+#              in that session are silent. Sinter-first, grep-second, never
+#              grep-never. No session_id → nudge only.
 param([string]$Mode)
 
 $root = $null
@@ -31,28 +31,52 @@ while ($d) {
 }
 if (-not $root) { exit 0 }
 
-$Nudge = 'sinter graph available: if this search asks a structure question (symbol location, callers, blast radius, impact), one sinter call (CLI verb or mcp__sinter__ tool) answers it ranked and evidence-backed. Grep remains right for content/function-body text.'
-$TaskNudge = 'sinter graph available: you are writing a subagent prompt. Structure claims (who calls X, is Y a dependency of Z, blast radius, any *no callers/no usages* proof) must be answered by sinter ask/show/affected/deps/path/impact, never by grep. Mandate that routing in the subagent prompt; steer grep/rg to content-only searches.'
-$GitNudge = 'sinter graph available: if you are assessing what a commit or diff changes or affects downstream, sinter impact <rev-range> (e.g. HEAD~1..HEAD) answers changed symbols, blast radius, and affected tests in one call.'
+$Nudge = 'sinter graph: unfamiliar repo -> map; vague discovery -> ask; exact symbol -> query/show; relations -> affected/deps/path; negative proof -> unresolved, with incomplete coverage reported as not_proven. Grep remains for content/function bodies.'
+$TaskNudge = 'sinter graph: require subagents to run map first when unfamiliar, then route structure through ask/query/show/affected/deps/path; use unresolved for negative proofs and report incomplete coverage as not_proven; use impact/overlap for changes. Reserve grep/rg for content.'
+$GitNudge = 'sinter graph: use impact <rev-range> for changed symbols, downstream effects, and tests; use overlap for collision risk; add --workspace for cross-repo analysis.'
 
-$DenyReason = 'This repo has a sinter code graph: query sinter first for structure questions — sinter ask \"<question>\", sinter show <symbol>, sinter affected <symbol>, sinter path <A> <B>, sinter impact <rev-range>. If sinter was insufficient, rerun this exact search and it will be allowed.'
+$DenyReason = 'This repo has a sinter graph. Run sinter map first if unfamiliar; use sinter ask for vague discovery, sinter query/show for exact symbols, sinter affected/deps/path for relations, sinter unresolved for negative proofs (incomplete coverage is not_proven), or sinter impact for diffs. If insufficient, rerun this exact search.'
 
 function Emit([string]$Text) {
     Write-Output ('{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"' + $Text + '"}}')
 }
 
-# True when this call is the session's first matching search — creates the
-# marker so the retry passes. Never denies without a session_id to scope
-# the marker.
-function Test-StrictDeny([string]$InputJson) {
+# Return a marker path for a valid session without placing the raw session ID
+# in the filesystem. The platform temp directory is per-user on Windows.
+function Get-SessionMarkerPath([string]$Class, [string]$InputJson) {
     $sid = ''
     try { $sid = ([string]($InputJson | ConvertFrom-Json).session_id) } catch { $sid = '' }
-    if ($sid) { $sid = $sid -replace '[^A-Za-z0-9._-]', '' }
-    if (-not $sid) { return $false }
-    $marker = Join-Path ([IO.Path]::GetTempPath()) "sinter-strict-$sid"
-    if (Test-Path $marker) { return $false }
-    New-Item -ItemType File -Path $marker -Force | Out-Null
-    return $true
+    if ([string]::IsNullOrWhiteSpace($sid)) { return $null }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $hash = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($sid)) } finally { $sha.Dispose() }
+    $token = -join ($hash | ForEach-Object { $_.ToString('x2') })
+    $markerDir = Join-Path ([IO.Path]::GetTempPath()) 'sinter-hooks'
+    try { New-Item -ItemType Directory -Path $markerDir -Force | Out-Null } catch { return $null }
+    return Join-Path $markerDir "$Class-$token"
+}
+
+# Return true only for the first marker in a valid session, false for an
+# existing marker, and null when no safe marker can be created. CreateNew is
+# atomic across concurrent hook processes and never follows an existing file.
+function New-SessionMarker([string]$Class, [string]$InputJson) {
+    $marker = Get-SessionMarkerPath $Class $InputJson
+    if (-not $marker) { return $null }
+    try {
+        $stream = [IO.File]::Open($marker, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $stream.Dispose()
+        return $true
+    }
+    catch [IO.IOException] { return $false }
+    catch { return $null }
+}
+
+function Test-StrictDeny([string]$InputJson) {
+    return (New-SessionMarker 'strict' $InputJson) -eq $true
+}
+
+function Emit-Once([string]$Class, [string]$InputJson, [string]$Text) {
+    $first = New-SessionMarker $Class $InputJson
+    if ($null -eq $first -or $first) { Emit $Text }
 }
 
 function EmitDeny {
@@ -61,7 +85,7 @@ function EmitDeny {
 
 switch ($Mode) {
     'prompt' {
-        Write-Output 'This repo has a sinter code graph. For structure questions (where is X, who calls X, blast radius, how A reaches B, what a commit/diff affects) query sinter before grep or git archaeology: sinter ask/query/show/affected/deps/path/impact. Queries self-sync against uncommitted edits.'
+        Write-Output 'This repo has a sinter graph. Unfamiliar repo: sinter map first. Then use ask for vague discovery; query/show for exact symbols; affected/deps/path for relations; unresolved for negative proofs (incomplete coverage is not_proven); impact/overlap for changes; workspace/--workspace across repos. Use ensure/doctor/scip for setup or repair; read source for function bodies.'
     }
     { $_ -in 'grep', 'grep-strict' } {
         $raw = ''
@@ -70,18 +94,20 @@ switch ($Mode) {
         try { $cmd = ($raw | ConvertFrom-Json).tool_input.command } catch { $cmd = '' }
         if (-not $cmd) { exit 0 }
         if ($cmd -match '(^|[|;& ])(rg |git +grep|(xargs|-exec) +(grep|rg)|grep +(-[a-zA-Z]*[rR]|.* -[rR]))') {
-            if ($Mode -eq 'grep-strict' -and (Test-StrictDeny $raw)) { EmitDeny } else { Emit $Nudge }
+            if ($Mode -eq 'grep-strict' -and (Test-StrictDeny $raw)) { EmitDeny } else { Emit-Once 'search' $raw $Nudge }
         }
         # Git archaeology stays advisory in both modes.
-        elseif ($cmd -match '(^|[|;& ])git +(show|diff|diff-tree|log)\b') { Emit $GitNudge }
+        elseif ($cmd -match '(^|[|;& ])git +(show|diff|diff-tree|log)\b') { Emit-Once 'git' $raw $GitNudge }
     }
     { $_ -in 'greptool', 'greptool-strict' } {
         $raw = ''
-        if ($Mode -eq 'greptool-strict') {
-            try { $raw = [Console]::In.ReadToEnd() } catch { $raw = '' }
-        }
-        if ($Mode -eq 'greptool-strict' -and (Test-StrictDeny $raw)) { EmitDeny } else { Emit $Nudge }
+        try { $raw = [Console]::In.ReadToEnd() } catch { $raw = '' }
+        if ($Mode -eq 'greptool-strict' -and (Test-StrictDeny $raw)) { EmitDeny } else { Emit-Once 'search' $raw $Nudge }
     }
-    'task' { Emit $TaskNudge }
+    'task' {
+        $raw = ''
+        try { $raw = [Console]::In.ReadToEnd() } catch { $raw = '' }
+        Emit-Once 'task' $raw $TaskNudge
+    }
 }
 exit 0

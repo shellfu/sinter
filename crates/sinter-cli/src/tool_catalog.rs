@@ -49,11 +49,13 @@ pub(crate) fn repository() -> Value {
         },
         {
             "name": "ask",
-            "description": "Answer a vague or conceptual codebase question with explicit per-topic ranked hits and agent-safety metadata. `ranking_margin` is only a score gap; `confidence.calibration` reports the named holdout sample and measured precision. Obey each topic's `status`, `verify_required`, and `advice`: abstain means refine the query, verify means inspect evidence before acting. `limit` is a strict global hit budget across topics.",
+            "description": "Answer a vague or conceptual codebase question with explicit per-topic ranked hits and agent-safety metadata. `ranking_margin` is only a score gap; `confidence.calibration` reports the named holdout sample and measured precision. Obey each topic's `status`, `verify_required`, and `advice`: abstain means refine the query, verify means inspect evidence before acting. `limit` is a strict global hit budget across topics. Set `explain:true` only when per-hit scoring diagnostics are needed.",
             "inputSchema": {"type": "object", "properties": {
                 "question": {"type": "string"},
                 "limit": {"type": "integer"},
                 "scope": scope_filter(&["production", "docs"]),
+                "explain": {"type": "boolean", "default": false,
+                    "description": "include per-hit score_breakdown diagnostics"},
             }, "required": ["question"]},
         },
         {
@@ -129,9 +131,10 @@ pub(crate) fn repository() -> Value {
         },
         {
             "name": "impact",
-            "description": "Changed symbols, blast radius, and affected tests for a git rev range (e.g. HEAD~1..HEAD, main...branch). A single rev (`HEAD`) covers uncommitted edits to tracked files in the working tree; untracked files are not included.",
+            "description": "Changed symbols, blast radius, and affected tests for a git rev range (e.g. HEAD~1..HEAD, main...branch). Each symbol collection returns at most 20 entries by default while authoritative totals and truncation counts remain available; set limit to 0 for all entries. A single rev (`HEAD`) covers uncommitted edits to tracked files in the working tree; untracked files are not included.",
             "inputSchema": {"type": "object", "properties": {
                 "rev_range": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 0, "default": 20, "description": "maximum entries returned independently for changed symbols, blast radius, and affected tests; 0 returns all entries"},
             }, "required": ["rev_range"]},
         },
         {
@@ -153,11 +156,13 @@ pub(crate) fn workspace() -> Value {
     let mut list = json!({"tools": [
         {
             "name": "ask",
-            "description": "Answer a vague or conceptual question across every workspace member with the same calibrated per-topic contract as repository ask. Hits are merge-ranked and tagged with member before confidence is assessed. Obey each topic's `status`, `verify_required`, and `advice`; `limit` is a strict global hit budget.",
+            "description": "Answer a vague or conceptual question across every workspace member with the same calibrated per-topic contract as repository ask. Hits are merge-ranked and tagged with member before confidence is assessed. Obey each topic's `status`, `verify_required`, and `advice`; `limit` is a strict global hit budget. Set `explain:true` only when per-hit scoring diagnostics are needed.",
             "inputSchema": {"type": "object", "properties": {
                 "question": {"type": "string"},
                 "limit": {"type": "integer"},
                 "scope": scope_filter(&["production", "docs"]),
+                "explain": {"type": "boolean", "default": false,
+                    "description": "include per-hit score_breakdown diagnostics"},
             }, "required": ["question"]},
         },
         {
@@ -217,10 +222,11 @@ pub(crate) fn workspace() -> Value {
         },
         {
             "name": "impact",
-            "description": "Changed symbols, blast radius, and affected tests for a git rev range (e.g. HEAD~1..HEAD) in one member, with the radius continued across boundary links into the other members (cross-member entries carry a `member:` file prefix).",
+            "description": "Changed symbols, blast radius, and affected tests for a git rev range (e.g. HEAD~1..HEAD) in one member, with the radius continued across boundary links into the other members (cross-member entries carry a `member:` file prefix). Each symbol collection returns at most 20 entries by default while authoritative totals and truncation counts remain available; set limit to 0 for all entries.",
             "inputSchema": {"type": "object", "properties": {
                 "member": {"type": "string", "description": "workspace member the rev range applies to"},
                 "rev_range": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 0, "default": 20, "description": "maximum entries returned independently for changed symbols, blast radius, and affected tests; 0 returns all entries"},
             }, "required": ["member", "rev_range"]},
         },
     ]});
@@ -259,6 +265,30 @@ mod tests {
         {
             assert_eq!(tool["inputSchema"]["additionalProperties"], false);
             assert!(tool["outputSchema"].is_object());
+        }
+        for catalog in [&repository, &workspace] {
+            let ask = catalog["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == "ask")
+                .unwrap();
+            assert_eq!(
+                ask["inputSchema"]["properties"]["explain"]["type"],
+                "boolean"
+            );
+            assert_eq!(
+                ask["inputSchema"]["properties"]["explain"]["default"],
+                false
+            );
+            let impact = catalog["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == "impact")
+                .unwrap();
+            assert_eq!(impact["inputSchema"]["properties"]["limit"]["minimum"], 0);
+            assert_eq!(impact["inputSchema"]["properties"]["limit"]["default"], 20);
         }
     }
 }

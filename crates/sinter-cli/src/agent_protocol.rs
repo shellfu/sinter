@@ -100,7 +100,7 @@ pub fn validate_arguments(operation: &str, args: &Value, workspace: bool) -> Res
         bail!("arguments for `{operation}` must be a JSON object");
     };
     let allowed: &[&str] = match (workspace, operation) {
-        (_, "ask") => &["question", "limit", "scope"],
+        (_, "ask") => &["question", "limit", "scope", "explain"],
         (_, "show") => &["symbol", "if_snapshot"],
         (_, "query") => &["symbol", "limit", "scope", "if_snapshot"],
         (false, "affected") => &[
@@ -147,8 +147,8 @@ pub fn validate_arguments(operation: &str, args: &Value, workspace: bool) -> Res
         ],
         (false, "unresolved") => &["file", "name", "limit"],
         (true, "unresolved") => &["member", "file", "name", "limit"],
-        (false, "impact") => &["rev_range"],
-        (true, "impact") => &["member", "rev_range"],
+        (false, "impact") => &["rev_range", "limit"],
+        (true, "impact") => &["member", "rev_range", "limit"],
         (false, "overlap") => &["ranges"],
         (false, "map") => &["scope"],
         _ => bail!("unknown tool `{operation}` for this server scope"),
@@ -185,15 +185,34 @@ fn protocol_data(_operation: &str, payload: &Value) -> Value {
 fn success(operation: &str, data: Value) -> Value {
     let partial = is_partial(&data);
     let found = is_found(operation, &data);
+    let not_proven = is_not_proven(&data);
     json!({
         "protocol": VERSION,
         "operation": operation,
         "outcome": {
-            "status": if !found { "not_found" } else if partial { "partial" } else { "complete" },
+            "status": if not_proven { "not_proven" } else if !found { "not_found" } else if partial { "partial" } else { "complete" },
             "partial": partial,
         },
         "data": data,
     })
+}
+
+fn is_not_proven(data: &Value) -> bool {
+    data.get("status").and_then(Value::as_str) == Some("not_proven")
+        || data
+            .get("coverage")
+            .and_then(|coverage| coverage.get("status"))
+            .and_then(Value::as_str)
+            == Some("not_proven")
+        || data
+            .get("results")
+            .and_then(Value::as_array)
+            .is_some_and(|results| {
+                !results.is_empty()
+                    && results.iter().all(|result| {
+                        result.get("status").and_then(Value::as_str) == Some("not_proven")
+                    })
+            })
 }
 
 fn is_found(operation: &str, data: &Value) -> bool {
@@ -256,7 +275,7 @@ fn output_schema(operation: &str) -> Value {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                    "status": {"enum": ["complete", "partial", "not_found"]},
+                    "status": {"enum": ["complete", "partial", "not_found", "not_proven"]},
                     "partial": {"type": "boolean"}
                 },
                 "required": ["status", "partial"]
@@ -298,7 +317,18 @@ fn data_schema(operation: &str) -> Value {
                             "ranking_margin": {"type": "object"},
                             "term_coverage": {"type": "object"},
                             "advice": {"type": ["string", "null"]},
-                            "hits": {"type": "array"}
+                            "hits": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "score_breakdown": {
+                                            "type": "object",
+                                            "description": "present only when explain is true"
+                                        }
+                                    }
+                                }
+                            }
                         },
                         "required": ["topic", "status", "verify_required", "confidence", "ranking_margin", "term_coverage", "advice", "hits"]
                     }
@@ -310,10 +340,13 @@ fn data_schema(operation: &str) -> Value {
     if operation == "affected" {
         return json!({
             "type": "object",
+            "properties": {
+                "status": {"enum": ["found", "not_proven", "partial"]}
+            },
             "anyOf": [
-                {"required": ["symbol", "snapshot", "total", "dependents", "coverage"]},
-                {"required": ["external", "snapshot", "sites", "coverage"]},
-                {"required": ["results", "snapshot"]}
+                {"required": ["status", "symbol", "snapshot", "total", "dependents", "coverage"]},
+                {"required": ["status", "external", "snapshot", "sites", "coverage"]},
+                {"required": ["status", "results", "snapshot"]}
             ]
         });
     }
@@ -345,22 +378,39 @@ fn data_schema(operation: &str) -> Value {
             "docs",
         ],
         "show" => &["symbol", "outgoing", "incoming"],
-        "deps" => &["symbol", "snapshot", "total", "dependencies", "coverage"],
-        "path" => &["snapshot", "found", "steps", "coverage"],
+        "deps" => &[
+            "status",
+            "symbol",
+            "snapshot",
+            "total",
+            "dependencies",
+            "coverage",
+        ],
+        "path" => &["status", "snapshot", "found", "steps", "coverage"],
         "unresolved" => &["total", "unresolved"],
         "impact" => &[
             "analysis_status",
             "changed_files",
             "changed_symbols",
             "blast_radius",
+            "affected_tests",
+            "limit",
+            "totals",
+            "truncated",
         ],
         "overlap" => &["changes", "pairs"],
         _ => &[],
     };
-    let properties: Map<String, Value> = required
+    let mut properties: Map<String, Value> = required
         .iter()
         .map(|name| ((*name).to_string(), json!({})))
         .collect();
+    if matches!(operation, "deps" | "path") {
+        properties.insert(
+            "status".to_string(),
+            json!({"enum": ["found", "not_proven"]}),
+        );
+    }
     json!({
         "type": "object",
         "properties": properties,
@@ -408,6 +458,22 @@ mod tests {
     }
 
     #[test]
+    fn traversal_miss_is_not_proven_in_the_agent_outcome() {
+        let payload = json!({
+            "status": "not_proven",
+            "total": 0,
+            "dependencies": [],
+            "coverage": {"status": "not_proven"},
+        });
+        let result = mcp_success("deps", &payload).unwrap();
+        assert_eq!(
+            result["structuredContent"]["outcome"]["status"],
+            "not_proven"
+        );
+        assert_eq!(result["structuredContent"]["data"]["total"], 0);
+    }
+
+    #[test]
     fn schemas_are_closed_and_have_versioned_outputs() {
         let mut list = json!({"tools": [{
             "name": "query",
@@ -425,6 +491,8 @@ mod tests {
 
     #[test]
     fn closed_schema_is_enforced_at_runtime() {
+        validate_arguments("ask", &json!({"question": "run", "explain": true}), false).unwrap();
+        validate_arguments("ask", &json!({"question": "run", "explain": true}), true).unwrap();
         let error = validate_arguments("show", &json!({"symbol": "run", "guess": true}), false)
             .unwrap_err();
         assert!(error.to_string().contains("unknown argument `guess`"));
