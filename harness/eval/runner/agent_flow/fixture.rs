@@ -14,9 +14,18 @@ pub fn prepare(workspace: &Path, fixture: &AgentFixtureSpec, destination: &Path)
     git(destination, &["add", "."])?;
     git(destination, &["commit", "-qm", "agent-flow base"])?;
     copy_tree(&overlay, destination)?;
-    git(destination, &["add", "."])?;
+    stage_overlay(destination)?;
     git(destination, &["commit", "-qm", "agent-flow fixture change"])?;
     Ok(())
+}
+
+fn stage_overlay(repository: &Path) -> Result<()> {
+    // Some copy implementations preserve an overlay file's size and mtime.
+    // Git may then trust its index stat cache and skip hashing changed content.
+    // Renormalizing forces tracked files through the clean/hash path; the
+    // ordinary add that follows still picks up files newly added by an overlay.
+    git(repository, &["add", "--renormalize", "."])?;
+    git(repository, &["add", "."])
 }
 
 fn fixture_source(workspace: &Path, relative: &str) -> Result<PathBuf> {
@@ -101,4 +110,63 @@ fn validate_relative_path(relative: &str) -> Result<()> {
         bail!("path must stay within the evaluation root: {relative:?}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs::{FileTimes, OpenOptions};
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use super::*;
+
+    #[test]
+    fn stage_overlay_rehashes_same_size_content_with_unchanged_mtime() -> Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let repository = scratch.path();
+        let tracked = repository.join("tracked.rs");
+        let fixed_time = UNIX_EPOCH + Duration::from_secs(946_684_800);
+
+        fs::write(&tracked, "pub fn value() -> u8 { 1 }\n")?;
+        set_modified(&tracked, fixed_time)?;
+        git(repository, &["init", "-q"])?;
+        git(repository, &["add", "."])?;
+        git(repository, &["commit", "-qm", "base"])?;
+        git(repository, &["config", "core.trustctime", "false"])?;
+        git(repository, &["config", "core.checkstat", "minimal"])?;
+        git(repository, &["config", "core.ignorecase", "true"])?;
+
+        fs::write(&tracked, "pub fn value() -> u8 { 2 }\n")?;
+        set_modified(&tracked, fixed_time)?;
+        git(repository, &["add", "."])?;
+        assert!(git_exit_success(
+            repository,
+            &["diff", "--cached", "--quiet"]
+        ));
+
+        stage_overlay(repository)?;
+
+        assert!(!git_exit_success(
+            repository,
+            &["diff", "--cached", "--quiet"]
+        ));
+        git(repository, &["commit", "-qm", "same-size overlay"])?;
+        Ok(())
+    }
+
+    fn set_modified(path: &Path, modified: std::time::SystemTime) -> Result<()> {
+        OpenOptions::new()
+            .write(true)
+            .open(path)?
+            .set_times(FileTimes::new().set_modified(modified))?;
+        Ok(())
+    }
+
+    fn git_exit_success(repository: &Path, args: &[&str]) -> bool {
+        Command::new("git")
+            .args(args)
+            .current_dir(repository)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .status()
+            .is_ok_and(|status| status.success())
+    }
 }
