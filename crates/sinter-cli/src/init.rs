@@ -1,12 +1,19 @@
-//! `sinter init`: onboard a repository in one command. Pure composition of
-//! existing verbs — build, git hooks, agent integration, MCP registration —
-//! finished by a doctor pass so the outcome is verified, not assumed.
+//! Repository onboarding operations. `ensure` creates only derived graph
+//! state; `init` is the explicit full installation that also writes hooks and
+//! agent integrations.
 
 use std::path::Path;
 
 use anyhow::Result;
 
 use crate::{doctor, hooks, install, pipeline};
+
+/// Make the repository graph available without changing repository policy or
+/// client configuration. This is the safe setup operation for agents: the
+/// only persistent writes belong under `.sinter/`.
+pub fn ensure(repo: &Path) -> Result<()> {
+    crate::build::run(repo)
+}
 
 /// `sinter init --workspace`: write a starter manifest. Never clobbers —
 /// members and runtime links are facts only the operator knows.
@@ -167,4 +174,37 @@ pub fn run(repo: &Path, cursor: bool, scip: Option<bool>, global: bool) -> Resul
 
     println!("\n== doctor ==");
     doctor::run(&repo, false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_writes_only_derived_graph_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::write(repo.join("a.rs"), "pub fn ready() {}\n").unwrap();
+        std::fs::create_dir_all(repo.join(".git/hooks")).unwrap();
+
+        ensure(repo).unwrap();
+
+        assert!(repo.join(".sinter/graph.redb").exists());
+        for absent in [
+            "AGENTS.md",
+            "CLAUDE.md",
+            ".mcp.json",
+            ".cursor",
+            ".codex",
+            ".claude",
+            ".git/hooks/post-commit",
+            ".git/hooks/post-checkout",
+            ".git/hooks/post-merge",
+        ] {
+            assert!(
+                !repo.join(absent).exists(),
+                "ensure must not create {absent}"
+            );
+        }
+    }
 }

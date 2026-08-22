@@ -157,10 +157,7 @@ pub fn run(repo: &Path, args: &[String], json: bool) -> Result<()> {
     let (maps, pairs) = compute(repo, args)?;
 
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({ "prs": maps, "pairs": pairs }))?
-        );
+        crate::agent_protocol::write_json(&to_json(&maps, &pairs))?;
         return Ok(());
     }
     println!("{} changes mapped, {} pairs:", maps.len(), pairs.len());
@@ -198,4 +195,20 @@ pub fn run(repo: &Path, args: &[String], json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// One compatibility-preserving payload for CLI JSON and MCP. `prs` keeps
+/// the full historical CLI surface; `changes` is the bounded summary older
+/// MCP clients consumed. Agents can choose detail without transport drift.
+pub fn to_json(maps: &[PrMap], pairs: &[Pair]) -> serde_json::Value {
+    serde_json::json!({
+        "prs": maps,
+        "changes": maps.iter().map(|p| serde_json::json!({
+            "label": p.label,
+            "touched": p.touched.len(),
+            "radius": p.radius.len(),
+            "files": p.files.len(),
+        })).collect::<Vec<_>>(),
+        "pairs": pairs,
+    })
 }

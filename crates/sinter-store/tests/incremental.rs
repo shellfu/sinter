@@ -237,3 +237,24 @@ fn pending_delta_survives_crash_between_update_and_resolution() {
     let cleared = store.pending_delta().unwrap();
     assert!(cleared.dependent_files.is_empty() && cleared.def_names.is_empty());
 }
+
+#[test]
+fn snapshot_token_is_stable_until_committed_content_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::create(dir.path().join("g.redb")).unwrap();
+    let first = facts("a.rs", "content-a", &["alpha"], &[]);
+    store
+        .update_files(std::slice::from_ref(&first), &[])
+        .unwrap();
+    store.commit_hashes(std::slice::from_ref(&first)).unwrap();
+    let token = store.snapshot_token().unwrap();
+
+    assert_eq!(store.snapshot_token().unwrap(), token);
+
+    let second = facts("a.rs", "content-b", &["alpha"], &[]);
+    store
+        .update_files(std::slice::from_ref(&second), &[])
+        .unwrap();
+    store.commit_hashes(std::slice::from_ref(&second)).unwrap();
+    assert_ne!(store.snapshot_token().unwrap(), token);
+}

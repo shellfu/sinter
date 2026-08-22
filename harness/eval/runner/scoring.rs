@@ -52,14 +52,46 @@ pub fn score_ranking(
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned);
     if let Some(level) = top_confidence.as_deref()
-        && !matches!(level, "high" | "medium" | "low")
+        && !matches!(level, "high" | "medium" | "low" | "unrated")
     {
         anyhow::bail!("result has unknown confidence level {level:?}");
     }
-    let top_margin_permille = results
+    let top_ranking_margin_permille = results
         .first()
-        .and_then(|result| result.get("margin_permille"))
+        .and_then(|result| result.pointer("/ranking_margin/permille"))
         .and_then(serde_json::Value::as_i64);
+    let top_calibration_version = results
+        .first()
+        .and_then(|result| result.pointer("/calibration/version"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let top_calibration_sample_size = results
+        .first()
+        .and_then(|result| result.pointer("/calibration/sample_size"))
+        .and_then(serde_json::Value::as_u64)
+        .map(|value| value as usize);
+    let top_calibration_measured_precision = results
+        .first()
+        .and_then(|result| result.pointer("/calibration/measured_precision"))
+        .and_then(serde_json::Value::as_f64);
+    let top_term_coverage_permille = results
+        .first()
+        .and_then(|result| result.pointer("/term_coverage/permille"))
+        .and_then(serde_json::Value::as_u64)
+        .map(|value| value as u16);
+    let top_verify_required = results
+        .first()
+        .and_then(|result| result.get("verify_required"))
+        .and_then(serde_json::Value::as_bool);
+    if top_confidence.is_some()
+        && (top_calibration_version.is_none()
+            || top_calibration_sample_size.is_none()
+            || top_calibration_measured_precision.is_none()
+            || top_term_coverage_permille.is_none()
+            || top_verify_required.is_none())
+    {
+        anyhow::bail!("ask result is missing calibrated agent-safety metadata");
+    }
     Ok(CaseOutcome::Ranking {
         input: input.to_owned(),
         limit,
@@ -74,7 +106,12 @@ pub fn score_ranking(
         candidate_relevant_found: candidate_found.len(),
         candidate_miss: candidate_found.len() < relevant_set.len(),
         top_confidence,
-        top_margin_permille,
+        top_ranking_margin_permille,
+        top_calibration_version,
+        top_calibration_sample_size,
+        top_calibration_measured_precision,
+        top_term_coverage_permille,
+        top_verify_required,
         top_incorrect: returned
             .first()
             .filter(|top| !relevant_set.contains(&top.symbol))
@@ -218,6 +255,7 @@ pub fn aggregate_metrics(cases: &[CaseResult]) -> Metrics {
         ),
         callers,
         paths,
+        agent_flows: Default::default(),
     }
 }
 
@@ -225,7 +263,7 @@ fn confidence_calibration<'a>(
     cases: impl Iterator<Item = &'a CaseResult>,
 ) -> ConfidenceCalibration {
     let mut calibration = ConfidenceCalibration {
-        buckets: ["high", "medium", "low"]
+        buckets: ["high", "medium", "low", "unrated"]
             .into_iter()
             .map(|level| ConfidenceBucket {
                 level,
@@ -481,7 +519,14 @@ mod tests {
                 "qualified": "wanted",
                 "file": "src/lib.rs",
                 "confidence": "high",
-                "margin_permille": 250
+                "ranking_margin": {"absolute": 10, "permille": 250},
+                "calibration": {
+                    "version": "ask-holdout-2026-08-21.v1",
+                    "sample_size": 25,
+                    "measured_precision": 0.88
+                },
+                "term_coverage": {"permille": 1000},
+                "verify_required": true
             })],
             &[result("wanted")],
         )

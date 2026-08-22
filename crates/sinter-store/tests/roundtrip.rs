@@ -1,5 +1,10 @@
+use std::collections::BTreeSet;
+
 use proptest::prelude::*;
-use sinter_core::{Confidence, Edge, Evidence, Graph, Node, NodeId, Relation, Span, SymbolKind};
+use sinter_core::{
+    Confidence, CorpusScope, Edge, Evidence, Graph, Node, NodeId, Relation, Span, SymbolKind,
+};
+use sinter_store::EdgeFilter;
 use sinter_store::Store;
 
 fn node(id: &str) -> Node {
@@ -63,11 +68,74 @@ fn hand_built_roundtrip() {
     assert_eq!(store.out_edges(&main).unwrap().len(), 3);
     assert_eq!(store.in_edges(&NodeId::new("Config")).unwrap().len(), 2);
     assert_eq!(store.in_edges(&NodeId::new("config")).unwrap().len(), 1);
+    assert_eq!(
+        store.file_scope("src/main.rs").unwrap(),
+        CorpusScope::Production
+    );
     let batch = store
         .in_edges_many(&[NodeId::new("Config"), NodeId::new("config")])
         .unwrap();
     assert_eq!(batch[&NodeId::new("Config")].len(), 2);
     assert_eq!(batch[&NodeId::new("config")].len(), 1);
+}
+
+#[test]
+fn file_scope_is_persisted_and_changes_snapshot_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("graph.redb");
+    let store = Store::create(&path).unwrap();
+    let mut graph = Graph::new();
+    graph.add_node(node("check")).unwrap();
+    store.write_graph(&graph).unwrap();
+    let before = store.snapshot_token().unwrap();
+
+    store
+        .set_file_scopes(&[("src/check.rs".to_string(), CorpusScope::Fixture)])
+        .unwrap();
+    assert_eq!(
+        store.file_scope("src/check.rs").unwrap(),
+        CorpusScope::Fixture
+    );
+    assert_ne!(store.snapshot_token().unwrap(), before);
+}
+
+#[test]
+fn traversal_scope_blocks_excluded_nodes_without_blocking_exact_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("graph.redb");
+    let store = Store::create(&path).unwrap();
+    let mut graph = Graph::new();
+    let mut source = node("source");
+    source.id = NodeId::new("src/source.rs#source@3");
+    source.file = "src/source.rs".to_string();
+    let mut fixture = node("check");
+    fixture.id = NodeId::new("harness/golden/check.rs#check@3");
+    fixture.file = "harness/golden/check.rs".to_string();
+    graph.add_node(source.clone()).unwrap();
+    graph.add_node(fixture.clone()).unwrap();
+    graph
+        .add_edge(Edge {
+            src: source.id.clone(),
+            dst: fixture.id.clone(),
+            relation: Relation::Calls,
+            evidence: Evidence::Structural,
+            confidence: Confidence::Certain,
+            site: None,
+        })
+        .unwrap();
+    store.write_graph(&graph).unwrap();
+
+    let production_only = EdgeFilter {
+        scopes: Some(BTreeSet::from([CorpusScope::Production])),
+        ..EdgeFilter::default()
+    };
+    assert!(
+        store
+            .dependencies(&source.id, &production_only, 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(store.node(&fixture.id).unwrap().is_some());
 }
 
 /// Sites persist, and several call sites for one dependency fact keep a

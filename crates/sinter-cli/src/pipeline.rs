@@ -8,7 +8,9 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
-use sinter_core::{FileFacts, Graph, Reference, UnresolvedReason, UnresolvedReference};
+use sinter_core::{
+    CorpusScope, FileFacts, Graph, Reference, UnresolvedReason, UnresolvedReference,
+};
 use sinter_extract::{Extractor, LanguageSpec, ModuleRoot, manifest_root, spec_for_path};
 use sinter_store::{FileStamp, Store};
 
@@ -123,6 +125,7 @@ pub fn scan_hashes(
 pub struct Scan {
     pub hashes: Vec<(String, FileStamp)>,
     pub roots: Vec<ModuleRoot>,
+    pub scopes: Vec<(String, CorpusScope)>,
 }
 
 /// Stat-gated hashing (the `make` trick): a file whose identity and length
@@ -131,9 +134,12 @@ pub struct Scan {
 /// as well as mtime, catching rewrites that restore mtime; other platforms
 /// use mtime. Set SINTER_FULL_SCAN=1 to force content hashing.
 pub fn scan(repo: &Path, stored: &HashMap<String, FileStamp>) -> Result<Scan> {
+    let scope_policy = crate::corpus::ScopePolicy::load(repo)?;
     let mut current: Vec<String> = Vec::new();
     let mut roots: Vec<ModuleRoot> = Vec::new();
-    for entry in ignore::WalkBuilder::new(repo).build() {
+    let mut walker = ignore::WalkBuilder::new(repo);
+    walker.add_custom_ignore_filename(".sinterignore");
+    for entry in walker.build() {
         let entry = entry?;
         if !entry.file_type().is_some_and(|t| t.is_file()) {
             continue;
@@ -162,12 +168,20 @@ pub fn scan(repo: &Path, stored: &HashMap<String, FileStamp>) -> Result<Scan> {
     // Starting Rayon is a net loss for the small repositories that dominate
     // interactive queries. Large corpora still parallelize stat/read work.
     const PARALLEL_SCAN_THRESHOLD: usize = 512;
-    let hashes = if current.len() < PARALLEL_SCAN_THRESHOLD {
+    let hashes: Vec<(String, FileStamp)> = if current.len() < PARALLEL_SCAN_THRESHOLD {
         current.iter().filter_map(scan_one).collect()
     } else {
         current.par_iter().filter_map(scan_one).collect()
     };
-    Ok(Scan { hashes, roots })
+    let scopes = hashes
+        .iter()
+        .map(|(file, _)| (file.clone(), scope_policy.classify(file)))
+        .collect();
+    Ok(Scan {
+        hashes,
+        roots,
+        scopes,
+    })
 }
 
 fn modified_nanos(metadata: &std::fs::Metadata) -> u128 {
@@ -291,6 +305,7 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
     let Scan {
         hashes,
         roots: module_roots,
+        scopes,
     } = scan(&repo, &stored)?;
     let current_set: HashSet<&str> = hashes.iter().map(|(f, _)| f.as_str()).collect();
     // Scope entries match exactly or as directory prefixes: a directory
@@ -373,6 +388,9 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
 
     // Derive: replace per-file state, then re-resolve the invalidated set.
     let delta = store.update_files(&changed_facts, &removed)?;
+    // Classification is independent of source bytes. Persist it on every
+    // build so editing only `.sinter.toml` immediately changes agent views.
+    store.set_file_scopes(&scopes)?;
     // Only file names are needed past this point; the full facts (gigabytes
     // on large corpora) drop here instead of living to end of build.
     let changed_names: Vec<String> = changed_facts.iter().map(|f| f.file.clone()).collect();
@@ -826,7 +844,9 @@ pub fn print_report(report: &BuildReport) {
 
 #[cfg(test)]
 mod source_path_tests {
-    use super::read_repo_source;
+    use std::collections::HashMap;
+
+    use super::{read_repo_source, scan_hashes};
 
     #[test]
     fn scip_source_reads_stay_inside_the_repository() {
@@ -838,5 +858,22 @@ mod source_path_tests {
         );
         assert_eq!(read_repo_source(dir.path(), "../outside.rs"), None);
         assert_eq!(read_repo_source(dir.path(), "/etc/passwd"), None);
+    }
+
+    #[test]
+    fn repository_sinterignore_excludes_deliberate_corpus_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("fixtures")).unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join(".sinterignore"), "fixtures/**\n").unwrap();
+        std::fs::write(dir.path().join("fixtures/ignored.rs"), "fn ignored() {}\n").unwrap();
+        std::fs::write(dir.path().join("src/indexed.rs"), "fn indexed() {}\n").unwrap();
+
+        let files = scan_hashes(dir.path(), &HashMap::new())
+            .unwrap()
+            .into_iter()
+            .map(|(file, _)| file)
+            .collect::<Vec<_>>();
+        assert_eq!(files, vec!["src/indexed.rs"]);
     }
 }

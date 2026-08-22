@@ -161,6 +161,7 @@ fn render_markdown(scorecard: &Scorecard) -> String {
         "Ask by intent",
         &scorecard.metrics.ask_by_intent,
     );
+    write_agent_flows(&mut output, scorecard);
     writeln!(output, "\n## Cases\n").unwrap();
     writeln!(
         output,
@@ -216,6 +217,53 @@ fn render_markdown(scorecard: &Scorecard) -> String {
         }
     }
     output
+}
+
+fn write_agent_flows(output: &mut String, scorecard: &Scorecard) {
+    let metrics = &scorecard.metrics.agent_flows;
+    if metrics.cases == 0 {
+        return;
+    }
+    writeln!(output, "\n## Agent flows\n").unwrap();
+    writeln!(
+        output,
+        "These synthetic, network-free flows measure tool composition and response contracts. They are observational and have no release floor; they do not prove task completion on arbitrary repositories.\n"
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "Flows correct: **{} / {} ({:.3})**. Steps correct: **{} / {}**. Tool calls: **{}**. Output: **{} bytes**. Correct abstentions: **{} / {}**. Unsafe-confidence failures: **{}**. Stale/partial evidence steps: **{} / {}**.\n",
+        metrics.correct,
+        metrics.cases,
+        metrics.accuracy,
+        metrics.correct_steps,
+        metrics.steps,
+        metrics.tool_calls,
+        metrics.output_bytes,
+        metrics.correct_abstentions,
+        metrics.abstention_cases,
+        metrics.unsafe_confidence_failures,
+        metrics.stale_evidence_steps,
+        metrics.partial_evidence_steps,
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "| Flow | Capability | Result | Calls | Output |\n|---|---|---|---:|---:|"
+    )
+    .unwrap();
+    for flow in &scorecard.agent_flows {
+        writeln!(
+            output,
+            "| `{}` | {} | {} | {} | {} bytes |",
+            flow.id,
+            flow.capability.as_str(),
+            if flow.correct { "correct" } else { "miss" },
+            flow.tool_calls,
+            flow.output_bytes,
+        )
+        .unwrap();
+    }
 }
 
 fn write_confidence_calibration(output: &mut String, scorecard: &Scorecard) {

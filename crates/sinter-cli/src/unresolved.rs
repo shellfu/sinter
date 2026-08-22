@@ -89,10 +89,7 @@ pub fn run(
     let repo = crate::pipeline::discover_root(repo);
     let classifier = Classifier::new(&repo, &store, &refs)?;
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&to_json(&repo, &classifier, &refs, limit))?
-        );
+        crate::agent_protocol::write_json(&to_json(&repo, &classifier, &refs, limit))?;
         return Ok(total > 0);
     }
     let by_category = category_counts(&classifier, &refs);

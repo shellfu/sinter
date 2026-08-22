@@ -76,7 +76,8 @@ impl Command {
 fn ask_json(repo: &Path, question: &str) -> Vec<serde_json::Value> {
     let (ok, output) = sinter(repo, &["ask", question, "--json", "--limit", "10"]);
     assert!(ok, "{output}");
-    serde_json::from_str(&output).unwrap()
+    let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+    value["topics"][0]["hits"].as_array().unwrap().clone()
 }
 
 #[test]

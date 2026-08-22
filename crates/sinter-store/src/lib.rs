@@ -1,5 +1,6 @@
 mod error;
 mod search;
+mod snapshot;
 mod store;
 mod traverse;
 mod update;

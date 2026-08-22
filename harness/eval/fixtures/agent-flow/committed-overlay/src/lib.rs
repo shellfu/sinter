@@ -1,0 +1,45 @@
+/// Low-level operation whose callers form a small blast radius.
+pub fn leaf() -> usize {
+    2
+}
+
+/// Domain dispatch step between the entry point and leaf operation.
+pub fn dispatch() -> usize {
+    leaf()
+}
+
+/// Public entry point for the fixture's request flow.
+pub fn entry() -> usize {
+    dispatch()
+}
+
+pub mod left {
+    pub fn duplicate() -> &'static str {
+        "left"
+    }
+}
+
+pub mod right {
+    pub fn duplicate() -> &'static str {
+        "right"
+    }
+}
+
+/// An intentionally unresolved dependency reference.
+pub fn external_reference() {
+    unavailable_dependency::send();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dispatch;
+
+    #[test]
+    fn dispatch_works() {
+        // Keep the dependency call outside the assertion macro. Syntax-only
+        // indexing cannot inspect arbitrary Rust macro token trees, while a
+        // direct call is evidence the graph can support without SCIP.
+        let result = dispatch();
+        assert!(result > 0);
+    }
+}

@@ -1,3 +1,4 @@
+mod agent_flow;
 mod command;
 mod model;
 mod report;
@@ -15,7 +16,7 @@ use self::model::{
     SuiteSpec,
 };
 
-const SCORECARD_SCHEMA: u32 = 4;
+const SCORECARD_SCHEMA: u32 = 5;
 const SUITE_SCHEMA: u32 = 3;
 const ASK_CANDIDATE_LIMIT: usize = 200;
 const INTENTS: &[&str] = &[
@@ -76,7 +77,15 @@ pub fn run() -> Result<()> {
         cases.push(evaluate_case(&sinter, repository, *ask_split, case)?);
     }
 
-    let metrics = scoring::aggregate_metrics(&cases);
+    let agent_flows = if scope == EvaluationScope::All {
+        let suite = agent_flow::load_suite(&workspace)?;
+        eprintln!("eval: running {} local agent flows", suite.cases.len());
+        agent_flow::run_suite(&sinter, &workspace, &suite)?
+    } else {
+        Vec::new()
+    };
+    let mut metrics = scoring::aggregate_metrics(&cases);
+    metrics.agent_flows = agent_flow::aggregate_metrics(&agent_flows);
     let regressions = scoring::compare_minimums(&metrics, &suite.minimums, scope);
     let scorecard = Scorecard {
         schema: SCORECARD_SCHEMA,
@@ -92,6 +101,7 @@ pub fn run() -> Result<()> {
         minimums: suite.minimums,
         regressions,
         cases,
+        agent_flows,
     };
     let output_dir = report::output_directory(&workspace);
     report::write_scorecards(&output_dir, &scorecard)?;
@@ -122,6 +132,46 @@ pub fn run() -> Result<()> {
             scorecard.regressions.join("\n")
         );
     }
+    Ok(())
+}
+
+/// Exercise the synthetic agent-flow corpus without cloning repositories or
+/// contacting an indexer. Individual behavioral misses remain scorecard data;
+/// this contract fails only when the suite or runner itself is not executable.
+pub fn run_agent_flow_contract() -> Result<()> {
+    let workspace = workspace_root();
+    let suite = agent_flow::load_suite(&workspace)?;
+    let expected = suite.cases.len();
+    let results = agent_flow::run_suite(&sinter_binary()?, &workspace, &suite)?;
+    let metrics = agent_flow::aggregate_metrics(&results);
+    if results.len() != expected || metrics.cases != expected {
+        bail!(
+            "agent-flow runner returned {} of {expected} cases",
+            results.len()
+        );
+    }
+    if metrics.tool_calls == 0 {
+        bail!("agent-flow suite executed no Sinter tool calls");
+    }
+    let output_path = std::env::var_os("SINTER_AGENT_FLOW_OUT").map_or_else(
+        || workspace.join("target/sinter-agent-flow/scorecard.json"),
+        PathBuf::from,
+    );
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(
+        &output_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": 1,
+            "suite_schema": suite.schema,
+            "metrics": &metrics,
+            "cases": &results,
+        }))?,
+    )
+    .with_context(|| format!("failed to write {}", output_path.display()))?;
+    println!("agent-flow evaluation: {}", output_path.display());
     Ok(())
 }
 
@@ -180,7 +230,15 @@ fn evaluate_case(
                     limit.to_string(),
                 ],
             )?;
-            let results = value.as_array().context("ask JSON is not an array")?;
+            let topic = value
+                .get("topics")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|topics| topics.first())
+                .context("ask JSON is missing its topic result")?;
+            let results = topic
+                .get("hits")
+                .and_then(serde_json::Value::as_array)
+                .context("ask topic JSON is missing hits")?;
             let primary_duration = started.elapsed();
             let candidate_value = if ranking_has_all_labels(results, relevant)? {
                 None
@@ -200,8 +258,9 @@ fn evaluate_case(
             };
             let candidate_results = candidate_value.as_ref().map_or(Ok(results), |value| {
                 value
-                    .as_array()
-                    .context("diagnostic ask JSON is not an array")
+                    .pointer("/topics/0/hits")
+                    .and_then(serde_json::Value::as_array)
+                    .context("diagnostic ask JSON is missing topic hits")
             })?;
             (
                 "ask",

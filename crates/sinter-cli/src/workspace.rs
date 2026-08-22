@@ -220,6 +220,31 @@ pub fn member_fingerprint(repo: &Path) -> String {
     }
 }
 
+/// One optimistic-concurrency token for the federated graph. Member graph
+/// snapshots and declared boundary links both contribute, so a handle-safe
+/// workspace operation cannot cross either kind of change unnoticed.
+pub fn snapshot_token(ws: &Workspace) -> Result<String> {
+    let mut hasher = blake3::Hasher::new();
+    let mut field = |value: &str| {
+        hasher.update(&(value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    };
+    field(&ws.manifest.workspace.name);
+    for (member, repo) in &ws.members {
+        field(member);
+        let store = Store::open(pipeline::db_path(repo))?;
+        field(&store.snapshot_token()?);
+    }
+    for link in &ws.manifest.links {
+        field(&link.from_member);
+        field(&link.from_symbol);
+        field(&link.to_member);
+        field(&link.to_symbol);
+        field(&link.via);
+    }
+    Ok(format!("workspace-{}", hasher.finalize().to_hex()))
+}
+
 // ------------------------------------------------------------------ refresh
 
 /// Rebuild boundary links from members' persisted state. Cost is
@@ -358,6 +383,10 @@ pub struct WsReached {
     pub parent: (String, String),
 }
 
+fn node_file(id: &str) -> &str {
+    id.split_once('#').map_or(id, |(file, _)| file)
+}
+
 pub fn dependents(
     ws: &Workspace,
     start_member: &str,
@@ -370,6 +399,10 @@ pub fn dependents(
     for (name, repo) in &ws.members {
         stores.insert(name.clone(), Store::open(pipeline::db_path(repo))?);
     }
+    let scope_maps = stores
+        .iter()
+        .map(|(member, store)| Ok((member.clone(), store.file_scopes()?)))
+        .collect::<Result<BTreeMap<_, _>>>()?;
     let mut seen: HashSet<(String, String)> =
         HashSet::from([(start_member.to_string(), start.as_str().to_string())]);
     let mut queue: VecDeque<(String, String, usize)> =
@@ -382,7 +415,12 @@ pub fn dependents(
         let store = &stores[&member];
         let node_id = NodeId::new(id.clone());
         for edge in store.in_edges(&node_id)? {
-            if !filter.admits(&edge) {
+            let file = node_file(edge.src.as_str());
+            let scope = scope_maps[&member]
+                .get(file)
+                .copied()
+                .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(file));
+            if !filter.admits(&edge) || !filter.admits_scope(scope) {
                 continue;
             }
             let key = (member.clone(), edge.src.as_str().to_string());
@@ -410,6 +448,14 @@ pub fn dependents(
                     .as_ref()
                     .is_none_or(|allowed| allowed.contains(&link.relation));
             if !admit {
+                continue;
+            }
+            let file = node_file(&link.src_id);
+            let scope = scope_maps[&link.src_member]
+                .get(file)
+                .copied()
+                .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(file));
+            if !filter.admits_scope(scope) {
                 continue;
             }
             let key = (link.src_member.clone(), link.src_id.clone());
@@ -447,6 +493,10 @@ pub fn shortest_path(
     for (name, repo) in &ws.members {
         stores.insert(name.clone(), Store::open(pipeline::db_path(repo))?);
     }
+    let scope_maps = stores
+        .iter()
+        .map(|(member, store)| Ok((member.clone(), store.file_scopes()?)))
+        .collect::<Result<BTreeMap<_, _>>>()?;
     type Key = (String, String);
     let start: Key = (from.0.to_string(), from.1.as_str().to_string());
     let goal: Key = (to.0.to_string(), to.1.as_str().to_string());
@@ -476,7 +526,12 @@ pub fn shortest_path(
         let store = &stores[member];
         let mut nexts: Vec<(Key, Relation, Evidence)> = Vec::new();
         for edge in store.out_edges(&NodeId::new(id.clone()))? {
-            if filter.admits(&edge) {
+            let file = node_file(edge.dst.as_str());
+            let scope = scope_maps[member]
+                .get(file)
+                .copied()
+                .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(file));
+            if filter.admits(&edge) && filter.admits_scope(scope) {
                 nexts.push((
                     (member.clone(), edge.dst.as_str().to_string()),
                     edge.relation,
@@ -494,6 +549,14 @@ pub fn shortest_path(
                     .as_ref()
                     .is_none_or(|allowed| allowed.contains(&link.relation));
             if admit {
+                let file = node_file(&link.dst_id);
+                let scope = scope_maps[&link.dst_member]
+                    .get(file)
+                    .copied()
+                    .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(file));
+                if !filter.admits_scope(scope) {
+                    continue;
+                }
                 nexts.push((
                     (link.dst_member.clone(), link.dst_id.clone()),
                     link.relation,
@@ -549,8 +612,12 @@ pub fn find_symbol(ws: &Workspace, symbol: &str) -> Result<(String, Node)> {
     let mut matches: Vec<(String, Node)> = Vec::new();
     for (name, repo) in &ws.members {
         let store = Store::open(pipeline::db_path(repo))?;
-        if let Ok(node) = crate::lookup::unique_symbol(&store, symbol) {
-            matches.push((name.clone(), node));
+        match crate::lookup::unique_symbol(&store, symbol) {
+            Ok(node) => matches.push((name.clone(), node)),
+            Err(error) if error.is::<crate::lookup::NoMatch>() => {}
+            // Ambiguity, relocation, and malformed stable handles are real
+            // workspace answers. Do not erase them into "no member resolves".
+            Err(error) => return Err(error),
         }
     }
     match matches.len() {

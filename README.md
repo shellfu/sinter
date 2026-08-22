@@ -16,8 +16,9 @@ agent reading files cannot:
   (`sinter impact`).
 - **Polyglot, zero setup** — works on repositories with no LSP configured,
   across every supported language at once.
-- **Human entry point** — a vague question returns a ranked, content-bearing
-  starting point in milliseconds (`sinter ask`, `sinter show`).
+- **Agent entry point** — a vague question returns calibrated, content-bearing
+  topic results with explicit verification or abstention guidance (`sinter ask`,
+  `sinter show`).
 - **Cross-repo workspaces** — federated graphs over many repos for
   distributed systems: blast radius, paths, and PR impact across service
   boundaries (`--workspace`).
@@ -74,6 +75,16 @@ cargo build --release
 
 ## Quickstart
 
+Agents that only need a usable local graph should create derived state without
+installing hooks or editing client configuration:
+
+```
+sinter ensure /path/to/repo
+```
+
+This command only builds or refreshes `.sinter/`. It is safe to run within a
+read-oriented coding flow.
+
 Onboard a repository — builds the graph, installs git hooks, registers
 agent integration (AGENTS.md block, MCP, Claude skill), and finishes with
 a doctor report:
@@ -117,26 +128,32 @@ $ sinter ask "where is the trigram search"
    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Node>, StoreError>
 ```
 
-Every hit shows its match provenance (`[doc+name 2/2 terms]`) — the ranking
-is auditable, in the same spirit as the edges. When the top hit does not
-clearly beat the runner-up, `ask` says so before the list (`low confidence:
-top hit leads by 4%; inspect the top 3 before acting`); `--json` and the MCP
-tool carry the same facts per hit as `confidence`, `margin`, `roles`, and
-`family_size`, plus an `advice` string on the MCP response.
+Every hit shows its match provenance. Agent JSON groups results by topic,
+applies one strict result budget, and reports `ranking_margin`, query-term
+coverage, the named holdout calibration, `verify_required`, and topic-level
+advice. Weak singletons, low term coverage, and undersampled confidence
+buckets abstain. CLI JSON and MCP `structuredContent.data` use the same
+`sinter.agent.v1` payload.
 
-Negative traversal answers are deliberately non-authoritative. A missed
-`path`, or zero-result `affected`/`deps`, is printed as **not proven**. JSON
-and MCP responses include a `coverage` object with the indexed Git HEAD,
-dirty-worktree state, graph schema, SCIP freshness, unresolved-reference
-reason counts, partial-syntax files, and extraction failures. When a
-compiler index is missing or stale, the response names the languages and
-the `sinter scip` repair. Node IDs are canonical and byte-exact within that
-reported snapshot; they are not durable IDs across source edits.
+Every `affected`, `deps`, and `path` response is deliberately bounded. Positive
+and negative answers include a `coverage` object with the graph snapshot,
+requested filters, available evidence sources, certain and possible result
+counts, unresolved-reference counts, compiler-index status, and explicit
+gaps. `completeness` describes only the indexed snapshot and `conclusive`
+remains false, so agents do not turn a non-empty syntax-only result into an
+exhaustive claim.
+
+Agent-facing node `id` values are stable symbol keys and survive unrelated
+offset shifts. `snapshot_id` retains the byte-exact locator for the reported
+snapshot. Handle-consuming operations accept `if_snapshot` and return typed
+stale-snapshot, relocated-handle, or ambiguous-candidate outcomes instead of
+silently rebinding.
 
 ## Commands
 
 | Command | Purpose |
 |---|---|
+| `sinter ensure [repo]` | Build or refresh only the derived graph; does not install hooks or edit agent/client configuration |
 | `sinter init [repo]` | Onboard a repo: build + hooks + agent integration + doctor (`--scip`/`--no-scip` answer the indexer consent up front; `-g` also installs enforcement hooks globally) |
 | `sinter uninit [repo]` | Offboard completely: remove the graph and every sinter-managed artifact (`-g` also removes global skill + hooks) |
 | `sinter build [repo]` | Build or incrementally refresh the graph |
@@ -162,9 +179,10 @@ reported snapshot; they are not durable IDs across source edits.
 | `sinter completion <shell>` | Shell completions |
 | `sinter version` | Version, graph schema, language packs |
 
-MCP registrations pin the currently running Sinter executable so desktop
-and background clients do not depend on an interactive shell PATH. Rerun
-`sinter install --mcp` after moving or reinstalling the binary at a new path.
+MCP registrations use the portable `sinter` command and start non-required so
+a missing binary cannot prevent the client from starting. `sinter doctor`
+checks that the command resolves to an executable on `PATH` and performs an MCP
+handshake.
 
 `affected`, `deps`, and `path` accept `--evidence scip,import,scope,dynamic`
 and `--certain` to restrict traversal to stronger evidence tiers, and
@@ -172,6 +190,12 @@ and `--certain` to restrict traversal to stronger evidence tiers, and
 relations are followed (e.g. drop file-level import edges from a blast
 radius); their MCP counterparts take the same filters as `evidence` (array),
 `min_confidence: "certain"`, and `relations` (array) parameters.
+
+Discovery commands default to the `production,docs` corpus. Use `--scope` or
+the MCP `scope` array to include tests, fixtures, examples, generated files, or
+vendor code. Exact `show` remains unfiltered. Repositories can exclude paths in
+`.sinterignore` and apply ordered classification overrides in `.sinter.toml`
+with `[[scope.override]]` entries.
 
 ## Languages
 
@@ -196,12 +220,13 @@ dependency answers.
 
 If a compiler-produced SCIP index (`index.scip`) is present at the repo
 root or at `.sinter/index.scip`, sinter ingests it as the highest
-evidence tier. `sinter scip` runs the matching indexer for every language
-present (rust-analyzer, scip-go, scip-typescript for TS and JS,
+evidence tier. `sinter scip` discovers configured project roots from build
+markers and runs only matching indexers that are available on `PATH`
+(rust-analyzer, scip-go, scip-typescript for TS and JS,
 scip-python, scip-clang for C/C++, scip-java, scip-dotnet), merges the
-results into `.sinter/index.scip`, and rebuilds; a missing indexer
-prints its install command and is skipped. Bash, proto, SQL, and
-Markdown have no SCIP indexers.
+results into `.sinter/index.scip`, and rebuilds. Isolated source files and
+fixtures without a project marker do not trigger repository-level indexer
+recommendations. Bash, proto, SQL, and Markdown have no SCIP indexers.
 
 ## Teams
 
@@ -223,12 +248,18 @@ automatically. Recipe, cache-key guidance, and a copy-paste workflow:
   (Python), Hono (TypeScript), and Gson (Java): 3 exact lookups, 166
   natural-language `ask` questions labeled by intent with a tuning/holdout
   split, 36 direct-caller checks, and 44 path checks. The current scorecard
-  reports `ask` top-1 accuracy 0.717 (holdout 0.741), MRR 0.818, recall@5
-  0.945, recall@10 0.986, p95 latency under 60 ms. Callers score precision
+  reports `ask` top-1 accuracy 0.705 (holdout 0.696), MRR 0.810, recall@5
+  0.945, recall@10 0.986, and p95 latency 55 ms. Callers score precision
   1.000 and recall 0.523, paths 0.727: syntax-only graphs miss receiver-typed
   and Java static-class calls that a compiler index binds, and the harness
   labels those sites anyway. The weekly and manually dispatched workflow
   uploads the full scorecard and syntax-only build timings (`harness/eval/`).
+- **Agent-flow evaluation**: nine deterministic, network-free coding flows
+  exercise orientation, dependency and blast-radius analysis, test selection,
+  ambiguity, diff impact, stable-handle reuse, dirty edits, and CLI/MCP parity.
+  The current scorecard passes 9/9 flows and 21/21 steps with one correct
+  abstention and zero unsafe-confidence failures. These are observational
+  scenarios, not a claim of general end-to-end coding accuracy.
 - **Budgets** (measured on a ~2M-LOC Go repository, 271k nodes, before
   the stat-gated scan landed): full build 18s, one-file edit under 1s
   typical, cold point query under 100ms, `ask` 66ms end-to-end. A clean

@@ -29,13 +29,17 @@ in prose. If the user types `/sinter`, use this card before anything else.
 
 ## Setup check
 
-If `.sinter/graph.redb` does not exist in the target repo, onboard it —
-one command builds the graph, installs git hooks, and registers agent
-integration, ending with a doctor report:
+If `.sinter/graph.redb` does not exist in the target repo, create the derived
+graph state without changing hooks, repository instructions, or client
+configuration:
 
-    sinter init <repo>
+    sinter ensure <repo>
 
-(`sinter build <repo>` alone refreshes an existing graph.)
+`sinter ensure` is safe for an agent to run while answering a read-only code
+question. It writes only under `.sinter/`. Run `sinter init <repo>` only when
+the user explicitly asks for full onboarding (git hooks, agent integration,
+MCP registration, and a doctor pass). `sinter build <repo>` remains the
+explicit build/refresh command for CI and scripts.
 
 `sinter install enforce --strict` opts into strict enforcement: the first
 raw recursive search (grep/rg or the Grep tool) of a Claude Code session
@@ -57,48 +61,64 @@ advisory context injection only.
 | What does X depend on (forward, before touching X) | `sinter deps <symbol> --repo <repo>` |
 | Where is the graph blind (honesty check, negative proofs) | `sinter unresolved [--file <f>] [--name <n>] --repo <repo>` |
 | How does A reach B | `sinter path <A> <B> --repo <repo>` |
-| What does this commit/diff/PR affect downstream ("what changed recently and what does it touch") | `sinter impact <rev-range> --repo <repo>` (e.g. `HEAD~1..HEAD`; a single rev such as `HEAD` covers uncommitted tracked edits, not untracked files) — prefer over `git show`/`git log` archaeology |
+| What does this commit/diff/PR affect downstream ("what changed recently and what does it touch") | `sinter impact <rev-range> --repo <repo>` (e.g. `HEAD~1..HEAD`; a single rev such as `HEAD` also reports staged, unstaged, deleted, renamed, and untracked working-tree entries) — prefer over `git show`/`git log` archaeology |
 | Where do open PRs collide / merge risk | `sinter overlap <base...prA> <base...prB> ... --repo <repo>` |
 | Cross-repo (distributed system) versions of the above | add `--workspace <manifest.toml>`; symbols may be `member:Symbol` |
 
-Ask one topic per `ask` call, phrased with the words you expect in an
-identifier or doc comment — a multi-topic question ("what documentation
-describes X, Y, or Z?") dilutes ranking and earns a weak-match warning.
+Focused `ask` questions minimize output, but multi-topic questions are safe:
+the agent payload returns explicit `topics[]`, applies one global hit budget,
+and gives every topic independent calibration, advice, and abstention state.
+Phrase topics with words expected in identifiers or doc comments.
 
-Every read verb takes `--json` (same shape as the MCP tool; repo scope
-only — conflicts with `--workspace`) and exits grep-style: 0 results
-found, 1 valid query with no results, 2 error — branch on the exit code
-instead of parsing. `affected`/`path`/`deps` accept
+Agents should always pass `--json`: it emits the compact data payload from
+the versioned `sinter.agent.v1` contract. Omitting `--json` selects the
+human-oriented renderer. MCP `structuredContent` wraps that same payload as
+`{protocol, operation, outcome, data}`; the CLI value is exactly `data`.
+MCP's `content[].text` retains the bare payload for older clients. Repo-scope
+read verbs exit grep-style: 0 results found, 1 valid query with no results,
+2 error — branch on the exit code instead of parsing. In `--json` mode,
+errors are structured `sinter.agent.v1` outcomes; MCP exposes the identical
+failure under JSON-RPC `error.data`. `affected`/`path`/`deps` accept
 `--evidence scip,import,scope,dynamic` and `--certain` (stronger evidence
 tiers) plus `--relations calls,uses,imports,implements,extends` —
 `--relations calls,uses` cuts file-level import noise from a blast
 radius; implements/extends follows interface fan-out.
 
+Discovery defaults to `production,docs`. Pass `--scope` (or MCP `scope`) when
+tests, fixtures, examples, generated files, or vendor code are relevant.
+Exact `show` remains unfiltered. Result nodes carry their persisted `scope`;
+do not infer production ownership from a path string.
+
 ## Reading results
 
-- Every `ask` hit shows match provenance (`[name+doc 2/2 terms]`) and
-  file:line with signature/doc — usually no file read is needed to answer.
+- Every `ask` topic reports query-term coverage, `ranking_margin`, calibration
+  version/sample/precision, `verify_required`, and advice. Honor `abstain` and
+  verification decisions before using a hit to mutate code.
 - Edges carry the call site: dependents and path steps print the
   `file:line` where the reference occurs (`site` in JSON) — jump straight
   there instead of re-searching.
 - Edges carry evidence; "unresolved" is a real answer meaning no evidence
-  binds the reference — say so rather than guessing. `affected`/`deps`
-  print an unresolved-refs note when their list may be incomplete;
+  binds the reference — say so rather than guessing. Every positive or
+  negative `affected`/`deps`/`path` result includes `coverage` with evidence
+  sources, filters, certain/possible/unresolved counts, gaps, and bounded
+  completeness. `conclusive: false` forbids exhaustive negative claims;
   `sinter unresolved` lists the gaps themselves.
 - `affected`/`deps` cap output at `--limit` (default 200) and print a
   footer with the exact `--limit` rerun that widens it.
-- Symbol ambiguity returns a candidate list as `name@file`; rerun with
-  one of those (`run@init.rs` — any unique file-path suffix works), a
-  fuller qualified name, or the node id, rather than assuming.
+- Agent-facing `id` is a stable symbol key; `snapshot_id` is the byte-offset
+  locator for one graph snapshot. Reuse `id` across harmless offset shifts.
+  Use `if_snapshot` when consistency matters, and handle typed stale,
+  relocated, or ambiguous outcomes; never guess a replacement binding.
 
 ## MCP
 
 When the sinter MCP server is registered (`.mcp.json`, `.cursor/mcp.json`,
-`.codex/config.toml` — `sinter init` does this), the same verbs are
+`.codex/config.toml` — full `sinter init` does this), the same verbs are
 available as `mcp__sinter__*` tools (`ask`, `show`, `query`, `affected`,
-`deps`, `path`, `unresolved`, `impact`, `overlap`, `map`) with the same
-JSON shape as `--json`. CLI and MCP are interchangeable; use whichever
-is at hand.
+`deps`, `path`, `unresolved`, `impact`, `overlap`, `map`). Every tool has a
+closed input schema and a versioned output schema. Read
+`structuredContent.data` as the CLI `--json` payload and inspect `outcome`
+before acting: `partial` and `not_found` are not complete negative proofs.
 
 ## Orchestrating subagents
 

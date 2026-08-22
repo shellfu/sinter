@@ -73,6 +73,9 @@ function-body behavior.
   reserve grep/rg for content-only searches.
 - Cross-repo workspace? Add `--workspace <manifest.toml>`; symbols may
   be `member:Symbol`.
+- Graph missing? `sinter ensure <repo>` creates only derived `.sinter/`
+  state. Run `sinter init <repo>` only when full hook and client integration
+  installation was explicitly requested.
 - MCP registered? `mcp__sinter__*` tools (ask/show/query/affected/deps/
   path/unresolved/impact/overlap/map) answer the same questions as the
   CLI verbs above — either route is fine.
@@ -167,13 +170,15 @@ pub fn default_dir() -> Option<PathBuf> {
 
 /// Register the sinter server in every client's project-scope MCP config:
 /// `.mcp.json` (Claude Code), `.cursor/mcp.json` (Cursor), and a managed
-/// block in `.codex/config.toml` (Codex, `required = true` so sessions
-/// start with a working server). Other entries are preserved; only the
-/// sinter entry is written. Global client configs belong to their
-/// applications and are never edited here.
+/// block in `.codex/config.toml`. Registration uses the portable `sinter`
+/// command name and initially leaves the Codex server non-required: a broken
+/// PATH must not prevent an agent session from starting before the server has
+/// completed a successful handshake. Other entries are preserved; only the
+/// sinter entry is written. Global client configs belong to their applications
+/// and are never edited here.
 pub fn mcp(repo: &Path) -> Result<()> {
     let repo = repo.canonicalize()?;
-    let command = mcp_command()?;
+    let command = mcp_command();
     for path in [repo.join(".mcp.json"), repo.join(".cursor/mcp.json")] {
         std::fs::create_dir_all(path.parent().unwrap())?;
         let mut root: Value = match std::fs::read_to_string(&path) {
@@ -199,20 +204,14 @@ pub fn mcp(repo: &Path) -> Result<()> {
         )?;
         println!("registered sinter MCP server in {}", path.display());
     }
-    codex_mcp(&repo, &command)?;
+    codex_mcp(&repo, command)?;
     Ok(())
 }
 
-/// The MCP client may be a GUI or background service whose PATH differs
-/// from the shell that installed Sinter. Pin the executable used for this
-/// registration so a required server does not make the client fail at
-/// startup merely because a user-level bin directory is absent from PATH.
-fn mcp_command() -> Result<String> {
-    std::env::current_exe()
-        .context("locate the current sinter executable")?
-        .into_os_string()
-        .into_string()
-        .map_err(|_| anyhow::anyhow!("the current sinter executable path is not valid UTF-8"))
+/// Project-scoped MCP configuration is commonly shared across machines and
+/// checkout locations, so it must not capture the installer's absolute path.
+fn mcp_command() -> &'static str {
+    "sinter"
 }
 
 pub(crate) const CODEX_BEGIN: &str =
@@ -236,7 +235,7 @@ fn codex_mcp(repo: &Path, command: &str) -> Result<()> {
     let server = toml::to_string(&Server {
         command,
         args: ["serve", "--repo", "."],
-        required: true,
+        required: false,
     })
     .context("serialize the Codex MCP registration")?;
     let block = format!("{CODEX_BEGIN}\n[mcp_servers.sinter]\n{server}{CODEX_END}");
@@ -509,5 +508,30 @@ mod tests {
             );
             assert!(card.contains(rule), "full card lost rule: {rule}");
         }
+    }
+
+    #[test]
+    fn mcp_registration_is_portable_and_non_required() {
+        let dir = tempfile::tempdir().unwrap();
+
+        mcp(dir.path()).unwrap();
+
+        let json: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(json["mcpServers"]["sinter"]["command"], "sinter");
+
+        let codex: toml::Value = toml::from_str(
+            &std::fs::read_to_string(dir.path().join(".codex/config.toml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            codex["mcp_servers"]["sinter"]["command"].as_str(),
+            Some("sinter")
+        );
+        assert_eq!(
+            codex["mcp_servers"]["sinter"]["required"].as_bool(),
+            Some(false)
+        );
     }
 }

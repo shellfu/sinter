@@ -1,7 +1,6 @@
-//! Coverage contract for negative graph answers. A graph miss is evidence
-//! about the indexed snapshot, never proof that source/runtime behavior is
-//! absent. This module makes the limits machine-readable and keeps the CLI
-//! and MCP wording aligned.
+//! Coverage contract for graph traversals. Positive and negative answers
+//! describe the same indexed snapshot, filters, evidence tiers, and gaps so
+//! a non-empty syntax-only result is never mistaken for an exhaustive one.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -9,8 +8,37 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use sinter_core::{Relation, UnresolvedReason, UnresolvedReference};
-use sinter_store::Store;
+use sinter_core::{Confidence, Evidence, Relation, UnresolvedReason, UnresolvedReference};
+use sinter_store::{EdgeFilter, Store};
+
+/// Evidence represented by one traversal answer. `possible` means inferred
+/// graph edges, not a confirmed runtime dependency. `unresolved` is evidence
+/// observed by extraction but not bound to a graph target.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TraversalEvidence {
+    pub certain: usize,
+    pub possible: usize,
+    pub unresolved: usize,
+}
+
+impl TraversalEvidence {
+    pub fn from_confidences(
+        confidences: impl IntoIterator<Item = Confidence>,
+        unresolved: usize,
+    ) -> Self {
+        let mut evidence = Self {
+            unresolved,
+            ..Self::default()
+        };
+        for confidence in confidences {
+            match confidence {
+                Confidence::Certain => evidence.certain += 1,
+                Confidence::Inferred => evidence.possible += 1,
+            }
+        }
+        evidence
+    }
+}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct GraphHealth {
@@ -213,8 +241,7 @@ pub fn category_counts(
     counts
 }
 
-/// Machine-readable trust envelope for a negative answer.
-pub fn negative_json(repo: &Path, store: &Store) -> Result<serde_json::Value> {
+fn repository_coverage(repo: &Path, store: &Store) -> Result<serde_json::Value> {
     let repo = crate::pipeline::discover_root(repo);
     let health = read_health(&repo);
     let head = git_output(&repo, &["rev-parse", "HEAD"]);
@@ -228,7 +255,18 @@ pub fn negative_json(repo: &Path, store: &Store) -> Result<serde_json::Value> {
             .lines()
             .any(|line| !line.get(3..).unwrap_or("").starts_with(".sinter/"))
     });
-    let indexable_languages = crate::scip::indexable_languages(&repo);
+    let indexing_projects = crate::scip::indexing_projects(&repo);
+    let indexable_languages: BTreeSet<&str> = indexing_projects
+        .iter()
+        .flat_map(|project| project.languages.iter().map(String::as_str))
+        .collect();
+    let runnable_indexing = indexing_projects
+        .iter()
+        .any(|project| project.recommendation.is_some());
+    let unavailable_indexing = indexing_projects
+        .iter()
+        .any(|project| project.status == "indexer_unavailable");
+    let unconfigured_languages = crate::scip::unconfigured_indexable_languages(&repo);
     let (scip_state, stale_inputs) = match crate::scip::staleness(&repo) {
         crate::scip::Staleness::Fresh => ("fresh", 0),
         crate::scip::Staleness::Missing => ("missing", 0),
@@ -251,14 +289,36 @@ pub fn negative_json(repo: &Path, store: &Store) -> Result<serde_json::Value> {
         "dynamic dispatch edges are conservative candidates, not dependency-injection proof"
             .to_string(),
     ];
-    if scip_state == "missing" && !indexable_languages.is_empty() {
+    if scip_state == "missing" && runnable_indexing {
         limitations.push(format!(
-            "compiler index missing for {}; run `sinter scip`",
-            indexable_languages.join(", ")
+            "compiler index missing for configured {} project(s); run `sinter scip`",
+            indexable_languages
+                .iter()
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    } else if scip_state == "missing" && !indexing_projects.is_empty() {
+        limitations.push(
+            "compiler index missing for configured projects, but their indexers are unavailable; inspect compiler_index.projects for install guidance"
+                .to_string(),
+        );
+    } else if scip_state == "missing" && !unconfigured_languages.is_empty() {
+        limitations.push(format!(
+            "compiler index missing for {} source files, but no configured SCIP project was detected; no indexing command is recommended",
+            unconfigured_languages.join(", ")
+        ));
+    } else if scip_state == "stale" && runnable_indexing {
+        limitations.push(format!(
+            "compiler index is stale ({stale_inputs} newer source/config inputs); run `sinter scip`"
+        ));
+    } else if scip_state == "stale" && unavailable_indexing {
+        limitations.push(format!(
+            "compiler index is stale ({stale_inputs} newer source/config inputs), but the required indexers are unavailable; inspect compiler_index.projects for install guidance"
         ));
     } else if scip_state == "stale" {
         limitations.push(format!(
-            "compiler index is stale ({stale_inputs} newer source/config inputs); run `sinter scip`"
+            "compiler index is stale ({stale_inputs} newer source/config inputs), but no configured SCIP project needs a runnable refresh"
         ));
     }
     if !health.failed_files.is_empty() {
@@ -273,8 +333,42 @@ pub fn negative_json(repo: &Path, store: &Store) -> Result<serde_json::Value> {
         ));
     }
 
+    let completeness = if scip_state == "fresh"
+        && health.failed_files.is_empty()
+        && health.syntax_error_files.is_empty()
+        && actionable == 0
+    {
+        "complete_for_indexed_snapshot"
+    } else {
+        "partial"
+    };
+    let available_sources = [
+        ("structural", "available", "certain"),
+        ("scope", "available", "possible"),
+        ("import", "available", "possible"),
+        ("dynamic", "available", "possible"),
+        (
+            "scip",
+            if scip_state == "fresh" {
+                "available"
+            } else {
+                scip_state
+            },
+            "certain",
+        ),
+    ]
+    .into_iter()
+    .map(|(kind, status, certainty)| {
+        serde_json::json!({
+            "kind": kind,
+            "status": status,
+            "certainty": certainty,
+        })
+    })
+    .collect::<Vec<_>>();
+
     Ok(serde_json::json!({
-        "status": "not_proven",
+        "completeness": completeness,
         "conclusive": false,
         "snapshot": {
             "head": head,
@@ -285,8 +379,10 @@ pub fn negative_json(repo: &Path, store: &Store) -> Result<serde_json::Value> {
         },
         "compiler_index": {
             "state": scip_state,
-            "indexable_languages": indexable_languages,
+            "indexable_languages": indexable_languages.into_iter().collect::<Vec<_>>(),
             "stale_inputs": stale_inputs,
+            "projects": indexing_projects,
+            "unconfigured_languages": unconfigured_languages,
         },
         "graph": {
             "unresolved_references": unresolved.len(),
@@ -297,55 +393,257 @@ pub fn negative_json(repo: &Path, store: &Store) -> Result<serde_json::Value> {
             "unindexed_files": health.failed_files.keys().collect::<Vec<_>>(),
             "excluded_derived_roots": crate::corpus::DERIVED_ROOTS,
         },
+        "available_sources": available_sources,
         "limitations": limitations,
     }))
 }
 
-pub fn print_negative(repo: &Path, store: &Store) -> Result<()> {
-    let coverage = negative_json(repo, store)?;
-    println!("  status: not proven (graph coverage is not an absence proof)");
+fn filter_json(filter: &EdgeFilter) -> serde_json::Value {
+    let relation_values = filter
+        .relations
+        .as_ref()
+        .map(|relations| {
+            relations
+                .iter()
+                .map(|relation| relation.as_str())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| {
+            [
+                Relation::Calls,
+                Relation::Uses,
+                Relation::Imports,
+                Relation::Implements,
+                Relation::Extends,
+            ]
+            .into_iter()
+            .map(Relation::as_str)
+            .collect()
+        });
+    let evidence_values = filter
+        .evidence
+        .as_ref()
+        .map(|evidence| {
+            evidence
+                .iter()
+                .map(|item| item.as_str())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| {
+            [
+                Evidence::Structural,
+                Evidence::Scope,
+                Evidence::Import,
+                Evidence::Scip,
+                Evidence::Declared,
+                Evidence::Dynamic,
+            ]
+            .into_iter()
+            .map(Evidence::as_str)
+            .collect()
+        });
+    let scope_values = filter
+        .scopes
+        .as_ref()
+        .map(|scopes| {
+            scopes
+                .iter()
+                .map(|scope| scope.as_str())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| {
+            sinter_core::CorpusScope::ALL
+                .into_iter()
+                .map(sinter_core::CorpusScope::as_str)
+                .collect()
+        });
+    serde_json::json!({
+        "relations": {
+            "mode": if filter.relations.is_some() { "restricted" } else { "all_dependencies" },
+            "values": relation_values,
+        },
+        "evidence": {
+            "mode": if filter.evidence.is_some() { "restricted" } else { "all_available" },
+            "values": evidence_values,
+        },
+        "min_confidence": if filter.min_confidence == Some(Confidence::Certain) {
+            "certain"
+        } else {
+            "any"
+        },
+        "scope": {
+            "mode": if filter.scopes.is_some() { "restricted" } else { "all" },
+            "values": scope_values,
+        },
+    })
+}
+
+/// Machine-readable trust envelope carried by every traversal answer.
+pub fn traversal_json(
+    repo: &Path,
+    store: &Store,
+    filter: &EdgeFilter,
+    evidence: TraversalEvidence,
+    found: bool,
+) -> Result<serde_json::Value> {
+    let mut coverage = repository_coverage(repo, store)?;
+    coverage["status"] = serde_json::json!(if found { "found" } else { "not_proven" });
+    coverage["filters"] = filter_json(filter);
+    coverage["evidence"] = serde_json::json!({
+        "count_scope": "all_matches_before_limit",
+        "certain": {"results": evidence.certain},
+        "possible": {"results": evidence.possible},
+        "unresolved": {
+            "matching_query": evidence.unresolved,
+            "repository_total": coverage["graph"]["unresolved_references"],
+            "actionable": coverage["graph"]["actionable_unresolved"],
+        },
+    });
+    Ok(coverage)
+}
+
+pub fn print_traversal(
+    repo: &Path,
+    store: &Store,
+    filter: &EdgeFilter,
+    evidence: TraversalEvidence,
+    found: bool,
+) -> Result<()> {
+    let coverage = traversal_json(repo, store, filter, evidence, found)?;
+    println!(
+        "  coverage: {} ({} certain, {} possible, {} unresolved matching query; never runtime proof)",
+        coverage["completeness"].as_str().unwrap_or("partial"),
+        coverage["evidence"]["certain"]["results"]
+            .as_u64()
+            .unwrap_or(0),
+        coverage["evidence"]["possible"]["results"]
+            .as_u64()
+            .unwrap_or(0),
+        coverage["evidence"]["unresolved"]["matching_query"]
+            .as_u64()
+            .unwrap_or(0),
+    );
+    let relations = coverage["filters"]["relations"]["values"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>()
+        .join(",");
+    println!(
+        "  filters: relations={relations} min_confidence={} scope={}",
+        coverage["filters"]["min_confidence"]
+            .as_str()
+            .unwrap_or("any"),
+        coverage["filters"]["scope"]["values"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
     if let Some(items) = coverage["limitations"].as_array() {
         for item in items {
             if let Some(text) = item.as_str() {
-                println!("  coverage: {text}");
+                println!("  gap: {text}");
             }
         }
     }
     Ok(())
 }
 
-pub fn print_workspace_negative(workspace: &crate::workspace::Workspace) -> Result<()> {
-    println!("  status: not proven (workspace graph coverage is not an absence proof)");
+/// Aggregate member coverage without flattening away which repository owns
+/// a gap. Boundary evidence is declared separately because it comes from the
+/// workspace manifest/link store, not a member compiler index.
+pub fn workspace_json(
+    workspace: &crate::workspace::Workspace,
+    filter: &EdgeFilter,
+    evidence: TraversalEvidence,
+    found: bool,
+) -> Result<serde_json::Value> {
+    let mut members = serde_json::Map::new();
+    let mut gaps = Vec::new();
+    let mut partial = false;
     for (name, repo) in &workspace.members {
-        let Ok(store) = Store::open(crate::pipeline::db_path(repo)) else {
-            println!("  coverage: {name}: graph unavailable");
-            continue;
-        };
-        let coverage = negative_json(repo, &store)?;
-        println!(
-            "  coverage: {name}: SCIP {}, {} unresolved ({} actionable), dirty {}",
-            coverage["compiler_index"]["state"]
-                .as_str()
-                .unwrap_or("unknown"),
-            coverage["graph"]["unresolved_references"]
-                .as_u64()
-                .unwrap_or(0),
-            coverage["graph"]["actionable_unresolved"]
-                .as_u64()
-                .unwrap_or(0),
-            coverage["snapshot"]["dirty"]
-                .as_bool()
-                .map_or("unknown".to_string(), |dirty| dirty.to_string()),
-        );
+        let store = Store::open(crate::pipeline::db_path(repo))?;
+        let member = repository_coverage(repo, &store)?;
+        partial |= member["completeness"] == "partial";
+        if let Some(items) = member["limitations"].as_array() {
+            gaps.extend(items.iter().filter_map(|item| {
+                item.as_str()
+                    .map(|text| serde_json::json!({"member": name, "message": text}))
+            }));
+        }
+        members.insert(name.clone(), member);
+    }
+    Ok(serde_json::json!({
+        "status": if found { "found" } else { "not_proven" },
+        "completeness": if partial { "partial" } else { "complete_for_indexed_snapshot" },
+        "conclusive": false,
+        "filters": filter_json(filter),
+        "evidence": {
+            "count_scope": "all_matches_before_limit",
+            "certain": {"results": evidence.certain},
+            "possible": {"results": evidence.possible},
+            "unresolved": {"matching_query": evidence.unresolved},
+        },
+        "available_sources": {
+            "member_graphs": "available",
+            "boundary_imports": "available",
+            "declared_manifest_links": "available",
+        },
+        "members": members,
+        "gaps": gaps,
+        "limitations": [
+            "a workspace graph path is bounded by member extraction/index coverage and declared boundary links",
+            "undeclared runtime coupling cannot be inferred as an exhaustive dependency path",
+        ],
+    }))
+}
+
+pub fn print_workspace_traversal(
+    workspace: &crate::workspace::Workspace,
+    filter: &EdgeFilter,
+    evidence: TraversalEvidence,
+    found: bool,
+) -> Result<()> {
+    let coverage = workspace_json(workspace, filter, evidence, found)?;
+    println!(
+        "  coverage: {} ({} certain, {} possible, {} unresolved matching query; never runtime proof)",
+        coverage["completeness"].as_str().unwrap_or("partial"),
+        coverage["evidence"]["certain"]["results"]
+            .as_u64()
+            .unwrap_or(0),
+        coverage["evidence"]["possible"]["results"]
+            .as_u64()
+            .unwrap_or(0),
+        coverage["evidence"]["unresolved"]["matching_query"]
+            .as_u64()
+            .unwrap_or(0),
+    );
+    if let Some(gaps) = coverage["gaps"].as_array() {
+        for gap in gaps {
+            println!(
+                "  gap: {}: {}",
+                gap["member"].as_str().unwrap_or("unknown"),
+                gap["message"].as_str().unwrap_or("coverage unavailable")
+            );
+        }
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use sinter_core::{Reference, Relation, Span, UnresolvedReason, UnresolvedReference};
+    use std::collections::BTreeSet;
 
-    use super::{Classifier, UnresolvedCategory};
+    use sinter_core::{
+        Confidence, Evidence, Reference, Relation, Span, UnresolvedReason, UnresolvedReference,
+    };
+    use sinter_store::{EdgeFilter, Store};
+
+    use super::{Classifier, TraversalEvidence, UnresolvedCategory, traversal_json};
 
     fn item(name: &str, path: Option<&str>, reason: UnresolvedReason) -> UnresolvedReference {
         UnresolvedReference {
@@ -408,6 +706,65 @@ mod tests {
         assert_eq!(
             c.classify(&item("walk", None, UnresolvedReason::SyntaxOnly)),
             UnresolvedCategory::AmbiguousInternalTarget
+        );
+    }
+
+    #[test]
+    fn traversal_evidence_never_folds_possible_into_certain() {
+        let evidence = TraversalEvidence::from_confidences(
+            [
+                Confidence::Certain,
+                Confidence::Inferred,
+                Confidence::Inferred,
+            ],
+            4,
+        );
+        assert_eq!(evidence.certain, 1);
+        assert_eq!(evidence.possible, 2);
+        assert_eq!(evidence.unresolved, 4);
+    }
+
+    #[test]
+    fn positive_scip_backed_result_is_certain_but_only_snapshot_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::create_dir_all(repo.join(".sinter")).unwrap();
+        std::fs::write(
+            repo.join("Cargo.toml"),
+            "[package]\nname='fixture'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join("src/lib.rs"), "pub fn source() {}\n").unwrap();
+        std::fs::write(repo.join(".sinter/index.scip"), []).unwrap();
+        let store = Store::create(repo.join(".sinter/graph.redb")).unwrap();
+        let filter = EdgeFilter {
+            evidence: Some(BTreeSet::from([Evidence::Scip])),
+            min_confidence: Some(Confidence::Certain),
+            relations: Some(BTreeSet::from([Relation::Calls])),
+            scopes: None,
+        };
+        let coverage = traversal_json(
+            repo,
+            &store,
+            &filter,
+            TraversalEvidence::from_confidences([Confidence::Certain], 0),
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(coverage["status"], "found");
+        assert_eq!(coverage["completeness"], "complete_for_indexed_snapshot");
+        assert_eq!(coverage["conclusive"], false);
+        assert_eq!(coverage["evidence"]["certain"]["results"], 1);
+        assert_eq!(coverage["evidence"]["possible"]["results"], 0);
+        assert_eq!(coverage["filters"]["evidence"]["values"][0], "scip");
+        assert!(
+            coverage["available_sources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|source| source["kind"] == "scip" && source["status"] == "available")
         );
     }
 }

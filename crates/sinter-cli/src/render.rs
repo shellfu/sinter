@@ -10,9 +10,14 @@ use sinter_core::{Edge, Node};
 use sinter_resolve::qualified_of;
 
 /// One node in the shape the MCP tools use — `--json` mirrors it.
+///
+/// `id` is the durable agent handle. The byte-offset identity remains
+/// available as `snapshot_id` for diagnostics and explicit relocation flows.
 pub fn node_json(node: &Node) -> Value {
     json!({
-        "id": node.id.as_str(),
+        "id": node.symbol_key().as_str(),
+        "snapshot_id": node.id.as_str(),
+        "symbol_key": node.symbol_key().as_str(),
         "qualified": qualified_of(node.id.as_str()),
         "name": node.name,
         "kind": node.kind.as_str(),

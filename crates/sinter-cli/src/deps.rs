@@ -5,7 +5,7 @@ use sinter_resolve::qualified_of;
 
 use sinter_store::EdgeFilter;
 
-use crate::lookup::{open_store, unique_symbol};
+use crate::lookup::{ensure_snapshot, open_store, unique_symbol};
 use crate::render::node_json;
 
 /// `sinter deps`: forward blast radius — everything the symbol transitively
@@ -18,10 +18,19 @@ pub fn run(
     max_depth: usize,
     limit: usize,
     json: bool,
+    if_snapshot: Option<&str>,
 ) -> Result<bool> {
     let store = open_store(repo)?;
+    let snapshot = ensure_snapshot(&store, if_snapshot)?;
     let node = unique_symbol(&store, symbol)?;
     let mut reached = store.dependencies(&node.id, filter, max_depth)?;
+    let scopes = store.file_scopes()?;
+    let scope_of = |file: &str| {
+        scopes
+            .get(file)
+            .copied()
+            .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(file))
+    };
     let total = reached.len();
     let root = crate::pipeline::discover_root(repo);
     // Honest-empty signal: unresolved refs inside this definition mean the
@@ -31,6 +40,10 @@ pub fn run(
         .iter()
         .filter(|r| r.enclosing.as_ref() == Some(&node.id))
         .count();
+    let evidence = crate::coverage::TraversalEvidence::from_confidences(
+        reached.iter().map(|item| item.via.confidence),
+        unresolved,
+    );
     if json {
         // Same shape as the MCP `deps` tool (terse entries, like affected).
         let entries: Vec<serde_json::Value> = reached
@@ -41,7 +54,12 @@ pub fn run(
                     "s": qualified_of(r.node.id.as_str()),
                     "k": r.node.kind.as_str(),
                     "f": r.node.file,
+                    "scope": scope_of(&r.node.file).as_str(),
                     "e": format!("{}/{}", r.via.relation.as_str(), r.via.evidence.as_str()),
+                    "c": match r.via.confidence {
+                        sinter_core::Confidence::Certain => "certain",
+                        sinter_core::Confidence::Inferred => "possible",
+                    },
                     "d": r.depth,
                 });
                 let site = crate::render::site_json(&root, &r.via);
@@ -58,8 +76,11 @@ pub fn run(
         let mut pairs: Vec<_> = counts.into_iter().collect();
         pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         pairs.truncate(10);
+        let mut symbol_json = node_json(&node);
+        symbol_json["scope"] = serde_json::json!(scope_of(&node.file).as_str());
         let mut out = serde_json::json!({
-            "symbol": node_json(&node),
+            "symbol": symbol_json,
+            "snapshot": snapshot,
             "total": total,
             "unresolved_refs_in_symbol": unresolved,
             "by_file": pairs,
@@ -68,10 +89,9 @@ pub fn run(
         if total > limit {
             out["truncated"] = serde_json::json!(total - limit);
         }
-        if total == 0 {
-            out["coverage"] = crate::coverage::negative_json(&root, &store)?;
-        }
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        out["coverage"] =
+            crate::coverage::traversal_json(&root, &store, filter, evidence, total > 0)?;
+        crate::agent_protocol::write_json(&out)?;
         return Ok(total > 0);
     }
     reached.truncate(limit);
@@ -138,8 +158,7 @@ pub fn run(
             node.name
         );
     }
-    if total == 0 {
-        crate::coverage::print_negative(&root, &store)?;
-    }
+    println!("  snapshot: {snapshot}");
+    crate::coverage::print_traversal(&root, &store, filter, evidence, total > 0)?;
     Ok(total > 0)
 }

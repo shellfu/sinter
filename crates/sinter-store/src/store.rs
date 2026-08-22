@@ -5,7 +5,9 @@ use redb::{
     Database, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable, ReadableTable,
     ReadableTableMetadata, TableDefinition,
 };
-use sinter_core::{Edge, FileFacts, Graph, Node, NodeId, Reference, UnresolvedReference};
+use sinter_core::{
+    CorpusScope, Edge, FileFacts, Graph, Node, NodeId, Reference, UnresolvedReference,
+};
 
 use crate::error::StoreError;
 
@@ -27,6 +29,9 @@ pub(crate) const UNRESOLVED: MultimapTableDefinition<&str, &[u8]> =
 pub(crate) const FILE_FACTS: TableDefinition<&str, &[u8]> = TableDefinition::new("file_facts");
 /// file -> content hash, decoded without touching the facts blob.
 pub(crate) const FILE_HASH: TableDefinition<&str, &str> = TableDefinition::new("file_hash");
+/// Repo-relative file -> corpus role. Nodes inherit their file's scope at
+/// query time, avoiding duplicated metadata in every node blob.
+pub(crate) const FILE_SCOPE: TableDefinition<&str, &str> = TableDefinition::new("file_scope");
 /// reference name -> files containing a reference with that name; the
 /// resolution invalidation index.
 pub(crate) const NAME_REFS: MultimapTableDefinition<&str, &str> =
@@ -64,8 +69,9 @@ pub(crate) const RESOLVE_META: TableDefinition<&str, &str> = TableDefinition::ne
 /// `Store::clear_pending_delta`). Additive table — absent in older dbs,
 /// read as empty.
 pub(crate) const PENDING: TableDefinition<&str, &[u8]> = TableDefinition::new("pending_delta");
-// v9: FileFacts gained declared fields and unresolved rows gained reasons.
-const SCHEMA_VERSION: u32 = 9;
+// v10: explicit per-file corpus scope. Older graphs are derived state and
+// rebuild so every query observes classified metadata, never a mixed corpus.
+const SCHEMA_VERSION: u32 = 10;
 
 /// Per-file freshness record: content hash plus the stat identity it was
 /// hashed at. On Unix the identity combines modification and change time,
@@ -186,6 +192,7 @@ impl Store {
             txn.open_table(NODES)?;
             txn.open_table(FILE_FACTS)?;
             txn.open_table(FILE_HASH)?;
+            txn.open_table(FILE_SCOPE)?;
             txn.open_multimap_table(OUT_EDGES)?;
             txn.open_multimap_table(IN_EDGES)?;
             txn.open_multimap_table(UNRESOLVED)?;
@@ -225,10 +232,15 @@ impl Store {
         let txn = self.db.begin_write()?;
         {
             let mut nodes = txn.open_table(NODES)?;
+            let mut scopes = txn.open_table(FILE_SCOPE)?;
             let mut out = txn.open_multimap_table(OUT_EDGES)?;
             let mut inn = txn.open_multimap_table(IN_EDGES)?;
             for node in graph.nodes() {
                 nodes.insert(node.id.as_str(), postcard::to_allocvec(node)?.as_slice())?;
+                scopes.insert(
+                    node.file.as_str(),
+                    CorpusScope::classify_path(&node.file).as_str(),
+                )?;
             }
             for edge in graph.edges() {
                 let bytes = postcard::to_allocvec(edge)?;
@@ -473,6 +485,57 @@ impl Store {
             out.push((k.value().to_string(), FileStamp::decode(v.value())));
         }
         Ok(out)
+    }
+
+    /// Persist repository classification overrides for already indexed
+    /// files. Clean builds remain write-free when every row is unchanged.
+    pub fn set_file_scopes(&self, rows: &[(String, CorpusScope)]) -> Result<(), StoreError> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let existing = self.file_scopes()?;
+        if rows
+            .iter()
+            .all(|(file, scope)| existing.get(file) == Some(scope))
+        {
+            return Ok(());
+        }
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(FILE_SCOPE)?;
+            for (file, scope) in rows {
+                table.insert(file.as_str(), scope.as_str())?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Complete persisted scope map. Unknown legacy/malformed values fall
+    /// back to conservative path classification instead of hiding nodes.
+    pub fn file_scopes(&self) -> Result<HashMap<String, CorpusScope>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(FILE_SCOPE)?;
+        let mut scopes = HashMap::new();
+        for entry in table.iter()? {
+            let (file, scope) = entry?;
+            let file = file.value().to_string();
+            scopes.insert(
+                file.clone(),
+                CorpusScope::from_str_opt(scope.value())
+                    .unwrap_or_else(|| CorpusScope::classify_path(&file)),
+            );
+        }
+        Ok(scopes)
+    }
+
+    pub fn file_scope(&self, file: &str) -> Result<CorpusScope, StoreError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(FILE_SCOPE)?;
+        Ok(table
+            .get(file)?
+            .and_then(|guard| CorpusScope::from_str_opt(guard.value()))
+            .unwrap_or_else(|| CorpusScope::classify_path(file)))
     }
 
     pub fn facts(&self, file: &str) -> Result<Option<FileFacts>, StoreError> {

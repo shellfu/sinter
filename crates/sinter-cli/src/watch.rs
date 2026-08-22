@@ -23,7 +23,12 @@ enum Batch {
 // deep monorepo's storms ever get through.
 fn ignore_matcher(repo: &Path) -> Gitignore {
     let mut builder = GitignoreBuilder::new(repo);
-    for name in [".gitignore", ".ignore", ".git/info/exclude"] {
+    for name in [
+        ".gitignore",
+        ".ignore",
+        ".sinterignore",
+        ".git/info/exclude",
+    ] {
         builder.add(repo.join(name));
     }
     builder.build().unwrap_or_else(|_| Gitignore::empty())
@@ -34,6 +39,9 @@ fn ignore_matcher(repo: &Path) -> Gitignore {
 /// gitignore rules apply to the path and its parents.
 fn triggers_rebuild(repo: &Path, matcher: &Gitignore, path: &Path) -> bool {
     let rel = path.strip_prefix(repo).unwrap_or(path);
+    if matches!(rel.to_str(), Some(".sinterignore" | ".sinter.toml")) {
+        return true;
+    }
     if rel
         .components()
         .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
@@ -89,6 +97,16 @@ pub fn run(repo: &Path) -> Result<()> {
         }
         paths.sort();
         paths.dedup();
+        if paths.iter().any(|path| {
+            path.strip_prefix(&repo)
+                .ok()
+                .and_then(Path::to_str)
+                .is_some_and(|rel| matches!(rel, ".sinterignore" | ".sinter.toml"))
+        }) {
+            // Policy edits can reclassify or remove any file, so an explicit
+            // changed-set cannot bound the required update.
+            full = true;
+        }
         paths.retain(|p| triggers_rebuild(&repo, &matcher, p));
         if !full && paths.is_empty() {
             continue;
@@ -140,5 +158,11 @@ mod tests {
             &matcher,
             &repo.join(".sinter/graph.redb")
         ));
+        assert!(triggers_rebuild(
+            repo,
+            &matcher,
+            &repo.join(".sinterignore")
+        ));
+        assert!(triggers_rebuild(repo, &matcher, &repo.join(".sinter.toml")));
     }
 }

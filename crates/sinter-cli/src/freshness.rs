@@ -105,7 +105,12 @@ fn affects_graph(repo: &Path, path: &Path) -> bool {
     }
     // Hidden source trees are ignored by the corpus walker. Root ignore
     // files are policy inputs and therefore do invalidate the generation.
-    if first.starts_with('.') && !matches!(first.as_ref(), ".gitignore" | ".ignore") {
+    if first.starts_with('.')
+        && !matches!(
+            first.as_ref(),
+            ".gitignore" | ".ignore" | ".sinterignore" | ".sinter.toml"
+        )
+    {
         return false;
     }
     true
@@ -123,5 +128,7 @@ mod tests {
         assert!(affects_graph(repo, &repo.join(".sinter/index.scip")));
         assert!(affects_graph(repo, &repo.join("src/lib.rs")));
         assert!(affects_graph(repo, &repo.join(".gitignore")));
+        assert!(affects_graph(repo, &repo.join(".sinterignore")));
+        assert!(affects_graph(repo, &repo.join(".sinter.toml")));
     }
 }

@@ -8,7 +8,7 @@ use anyhow::Result;
 use sinter_core::{Edge, Evidence, Relation, SymbolKind};
 use sinter_resolve::qualified_of;
 
-use crate::lookup::{open_store, unique_symbol};
+use crate::lookup::{ensure_snapshot, open_store, unique_symbol};
 use crate::render::{ellipsize, line_of, location, node_json, site_json, site_location};
 
 const EXEMPLARS: usize = 8;
@@ -42,10 +42,12 @@ fn evidence_tally(edges: &[&Edge]) -> String {
 }
 
 /// Ok(true) when the symbol resolved (grep-style exit codes).
-pub fn run(repo: &Path, symbol: &str, json: bool) -> Result<bool> {
+pub fn run(repo: &Path, symbol: &str, json: bool, if_snapshot: Option<&str>) -> Result<bool> {
     let repo = repo.canonicalize()?;
     let store = open_store(&repo)?;
+    let snapshot = ensure_snapshot(&store, if_snapshot)?;
     let node = unique_symbol(&store, symbol)?;
+    let scope = store.file_scope(&node.file)?;
     if json {
         // Same shape as the MCP `show` tool.
         let edge_json = |e: &Edge, other: &str| {
@@ -66,20 +68,20 @@ pub fn run(repo: &Path, symbol: &str, json: bool) -> Result<bool> {
             .iter()
             .map(|e| edge_json(e, e.src.as_str()))
             .collect();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "symbol": node_json(&node),
-                "outgoing": out,
-                "incoming": inn,
-            }))?
-        );
+        let mut symbol_json = node_json(&node);
+        symbol_json["scope"] = serde_json::json!(scope.as_str());
+        crate::agent_protocol::write_json(&serde_json::json!({
+            "symbol": symbol_json,
+            "snapshot": snapshot,
+            "outgoing": out,
+            "incoming": inn,
+        }))?;
         return Ok(true);
     }
     let line = line_of(&repo, &node.file, node.span.start);
 
     println!(
-        "{} {}    {} ({}..{})",
+        "{} {}    {} ({}..{}) [{scope}]",
         node.kind.as_str(),
         qualified_of(node.id.as_str()),
         location(&repo, &node.file, line),

@@ -69,7 +69,9 @@ fn call(id: u64, args: serde_json::Value) -> String {
 }
 
 fn body(response: &serde_json::Value) -> &str {
-    response["result"]["content"][0]["text"].as_str().unwrap()
+    response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("missing MCP text body: {response}"))
 }
 
 #[test]
@@ -109,6 +111,20 @@ fn affected_is_terse_capped_and_batchable() {
     // Direct callers stated apart from the transitive total (CLI parity).
     assert!(v["direct"].as_u64().unwrap() >= 1, "{text}");
     assert!(v["direct_files"].as_u64().unwrap() >= 1, "{text}");
+    assert!(v["snapshot"].is_string(), "{text}");
+    assert_eq!(v["coverage"]["status"], "found", "{text}");
+    assert_eq!(v["coverage"]["completeness"], "partial", "{text}");
+    assert!(
+        v["coverage"]["evidence"]["possible"]["results"]
+            .as_u64()
+            .unwrap()
+            >= 1,
+        "{text}"
+    );
+    assert_eq!(
+        responses[0]["result"]["structuredContent"]["data"], v,
+        "CLI-compatible payload must be the MCP agent contract data"
+    );
 
     // (2) limit caps dependents and reports the omission.
     let v: serde_json::Value = serde_json::from_str(body(&responses[1])).unwrap();
@@ -120,6 +136,7 @@ fn affected_is_terse_capped_and_batchable() {
     let results = v["results"].as_array().unwrap();
     assert_eq!(results.len(), 2, "{v}");
     assert!(results.iter().all(|r| r.get("error").is_none()), "{v}");
+    assert!(results.iter().all(|r| r["coverage"].is_object()), "{v}");
 
     // (4) A missed path explains itself (CLI parity): Base never reaches
     // A3, so the answer carries forward reach, who reaches A3, and the
@@ -130,7 +147,12 @@ fn affected_is_terse_capped_and_batchable() {
     assert!(v["miss"]["reached_by"].is_array(), "{v}");
     assert!(v["miss"]["excluded_by_filter"].is_u64(), "{v}");
     assert_eq!(v["coverage"]["status"], "not_proven", "{v}");
+    assert_eq!(v["coverage"]["completeness"], "partial", "{v}");
     assert_eq!(v["coverage"]["conclusive"], false, "{v}");
+    assert_eq!(
+        v["coverage"]["filters"]["relations"]["mode"], "all_dependencies",
+        "{v}"
+    );
     assert_eq!(v["coverage"]["compiler_index"]["state"], "missing", "{v}");
 }
 
@@ -147,6 +169,7 @@ fn map_tool_and_error_hints() {
             call_tool(2, "map", serde_json::json!({})),
             call_tool(3, "show", serde_json::json!({"symbol": "NoSuchThingZz"})),
             call_tool(4, "overlap", serde_json::json!({"ranges": ["only-one"]})),
+            call_tool(5, "map", serde_json::json!({"scope": ["all"]})),
         ],
     );
 
@@ -169,9 +192,20 @@ fn map_tool_and_error_hints() {
     ] {
         assert!(names.contains(&expected), "missing {expected}: {names:?}");
     }
+    let map_schema = responses[0]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "map")
+        .unwrap();
+    assert!(
+        map_schema["inputSchema"]["properties"]["scope"].is_object(),
+        "{map_schema}"
+    );
 
     // map: totals, modules, and hubs (Base has four dependents).
     let v: serde_json::Value = serde_json::from_str(body(&responses[1])).unwrap();
+    assert_eq!(v["scope"], serde_json::json!(["production", "docs"]));
     assert!(v["nodes"].as_u64().unwrap() > 0, "{v}");
     assert!(!v["modules"].as_array().unwrap().is_empty(), "{v}");
     assert!(
@@ -195,6 +229,9 @@ fn map_tool_and_error_hints() {
     // Overlap needs at least two ranges.
     let msg = responses[3]["error"]["message"].as_str().unwrap();
     assert!(msg.contains("two rev-ranges"), "{msg}");
+
+    let all: serde_json::Value = serde_json::from_str(body(&responses[4])).unwrap();
+    assert_eq!(all["scope"].as_array().unwrap().len(), 7, "{all}");
 }
 
 /// Two identical rev ranges collide on every touched symbol: risk high.
@@ -289,4 +326,63 @@ fn server_refreshes_after_source_event() {
     assert!(found, "server never ingested the watched source edit");
     drop(stdin);
     child.wait().unwrap();
+}
+
+#[test]
+fn mcp_reports_snapshot_staleness_and_handle_relocation_as_typed_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = build_repo(dir.path());
+    let initial = serve(
+        &repo,
+        &[call_tool(1, "query", serde_json::json!({"symbol": "Base"}))],
+    );
+    let query: serde_json::Value = serde_json::from_str(body(&initial[0])).unwrap();
+    let snapshot = query["snapshot"].as_str().unwrap().to_string();
+    let id = query["results"][0]["snapshot_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let symbol_key = query["results"][0]["symbol_key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(query["results"][0]["id"], symbol_key);
+
+    let source = std::fs::read_to_string(repo.join("lib.go")).unwrap();
+    std::fs::write(repo.join("lib.go"), format!("// offset shift\n{source}")).unwrap();
+
+    let responses = serve(
+        &repo,
+        &[
+            call_tool(2, "show", serde_json::json!({"symbol": id})),
+            call_tool(
+                3,
+                "show",
+                serde_json::json!({
+                    "symbol": symbol_key,
+                    "if_snapshot": snapshot,
+                }),
+            ),
+        ],
+    );
+    assert_eq!(
+        responses[0]["error"]["data"]["error"]["code"], "relocated_handle",
+        "{}",
+        responses[0]
+    );
+    assert!(
+        responses[0]["error"]["data"]["error"]["candidates"][0]["symbol_key"].is_string(),
+        "{}",
+        responses[0]
+    );
+    assert_eq!(
+        responses[1]["error"]["data"]["error"]["code"], "stale_snapshot",
+        "{}",
+        responses[1]
+    );
+    assert!(
+        responses[1]["error"]["data"]["error"]["actual_snapshot"].is_string(),
+        "{}",
+        responses[1]
+    );
 }

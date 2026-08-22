@@ -5,33 +5,64 @@ use sinter_resolve::qualified_of;
 
 use sinter_store::EdgeFilter;
 
-use crate::lookup::{open_store, unique_symbol};
+use crate::lookup::{ensure_snapshot, ensure_snapshot_token, open_store, unique_symbol};
 
 /// `sinter path`: how one symbol reaches another. Ok(true) when a route
 /// exists (grep-style exit codes).
-pub fn run(repo: &Path, from: &str, to: &str, filter: &EdgeFilter, json: bool) -> Result<bool> {
+pub fn run(
+    repo: &Path,
+    from: &str,
+    to: &str,
+    filter: &EdgeFilter,
+    json: bool,
+    if_snapshot: Option<&str>,
+) -> Result<bool> {
     let store = open_store(repo)?;
+    let snapshot = ensure_snapshot(&store, if_snapshot)?;
     let from_node = unique_symbol(&store, from)?;
     let to_node = unique_symbol(&store, to)?;
     let path = store.shortest_path(&from_node.id, &to_node.id, filter)?;
+    let scopes = store.file_scopes()?;
+    let scope_of_id = |id: &sinter_core::NodeId| {
+        let file = id
+            .as_str()
+            .split_once('#')
+            .map_or(id.as_str(), |(file, _)| file);
+        scopes
+            .get(file)
+            .copied()
+            .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(file))
+    };
     let root = crate::pipeline::discover_root(repo);
+    let evidence = crate::coverage::TraversalEvidence::from_confidences(
+        path.iter().flatten().map(|edge| edge.confidence),
+        0,
+    );
     if json {
         // Same shape as the MCP `path` tool.
         let mut out = serde_json::json!({
+            "snapshot": snapshot,
             "found": path.is_some(),
             "steps": path.iter().flatten().map(|e| serde_json::json!({
                 "from": qualified_of(e.src.as_str()),
                 "to": qualified_of(e.dst.as_str()),
+                "from_scope": scope_of_id(&e.src).as_str(),
+                "to_scope": scope_of_id(&e.dst).as_str(),
                 "relation": e.relation.as_str(),
                 "evidence": e.evidence.as_str(),
+                "confidence": match e.confidence {
+                    sinter_core::Confidence::Certain => "certain",
+                    sinter_core::Confidence::Inferred => "possible",
+                },
                 "site": crate::render::site_json(&root, e),
             })).collect::<Vec<_>>(),
         });
         if path.is_none() {
             out["miss"] = miss_json(&root, &explain_miss(&store, &from_node, &to_node, filter)?);
-            out["coverage"] = crate::coverage::negative_json(&root, &store)?;
         }
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        out["coverage"] =
+            crate::coverage::traversal_json(&root, &store, filter, evidence, path.is_some())?;
+        crate::agent_protocol::write_json(&out)?;
         return Ok(path.is_some());
     }
     match path {
@@ -47,7 +78,8 @@ pub fn run(repo: &Path, from: &str, to: &str, filter: &EdgeFilter, json: bool) -
                 &to_node,
                 &explain_miss(&store, &from_node, &to_node, filter)?,
             );
-            crate::coverage::print_negative(&root, &store)?;
+            println!("  snapshot: {snapshot}");
+            crate::coverage::print_traversal(&root, &store, filter, evidence, false)?;
             Ok(false)
         }
         Some(edges) => {
@@ -66,6 +98,8 @@ pub fn run(repo: &Path, from: &str, to: &str, filter: &EdgeFilter, json: bool) -
                 );
             }
             println!();
+            println!("  snapshot: {snapshot}");
+            crate::coverage::print_traversal(&root, &store, filter, evidence, true)?;
             Ok(true)
         }
     }
@@ -78,23 +112,34 @@ pub fn run_workspace(
     from: &str,
     to: &str,
     filter: &EdgeFilter,
+    if_snapshot: Option<&str>,
 ) -> Result<bool> {
     let ws = crate::workspace::load(manifest)?;
+    let snapshot = crate::workspace::snapshot_token(&ws)?;
+    ensure_snapshot_token(if_snapshot, &snapshot)?;
     let (from_member, from_node) = crate::workspace::find_symbol(&ws, from)?;
     let (to_member, to_node) = crate::workspace::find_symbol(&ws, to)?;
-    match crate::workspace::shortest_path(
+    let path = crate::workspace::shortest_path(
         &ws,
         (&from_member, &from_node.id),
         (&to_member, &to_node.id),
         filter,
-    )? {
+    )?;
+    let evidence = crate::coverage::TraversalEvidence::from_confidences(
+        path.iter()
+            .flatten()
+            .map(|(_, _, _, evidence, _, _)| evidence.confidence()),
+        0,
+    );
+    match path {
         None => {
             println!(
                 "no path {from_member}:{} -> {to_member}:{}",
                 qualified_of(from_node.id.as_str()),
                 qualified_of(to_node.id.as_str())
             );
-            crate::coverage::print_workspace_negative(&ws)?;
+            println!("  snapshot: {snapshot}");
+            crate::coverage::print_workspace_traversal(&ws, filter, evidence, false)?;
             Ok(false)
         }
         Some(steps) => {
@@ -108,6 +153,8 @@ pub fn run_workspace(
                 );
             }
             println!();
+            println!("  snapshot: {snapshot}");
+            crate::coverage::print_workspace_traversal(&ws, filter, evidence, true)?;
             Ok(true)
         }
     }

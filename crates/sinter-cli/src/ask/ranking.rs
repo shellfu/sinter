@@ -5,11 +5,12 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use serde::Serialize;
-use sinter_core::{Node, Relation, SymbolKind};
+use sinter_core::{CorpusScope, Node, Relation, SymbolKind};
 use sinter_resolve::qualified_of;
 use sinter_store::Store;
 
 use super::query::{Query, identifier_tokens};
+use crate::corpus::ScopeSelection;
 
 // Scoring policy. A value change requires an evaluation or focused fixture.
 const PT_EXACT_NAME: i64 = 100;
@@ -68,6 +69,7 @@ pub(super) struct ScoreBreakdown {
 
 pub(super) struct Hit {
     pub(super) node: Node,
+    pub(super) scope: CorpusScope,
     pub(super) score: i64,
     pub(super) matched: Vec<String>,
     pub(super) channels: Vec<&'static str>,
@@ -259,7 +261,11 @@ fn gather(node: Node, query: &Query, close_ids: &[HashSet<String>]) -> Candidate
     }
 }
 
-pub(super) fn score_candidates(store: &Store, query: &Query) -> Result<Vec<Hit>> {
+pub(super) fn score_candidates(
+    store: &Store,
+    query: &Query,
+    scopes: &ScopeSelection,
+) -> Result<Vec<Hit>> {
     let terms = query.terms();
     let variants = terms
         .iter()
@@ -285,6 +291,15 @@ pub(super) fn score_candidates(store: &Store, query: &Query) -> Result<Vec<Hit>>
         }
         close_ids.push(close);
     }
+    let file_scopes = store.file_scopes()?;
+    nodes.retain(|node| {
+        scopes.contains(
+            file_scopes
+                .get(&node.file)
+                .copied()
+                .unwrap_or_else(|| CorpusScope::classify_path(&node.file)),
+        )
+    });
     nodes.sort_by(|left, right| left.id.cmp(&right.id));
     let candidate_ids = nodes.iter().map(|node| node.id.clone()).collect::<Vec<_>>();
     let incoming = store.in_edges_many(&candidate_ids)?;
@@ -404,6 +419,10 @@ pub(super) fn score_candidates(store: &Store, query: &Query) -> Result<Vec<Hit>>
         roles.sort_unstable();
         roles.dedup();
         hits.push(Hit {
+            scope: file_scopes
+                .get(&node.file)
+                .copied()
+                .unwrap_or_else(|| CorpusScope::classify_path(&node.file)),
             node,
             score,
             matched,

@@ -150,3 +150,102 @@ fn map_json_is_valid_and_structured() {
         "{parsed}"
     );
 }
+
+#[test]
+fn default_map_excludes_golden_fixture_hubs_but_all_scope_recovers_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    fixture(repo);
+    std::fs::create_dir_all(repo.join("harness/golden/case")).unwrap();
+    std::fs::write(
+        repo.join("harness/golden/case/check.ts"),
+        "export function check(): number { return 1; }\n",
+    )
+    .unwrap();
+    for name in ["one", "two", "three"] {
+        std::fs::write(
+            repo.join(format!("harness/golden/case/{name}.ts")),
+            format!(
+                "import {{ check }} from './check';\nexport function {name}(): number {{ return check(); }}\n"
+            ),
+        )
+        .unwrap();
+    }
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+
+    let (ok, default) = sinter(repo, &["map", "--json"]);
+    assert!(ok, "{default}");
+    let default: serde_json::Value = serde_json::from_str(&default).unwrap();
+    assert_eq!(default["scope"], serde_json::json!(["production", "docs"]));
+    assert!(
+        default["modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|module| module["path"] != "harness"),
+        "{default}"
+    );
+    assert!(
+        default["hubs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|hub| hub["file"] != "harness/golden/case/check.ts"),
+        "{default}"
+    );
+
+    let (ok, all) = sinter(repo, &["map", "--json", "--scope", "all"]);
+    assert!(ok, "{all}");
+    let all: serde_json::Value = serde_json::from_str(&all).unwrap();
+    assert!(
+        all["modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|module| module["path"] == "harness"),
+        "{all}"
+    );
+    assert!(
+        all["hubs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hub| hub["file"] == "harness/golden/case/check.ts" && hub["scope"] == "fixture"),
+        "{all}"
+    );
+
+    let (ok, shown) = sinter(repo, &["show", "check", "--json"]);
+    assert!(ok, "{shown}");
+    let shown: serde_json::Value = serde_json::from_str(&shown).unwrap();
+    assert_eq!(shown["symbol"]["scope"], "fixture", "{shown}");
+}
+
+#[test]
+fn repository_override_can_promote_an_exception_into_default_discovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("harness/golden/production-tool")).unwrap();
+    std::fs::write(
+        repo.join("harness/golden/production-tool/main.ts"),
+        "export function shippedTool(): number { return 1; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join(".sinter.toml"),
+        r#"
+[[scope.override]]
+pattern = "harness/golden/production-tool/**"
+scope = "production"
+"#,
+    )
+    .unwrap();
+    let (ok, build) = sinter(repo, &["build"]);
+    assert!(ok, "{build}");
+    let (ok, output) = sinter(repo, &["ask", "shipped tool", "--json"]);
+    assert!(ok, "{output}");
+    let output: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let hit = &output["topics"][0]["hits"][0];
+    assert_eq!(hit["name"], "shippedTool", "{output}");
+    assert_eq!(hit["scope"], "production", "{output}");
+}

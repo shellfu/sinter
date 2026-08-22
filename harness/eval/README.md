@@ -1,6 +1,11 @@
 # Real repository evaluation
 
-This harness measures Sinter against hand-labeled navigation tasks in a pinned public repository. It covers exact symbol lookup, natural-language ranking, direct callers, and structural paths. The generated scorecard describes this corpus and configuration; it is not a claim about all repositories.
+This harness measures Sinter against hand-labeled navigation tasks in pinned
+public repositories and deterministic agent-flow contracts in a local
+synthetic repository. It covers exact symbol lookup, natural-language
+ranking, direct callers, structural paths, and multi-step tool use. The
+generated scorecard describes this corpus and configuration; it is not a
+claim about all repositories or end-to-end coding success.
 
 The suite currently pins ripgrep 14.1.1 (Rust), Cobra 1.8.1 (Go), Flask 3.0.3
 (Python), Hono 4.4.0 (TypeScript), and Gson 2.11.0 (Java) at the exact commits
@@ -8,6 +13,18 @@ recorded in `cases.json`. It contains 249 hand-labeled tasks: 3 exact lookups,
 166 natural-language `ask` questions, 36 direct-caller checks, and 44 path
 checks. Each run builds syntax-only graphs, so the score represents Sinter's
 zero-config behavior without SCIP.
+
+The local corpus in `agent-flows.json` adds nine multi-step scenarios:
+orientation, forward dependency analysis, reverse blast radius, test
+selection, ambiguity and unresolved-reference handling, diff impact,
+stable-handle reuse after a harmless edit, dirty-working-tree refresh, and
+MCP/CLI parity. Each flow starts from a fresh two-commit fixture under
+`fixtures/agent-flow/`; it never clones a repository or invokes an indexer.
+The runner records flow and step correctness, abstention failures,
+unsafe-confidence failures, tool-call count, output bytes, and stale or
+partial evidence. These agent-flow measurements are observational and do not
+have release floors yet. A failing assertion appears in the scorecard instead
+of making the retrieval gates easier to pass.
 
 Caller labels list every call site found by reading the source, including
 tests and receiver-typed calls (`cmd.Traverse(...)`) that a syntax-only graph
@@ -17,8 +34,11 @@ cover positive and negative (`not_proven`) answers, Rust trait dispatch,
 Java interface factories, cross-crate calls, and two `dirty: true` cases
 that run with an untracked scratch file in the working tree and require the
 coverage envelope to report `snapshot.dirty`. Not yet covered: C# interfaces
-(no C# corpus), cross-repository workspace paths, and stale or present SCIP
-indexes (the harness never runs an indexer).
+(no C# corpus), cross-repository workspace paths, stale or present SCIP
+indexes, concurrent agents, model tokenization, whether an agent chose the
+right Sinter verb without prompting, or whether a coding task ultimately
+compiled and passed its own tests. Output bytes are a stable token-cost proxy,
+not a tokenizer measurement.
 
 Every `ask` case carries an `intent` (`construction`, `registration`,
 `dispatch`, `lifecycle`, `error_handling`, `output`, `lookup`). The split is
@@ -30,10 +50,22 @@ split. The scorecard reports ask metrics per split, repository, and intent,
 reports confidence-bucket precision only on holdout repositories, and lists
 every wrong top result beside the first relevant rank.
 
+The agent contract names the current frozen observation
+`ask-holdout-2026-08-21.v1`: high-margin results were correct in 22/25
+holdout cases, medium in 8/12, and low in 2/9. These are descriptive bucket
+measurements, not per-result probabilities. Runtime output therefore exposes
+the score gap as `ranking_margin`, reports the calibration version, sample,
+and measured precision separately, and requires verification below 95%
+measured precision. A result abstains when there is no runner-up, query-term
+coverage is below 50%, or its calibration bucket has fewer than 10 cases.
+Changing these constants requires a new full holdout run and calibration
+version; tuning-only results cannot be substituted.
+
 ## Prerequisites
 
 - A Rust toolchain that can build the [Sinter workspace](../../README.md#install).
-- `git` and network access to clone the pinned public repository.
+- `git` for the local fixture and network access to clone the pinned public
+  repositories when running the complete evaluation.
 
 ## Run the evaluation
 
@@ -44,6 +76,22 @@ make test-eval
 ```
 
 The command writes `target/sinter-eval/scorecard.json` for automation and `target/sinter-eval/scorecard.md` for review. Set `SINTER_EVAL_OUT` to write them elsewhere.
+
+Normal `cargo test` runs the network-free agent-flow contract. This verifies
+that the case schema, fixture setup, CLI driver, MCP driver, capture reuse,
+and score aggregation remain executable. It intentionally does not require
+every flow assertion to pass: product misses are scorecard evidence, while a
+broken harness is a test failure.
+
+To run only the local agent-flow evaluation, use the focused integration
+test:
+
+```bash
+cargo test -p sinter-io --test real_repository_eval agent_flow_contract
+```
+
+It writes `target/sinter-agent-flow/scorecard.json`. Set
+`SINTER_AGENT_FLOW_OUT` to choose another output path.
 
 Set `SINTER_EVAL_BIN` to evaluate an already-built Sinter executable instead
 of the executable built by the test. This makes release-to-HEAD comparisons
@@ -67,8 +115,21 @@ The `real-repository-eval` GitHub Actions workflow runs every Monday and accepts
 
 ## Maintain the labels
 
-`cases.json` is the source of truth. Each repository entry uses a human-readable Git ref, the exact commit it must resolve to, and one repository-level ask split. A moved or retagged ref fails before scoring. Moving a repository from holdout to tuning is an evaluation-policy change and must not be used to conceal a regression.
+`cases.json` is the source of truth for retrieval labels. Each repository
+entry uses a human-readable Git ref, the exact commit it must resolve to, and
+one repository-level ask split. A moved or retagged ref fails before scoring.
+Moving a repository from holdout to tuning is an evaluation-policy change and
+must not be used to conceal a regression.
+
+`agent-flows.json` is the source of truth for agent-flow contracts. Every
+case has a capability label and at least two steps. CLI and MCP steps declare
+machine-readable assertions; edit steps mutate only the temporary fixture;
+capture values can be interpolated into later steps; compare steps check
+selected JSON subtrees. Add a flow when an agent failure crosses tool calls or
+depends on snapshot state. Keep single-call retrieval relevance labels in
+`cases.json`.
 
 Labels come from source inspection. Do not change an expected symbol because Sinter returned a different answer. Ambiguous endpoints use `name@file` (`parse@crates/core/flags/parse.rs`). Add a case when a user report exposes a concrete navigation task, then record every relevant result within the case's limit; questions that legitimately resolve to several symbols (overloads, lifecycle stages) list all of them. Raise a metric floor only after an implementation improves the tuning repositories without regressing the holdout repositories.
 
-Normal `cargo test` runs compile this harness but skip the network test.
+The network-backed retrieval evaluation remains ignored during normal
+`cargo test` and runs through `make test-eval`.

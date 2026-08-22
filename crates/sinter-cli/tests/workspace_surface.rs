@@ -105,6 +105,8 @@ fn workspace_end_to_end() {
     assert!(out.contains("auth:Login"), "{out}");
     assert!(out.contains("billing:Charge"), "{out}");
     assert!(out.contains("import"), "{out}");
+    assert!(out.contains("snapshot: workspace-"), "{out}");
+    assert!(out.contains("coverage: partial"), "{out}");
 
     // Declared link: PublishSettled's dependents include billing's
     // consumer, tagged with declared evidence; filtering to import-only
@@ -130,6 +132,7 @@ fn workspace_end_to_end() {
         !out.contains("ConsumeSettled"),
         "declared link not filterable:\n{out}"
     );
+    assert!(out.contains("coverage: partial"), "{out}");
     // Relation filter crosses the boundary too: the declared link is
     // `uses`, so restricting traversal to `calls` drops it.
     let (ok, out) = sinter(
@@ -157,6 +160,8 @@ fn workspace_end_to_end() {
     assert!(ok, "{out}");
     assert!(out.contains("-[calls/import]->"), "{out}");
     assert!(out.contains("common:Backoff"), "{out}");
+    assert!(out.contains("snapshot: workspace-"), "{out}");
+    assert!(out.contains("coverage: partial"), "{out}");
 
     // Fan-out ask finds the shared symbol with member attribution.
     let (ok, out) = sinter(root, &["ask", "retry backoff", "--workspace", m]);
@@ -164,6 +169,22 @@ fn workspace_end_to_end() {
     let first = out.lines().find(|l| l.starts_with("1. ")).unwrap();
     assert!(first.contains("common:"), "{out}");
     assert!(first.contains("Backoff"), "{out}");
+    let (ok, json) = sinter(root, &["ask", "retry backoff", "--workspace", m, "--json"]);
+    assert!(ok, "{json}");
+    let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let hit = &json["topics"][0]["hits"][0];
+    assert_eq!(hit["member"], "common");
+    let handle = hit["id"].as_str().unwrap();
+    assert!(handle.starts_with("common:symbol:"), "{json}");
+    assert!(
+        hit["snapshot_id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("common:") && id.contains('#')),
+        "{json}"
+    );
+    assert!(json["topics"][0]["confidence"]["calibration"].is_object());
+    assert!(json["verify_required"].is_boolean());
+    assert!(json["returned"].as_u64().unwrap() <= 5);
 
     // Determinism: byte-identical across runs.
     let (_, again) = sinter(root, &["affected", "Backoff", "--workspace", m]);
@@ -310,13 +331,12 @@ fn workspace_stale_and_declared_errors() {
     assert!(out.contains("NoSuchSymbol"), "{out}");
 }
 
-/// Workspace traversal has no JSON renderer; `--json --workspace` must
+/// Workspace traversals other than ask have no JSON renderer; `--json --workspace` must
 /// refuse loudly (usage error, exit 2) instead of silently dropping the
 /// flag.
 #[test]
 fn json_conflicts_with_workspace() {
     for argv in [
-        vec!["ask", "anything", "--workspace", "ws.toml", "--json"],
         vec!["affected", "Backoff", "--workspace", "ws.toml", "--json"],
         vec!["path", "A", "B", "--workspace", "ws.toml", "--json"],
     ] {
@@ -380,6 +400,18 @@ fn serve_workspace_answers_across_members() {
     let manifest = build_workspace(root.path());
     let (ok, out) = sinter(root.path(), &["workspace", manifest.to_str().unwrap()]);
     assert!(ok, "{out}");
+    let (ok, cli_ask) = sinter(
+        root.path(),
+        &[
+            "ask",
+            "retry backoff",
+            "--workspace",
+            manifest.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert!(ok, "{cli_ask}");
+    let cli_ask: serde_json::Value = serde_json::from_str(&cli_ask).unwrap();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_sinter"))
         .args(["serve", "--workspace", manifest.to_str().unwrap()])
@@ -410,6 +442,16 @@ fn serve_workspace_answers_across_members() {
             r#"{{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{{"name":"unresolved","arguments":{{"limit":5}}}}}}"#
         )
         .unwrap();
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{{"name":"query","arguments":{{"symbol":"common:Backoff","if_snapshot":"workspace-stale"}}}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{{"name":"path","arguments":{{"from":"billing:Charge","to":"common:Backoff"}}}}}}"#
+        )
+        .unwrap();
     }
     drop(child.stdin.take());
     let output = child.wait_with_output().unwrap();
@@ -438,7 +480,9 @@ fn serve_workspace_answers_across_members() {
     );
 
     let affected: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
-    let body = affected["result"]["content"][0]["text"].as_str().unwrap();
+    let body = affected["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("affected tool failed: {affected}"));
     let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
     assert_eq!(parsed["symbol"]["member"], "common", "{body}");
     assert!(parsed["total"].as_u64().unwrap() >= 1, "{body}");
@@ -450,14 +494,33 @@ fn serve_workspace_answers_across_members() {
         }),
         "terse dependents must cross into other members: {body}"
     );
+    assert!(
+        parsed["snapshot"]
+            .as_str()
+            .is_some_and(|snapshot| snapshot.starts_with("workspace-"))
+    );
+    assert_eq!(parsed["coverage"]["status"], "found", "{body}");
+    assert_eq!(parsed["coverage"]["completeness"], "partial", "{body}");
+    assert!(parsed["coverage"]["members"]["auth"].is_object(), "{body}");
+    assert!(
+        parsed["coverage"]["members"]["billing"].is_object(),
+        "{body}"
+    );
+    assert!(
+        parsed["coverage"]["members"]["common"].is_object(),
+        "{body}"
+    );
 
-    // ask fans out across members; top hit carries member attribution.
+    // ask fans out across members; top hit carries member attribution and
+    // CLI/MCP share the exact calibrated topic payload.
     let ask: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
     let body = ask["result"]["content"][0]["text"].as_str().unwrap();
     let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
-    let first = &parsed["hits"].as_array().unwrap()[0];
+    let first = &parsed["topics"][0]["hits"][0];
     assert_eq!(first["member"], "common", "{body}");
     assert_eq!(first["name"], "Backoff", "{body}");
+    assert_eq!(parsed, cli_ask, "workspace CLI/MCP ask drifted");
+    assert_eq!(ask["result"]["structuredContent"]["data"], cli_ask);
 
     // show carries in-member edges plus boundary links from other members.
     let show: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
@@ -488,4 +551,23 @@ fn serve_workspace_answers_across_members() {
             "{body}"
         );
     }
+
+    let stale: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    assert_eq!(
+        stale["error"]["data"]["error"]["code"], "stale_snapshot",
+        "{stale}"
+    );
+    assert!(
+        stale["error"]["data"]["error"]["actual_snapshot"]
+            .as_str()
+            .is_some_and(|token| token.starts_with("workspace-")),
+        "{stale}"
+    );
+
+    let path: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    let body = path["result"]["content"][0]["text"].as_str().unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert_eq!(parsed["found"], true, "{body}");
+    assert_eq!(parsed["coverage"]["status"], "found", "{body}");
+    assert!(parsed["steps"][0]["confidence"].is_string(), "{body}");
 }

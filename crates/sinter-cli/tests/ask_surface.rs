@@ -8,6 +8,20 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+fn path_with_sinter() -> std::ffi::OsString {
+    let executable = Path::new(env!("CARGO_BIN_EXE_sinter"));
+    let mut paths = vec![
+        executable
+            .parent()
+            .expect("sinter binary directory")
+            .to_path_buf(),
+    ];
+    if let Some(existing) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(paths).expect("valid search path")
+}
+
 fn sinter(repo: &Path, args: &[&str]) -> (bool, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
         .args(args)
@@ -16,6 +30,7 @@ fn sinter(repo: &Path, args: &[&str]) -> (bool, String) {
         // stale-artifact nudges into captured output.
         .env("HOME", repo)
         .env("USERPROFILE", repo)
+        .env("PATH", path_with_sinter())
         .output()
         .expect("run sinter");
     (
@@ -160,11 +175,152 @@ fn ask_json_carries_span_and_score() {
     let (ok, out) = sinter(repo, &["ask", "character controller", "--json"]);
     assert!(ok, "{out}");
     let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid json");
-    let first = &parsed.as_array().expect("array")[0];
+    let first = &parsed["topics"][0]["hits"][0];
     assert_eq!(first["name"], "PlayerCharacterV2");
     assert!(first["span"]["end"].as_u64().unwrap() > 0);
     assert!(first["score"].as_i64().unwrap() > 0);
     assert!(first["matched"].as_array().unwrap().len() == 2);
+}
+
+#[test]
+fn ask_singleton_abstains_instead_of_claiming_high_confidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::write(
+        repo.join("single.go"),
+        "package one\n\nfunc SingularQuartz() int { return 1 }\n",
+    )
+    .unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+    let (ok, out) = sinter(repo, &["ask", "singular quartz", "--json"]);
+    assert!(ok, "{out}");
+    let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let topic = &value["topics"][0];
+    assert_eq!(topic["status"], "abstain", "{out}");
+    assert_eq!(topic["confidence"]["level"], "unrated", "{out}");
+    assert_eq!(topic["confidence"]["reason"], "no_runner_up", "{out}");
+    assert!(topic["ranking_margin"]["permille"].is_null(), "{out}");
+    assert_eq!(topic["verify_required"], true, "{out}");
+    assert_eq!(
+        topic["confidence"]["calibration"]["version"],
+        "ask-holdout-2026-08-21.v1"
+    );
+}
+
+/// The machine contract is transport-stable: CLI `--json` is precisely the
+/// MCP envelope's data payload, every advertised input is closed, every tool
+/// declares a versioned output, and ambiguity is structured error data.
+#[test]
+fn agent_protocol_matches_cli_and_mcp() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    controller_fixture(repo);
+    std::fs::write(
+        repo.join("duplicate_a.ts"),
+        "export function collide(): void {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("duplicate_b.ts"),
+        "export function collide(): void {}\n",
+    )
+    .unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+
+    let (ok, cli) = sinter(repo, &["ask", "character controller", "--json"]);
+    assert!(ok, "{cli}");
+    assert!(!cli.contains("\n  "), "agent JSON must be compact: {cli}");
+    let cli: serde_json::Value = serde_json::from_str(&cli).unwrap();
+    let (ok, cli_query) = sinter(
+        repo,
+        &["query", "PlayerCharacterV2", "--limit", "5", "--json"],
+    );
+    assert!(ok, "{cli_query}");
+    let cli_query: serde_json::Value = serde_json::from_str(&cli_query).unwrap();
+    let (ok, ambiguous_cli) = sinter(repo, &["show", "collide", "--json"]);
+    assert!(!ok, "ambiguous symbol must not succeed: {ambiguous_cli}");
+    let ambiguous_cli: serde_json::Value = serde_json::from_str(&ambiguous_cli).unwrap();
+    assert_eq!(ambiguous_cli["error"]["code"], "ambiguous_symbol");
+    assert_eq!(
+        ambiguous_cli["error"]["candidates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sinter"))
+        .args(["serve", "--repo", repo.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn MCP server");
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(stdin, r#"{{"jsonrpc":"2.0","id":1,"method":"tools/list"}}"#).unwrap();
+        writeln!(stdin, r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"ask","arguments":{{"question":"character controller"}}}}}}"#).unwrap();
+        writeln!(stdin, r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"show","arguments":{{"symbol":"collide"}}}}}}"#).unwrap();
+        writeln!(stdin, r#"{{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{{"name":"query","arguments":{{"symbol":"PlayerCharacterV2","limit":5}}}}}}"#).unwrap();
+    }
+    drop(child.stdin.take());
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let responses: Vec<serde_json::Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+
+    for tool in responses[0]["result"]["tools"].as_array().unwrap() {
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false, "{tool}");
+        assert!(tool["outputSchema"].is_object(), "{tool}");
+    }
+    let query_tool = responses[0]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "query")
+        .unwrap();
+    let query_schema = &query_tool["outputSchema"]["properties"]["data"];
+    assert_eq!(query_schema["properties"]["snapshot"]["type"], "string");
+    assert_eq!(query_schema["properties"]["scope"]["type"], "array");
+    assert!(
+        query_schema["anyOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|shape| {
+                let required = shape["required"].as_array().unwrap();
+                required.iter().any(|field| field == "snapshot")
+                    && required.iter().any(|field| field == "scope")
+            })
+    );
+    let structured = &responses[1]["result"]["structuredContent"];
+    assert_eq!(structured["protocol"], "sinter.agent.v1");
+    assert_eq!(structured["operation"], "ask");
+    assert_eq!(structured["data"], cli);
+
+    let ambiguity = &responses[2]["error"]["data"];
+    assert_eq!(ambiguity["protocol"], "sinter.agent.v1");
+    assert_eq!(ambiguity["error"]["code"], "ambiguous_symbol");
+    assert_eq!(ambiguity["error"], ambiguous_cli["error"]);
+    assert_eq!(
+        ambiguity["error"]["candidates"].as_array().unwrap().len(),
+        2
+    );
+
+    let query = &responses[3]["result"]["structuredContent"];
+    assert_eq!(query["protocol"], "sinter.agent.v1");
+    assert_eq!(query["operation"], "query");
+    assert_eq!(query["outcome"]["status"], "complete");
+    assert_eq!(query["data"], cli_query);
+    assert_eq!(query["data"]["scope"], cli_query["scope"]);
+    assert_eq!(query["data"]["snapshot"], cli_query["snapshot"]);
+    for transport_field in ["protocol", "operation", "outcome"] {
+        assert!(query["data"].get(transport_field).is_none());
+    }
 }
 
 /// Skaffold-trial finding #2: embedded third-party source must not outrank
@@ -500,8 +656,8 @@ fn doctor_diagnoses_and_clears() {
 }
 
 /// `sinter install --mcp` merges into every project config without
-/// clobbering other servers. The generated command must survive a client
-/// process whose PATH omits the directory that contains Sinter.
+/// clobbering other servers. The generated command is checkout-portable and
+/// initial registration cannot make Codex startup depend on the server.
 #[test]
 fn install_mcp_merges_project_config() {
     let dir = tempfile::tempdir().unwrap();
@@ -530,7 +686,7 @@ fn install_mcp_merges_project_config() {
     let command = cfg["mcpServers"]["sinter"]["command"]
         .as_str()
         .expect("sinter MCP command");
-    assert!(Path::new(command).is_absolute(), "{command}");
+    assert_eq!(command, "sinter");
 
     let cursor: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(repo.join(".cursor/mcp.json")).unwrap())
@@ -545,7 +701,7 @@ fn install_mcp_merges_project_config() {
     );
     assert_eq!(
         codex["mcp_servers"]["sinter"]["required"].as_bool(),
-        Some(true)
+        Some(false)
     );
 
     let args = cfg["mcpServers"]["sinter"]["args"]
@@ -555,7 +711,12 @@ fn install_mcp_merges_project_config() {
         .map(|arg| arg.as_str().expect("string MCP arg"));
     let mut launched = Command::new(command)
         .args(args)
-        .env("PATH", "")
+        .env(
+            "PATH",
+            Path::new(env!("CARGO_BIN_EXE_sinter"))
+                .parent()
+                .expect("sinter binary directory"),
+        )
         .current_dir(repo)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -718,6 +879,7 @@ fn init_onboards_repo() {
             .current_dir(repo)
             .env("HOME", home.path())
             .env("USERPROFILE", home.path())
+            .env("PATH", path_with_sinter())
             .output()
             .expect("run sinter");
         (
@@ -751,20 +913,61 @@ fn init_onboards_repo() {
     );
     let mcp: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(repo.join(".mcp.json")).unwrap()).unwrap();
-    assert!(
-        Path::new(
-            mcp["mcpServers"]["sinter"]["command"]
-                .as_str()
-                .expect("sinter MCP command")
-        )
-        .is_absolute()
-    );
+    assert_eq!(mcp["mcpServers"]["sinter"]["command"], "sinter");
     assert!(out.contains("== doctor =="), "{out}");
     // Idempotent: second init changes nothing and still succeeds.
     let (_, again) = init(&["init"]);
     assert!(again.contains("0 changed"), "{again}");
     let agents = std::fs::read_to_string(repo.join("AGENTS.md")).unwrap();
     assert_eq!(agents.matches("BEGIN sinter").count(), 1, "{agents}");
+}
+
+/// Agent-safe setup creates only derived graph state. It must not acquire the
+/// broader authority that full `init` intentionally exercises.
+#[test]
+fn ensure_builds_graph_without_installing_integrations() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::write(repo.join("a.rs"), "pub fn f() {}\n").unwrap();
+    Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
+        .args(["ensure"])
+        .current_dir(repo)
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .output()
+        .expect("run sinter ensure");
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(repo.join(".sinter/graph.redb").exists());
+    for absent in [
+        "AGENTS.md",
+        "CLAUDE.md",
+        ".mcp.json",
+        ".cursor",
+        ".codex",
+        ".claude",
+        ".git/hooks/post-commit",
+    ] {
+        assert!(
+            !repo.join(absent).exists(),
+            "ensure must not create {absent}"
+        );
+    }
+    assert!(
+        !home.path().join(".claude/skills/sinter/SKILL.md").exists(),
+        "ensure must not modify global agent configuration"
+    );
 }
 
 /// init must not execute repository-selected indexer binaries without
@@ -795,11 +998,11 @@ fn init_runs_indexers_only_with_consent() {
         std::fs::Permissions::from_mode(0o755),
     )
     .unwrap();
-    let path_env = format!(
-        "{}:{}",
-        bin.path().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let sinter_path = path_with_sinter();
+    let path_env = std::env::join_paths(
+        std::iter::once(bin.path().to_path_buf()).chain(std::env::split_paths(&sinter_path)),
+    )
+    .unwrap();
 
     let init = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_sinter"))
@@ -975,6 +1178,7 @@ fn uninit_reverses_init_and_preserves_user_content() {
             .current_dir(repo)
             .env("HOME", home.path())
             .env("USERPROFILE", home.path())
+            .env("PATH", path_with_sinter())
             .stdin(std::process::Stdio::null())
             .output()
             .expect("run sinter");
@@ -1084,19 +1288,39 @@ fn ask_multi_topic_groups_hits_per_clause() {
     assert!(!single.contains("## "), "{single}");
     assert!(single.contains("Best matches (2 terms"), "{single}");
 
-    // --json multi-clause: flat array, each hit tagged with its topic.
-    let (ok, js) = sinter(repo, &["ask", question, "--json"]);
+    // --json multi-clause: explicit per-topic results with a strict global
+    // budget and an independently actionable safety decision.
+    let (ok, js) = sinter(repo, &["ask", question, "--json", "--limit", "3"]);
     assert!(ok, "{js}");
     let parsed: serde_json::Value = serde_json::from_str(&js).expect("valid json");
-    let hits = parsed.as_array().expect("array");
-    assert!(!hits.is_empty(), "{js}");
-    assert!(hits.iter().all(|h| h["topic"].is_string()), "{js}");
+    let topics = parsed["topics"].as_array().expect("topics");
+    assert_eq!(topics.len(), 2, "{js}");
+    assert!(parsed["returned"].as_u64().unwrap() <= 3, "{js}");
     assert!(
-        hits.iter()
-            .any(|h| h["topic"] == "character controller" && h["name"] == "PlayerCharacterV2"),
+        topics.iter().all(|topic| topic["advice"].is_string()),
         "{js}"
     );
-    assert!(hits.iter().any(|h| h["topic"] == "ledge grab"), "{js}");
+    assert!(
+        topics
+            .iter()
+            .all(|topic| topic["term_coverage"].is_object()),
+        "{js}"
+    );
+    assert!(
+        topics
+            .iter()
+            .any(|topic| topic["topic"] == "character controller"
+                && topic["hits"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|hit| hit["name"] == "PlayerCharacterV2")),
+        "{js}"
+    );
+    assert!(
+        topics.iter().any(|topic| topic["topic"] == "ledge grab"),
+        "{js}"
+    );
 }
 
 /// The Codex field-report question: five topics in one sentence. Each

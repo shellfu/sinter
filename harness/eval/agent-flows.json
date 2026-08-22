@@ -1,0 +1,247 @@
+{
+  "schema": 1,
+  "fixture": {
+    "base": "fixtures/agent-flow/base",
+    "committed_overlay": "fixtures/agent-flow/committed-overlay"
+  },
+  "cases": [
+    {
+      "id": "orient-before-navigation",
+      "capability": "orientation",
+      "steps": [
+        {
+          "kind": "cli",
+          "id": "map",
+          "args": ["map"],
+          "expect": [
+            {"pointer": "/nodes", "predicate": "non_empty"},
+            {"pointer": "/modules", "predicate": "non_empty"},
+            {"pointer": "/docs", "predicate": "non_empty"}
+          ]
+        },
+        {
+          "kind": "cli",
+          "id": "ask-entry",
+          "args": ["ask", "public entry point for the request flow", "--limit", "5"],
+          "expect": [
+            {"pointer": "/topics/0/hits", "predicate": "contains", "value": {"qualified": "entry"}},
+            {"pointer": "/topics/0/verify_required", "predicate": "exists"},
+            {"pointer": "/topics/0/confidence/calibration/version", "predicate": "equals", "value": "ask-holdout-2026-08-21.v1"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "forward-dependencies-before-edit",
+      "capability": "dependency_analysis",
+      "steps": [
+        {
+          "kind": "cli",
+          "id": "deps-entry",
+          "args": ["deps", "entry", "--relations", "calls,uses"],
+          "expect": [
+            {"pointer": "/dependencies", "predicate": "contains", "value": {"s": "dispatch"}}
+          ]
+        },
+        {
+          "kind": "cli",
+          "id": "show-dispatch",
+          "args": ["show", "dispatch"],
+          "expect": [
+            {"pointer": "/symbol/name", "predicate": "equals", "value": "dispatch"},
+            {"pointer": "/outgoing", "predicate": "non_empty"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "reverse-blast-radius-before-edit",
+      "capability": "blast_radius",
+      "steps": [
+        {
+          "kind": "cli",
+          "id": "affected-leaf",
+          "args": ["affected", "leaf", "--relations", "calls,uses"],
+          "expect": [
+            {"pointer": "/dependents", "predicate": "contains", "value": {"s": "dispatch"}},
+            {"pointer": "/dependents", "predicate": "contains", "value": {"s": "entry"}}
+          ]
+        },
+        {
+          "kind": "cli",
+          "id": "path-entry-leaf",
+          "args": ["path", "entry", "leaf", "--relations", "calls,uses"],
+          "expect": [
+            {"pointer": "/found", "predicate": "equals", "value": true},
+            {"pointer": "/steps", "predicate": "non_empty"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "select-tests-from-callers",
+      "capability": "test_selection",
+      "steps": [
+        {
+          "kind": "cli",
+          "id": "affected-dispatch",
+          "args": ["affected", "dispatch", "--depth", "1", "--relations", "calls"],
+          "expect": [
+            {"pointer": "/dependents", "predicate": "contains", "value": {"s": "tests::dispatch_works"}}
+          ]
+        },
+        {
+          "kind": "cli",
+          "id": "show-test",
+          "args": ["show", "tests::dispatch_works"],
+          "expect": [
+            {"pointer": "/symbol/name", "predicate": "equals", "value": "dispatch_works"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "abstain-on-ambiguous-symbol",
+      "capability": "unresolved_ambiguity",
+      "steps": [
+        {
+          "kind": "cli",
+          "id": "ambiguous-show",
+          "args": ["show", "duplicate"],
+          "expected_exit": 2,
+          "decision": "abstain",
+          "expect": [
+            {"pointer": "/error/code", "predicate": "equals", "value": "ambiguous_symbol"},
+            {"pointer": "/error/candidates", "predicate": "non_empty"}
+          ]
+        },
+        {
+          "kind": "cli",
+          "id": "inspect-unresolved",
+          "args": ["unresolved", "--limit", "20"],
+          "expect": [
+            {"pointer": "/unresolved", "predicate": "non_empty"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "impact-drives-test-selection",
+      "capability": "diff_impact",
+      "steps": [
+        {
+          "kind": "cli",
+          "id": "impact",
+          "args": ["impact", "HEAD~1..HEAD"],
+          "expect": [
+            {"pointer": "/changed_files", "predicate": "contains", "value": {"path": "src/lib.rs"}},
+            {"pointer": "/changed_symbols", "predicate": "non_empty"},
+            {"pointer": "/affected_tests", "predicate": "contains", "value": {"qualified": "tests::dispatch_works"}}
+          ]
+        },
+        {
+          "kind": "cli",
+          "id": "impact-callers",
+          "args": ["affected", "leaf", "--relations", "calls"],
+          "expect": [
+            {"pointer": "/dependents", "predicate": "contains", "value": {"s": "tests::dispatch_works"}}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "reuse-handle-after-harmless-shift",
+      "capability": "stable_handle_reuse",
+      "steps": [
+        {
+          "kind": "cli",
+          "id": "find-leaf",
+          "args": ["query", "leaf", "--limit", "1"],
+          "expect": [
+            {"pointer": "/results/0/name", "predicate": "equals", "value": "leaf"}
+          ],
+          "capture": [
+            {"name": "leaf_handle", "pointer": "/results/0/id"}
+          ]
+        },
+        {
+          "kind": "edit",
+          "id": "shift-offsets",
+          "path": "src/lib.rs",
+          "operation": "prepend",
+          "value": "// harmless line inserted by the agent-flow evaluation\n"
+        },
+        {
+          "kind": "cli",
+          "id": "reuse-leaf-handle",
+          "args": ["show", "${leaf_handle}"],
+          "expect": [
+            {"pointer": "/symbol/name", "predicate": "equals", "value": "leaf"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dirty-edit-refresh-and-coverage",
+      "capability": "dirty_edit",
+      "steps": [
+        {
+          "kind": "edit",
+          "id": "add-dirty-symbol",
+          "path": "src/lib.rs",
+          "operation": "append",
+          "value": "\n/// Added only in the working tree.\npub fn dirty_symbol() -> usize { entry() }\n"
+        },
+        {
+          "kind": "cli",
+          "id": "find-dirty-symbol",
+          "args": ["query", "dirty_symbol", "--limit", "5"],
+          "expect": [
+            {"pointer": "/results", "predicate": "contains", "value": {"name": "dirty_symbol"}}
+          ]
+        },
+        {
+          "kind": "cli",
+          "id": "dirty-negative-path",
+          "args": ["path", "entry", "external_reference", "--relations", "calls,uses"],
+          "expected_exit": 1,
+          "expect": [
+            {"pointer": "/found", "predicate": "equals", "value": false},
+            {"pointer": "/coverage/status", "predicate": "equals", "value": "not_proven"},
+            {"pointer": "/coverage/snapshot/dirty", "predicate": "equals", "value": true}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "mcp-cli-query-parity",
+      "capability": "mcp_cli_parity",
+      "steps": [
+        {
+          "kind": "cli",
+          "id": "cli-query",
+          "args": ["query", "leaf", "--limit", "5"],
+          "expect": [
+            {"pointer": "/results", "predicate": "contains", "value": {"name": "leaf"}}
+          ]
+        },
+        {
+          "kind": "mcp",
+          "id": "mcp-query",
+          "tool": "query",
+          "arguments": {"symbol": "leaf", "limit": 5},
+          "expect": [
+            {"pointer": "/protocol", "predicate": "equals", "value": "sinter.agent.v1"},
+            {"pointer": "/data/results", "predicate": "contains", "value": {"name": "leaf"}}
+          ]
+        },
+        {
+          "kind": "compare",
+          "id": "same-query-data",
+          "left": {"step": "cli-query", "pointer": ""},
+          "right": {"step": "mcp-query", "pointer": "/data"}
+        }
+      ]
+    }
+  ]
+}

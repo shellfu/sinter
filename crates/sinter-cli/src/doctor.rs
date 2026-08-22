@@ -2,7 +2,8 @@
 //! graph. Every finding names its fix; exit 1 when anything needs action.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use sinter_extract::LANGUAGES;
@@ -339,9 +340,9 @@ pub fn run(repo: &Path, fix: bool) -> Result<bool> {
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .is_some_and(|v| v["mcpServers"]["sinter"].is_object())
     };
-    // A registration pins the executable path (MCP clients may not share
-    // the shell's PATH); a moved or bare `sinter` command silently breaks
-    // the server at client startup.
+    // A project-portable registration uses a bare executable name. Validate
+    // it through PATH; explicit absolute or relative paths are checked at
+    // their configured locations.
     let json_command = |rel: &str| {
         std::fs::read_to_string(repo.join(rel))
             .ok()
@@ -354,12 +355,11 @@ pub fn run(repo: &Path, fix: bool) -> Result<bool> {
     };
     for rel in [".mcp.json", ".cursor/mcp.json"] {
         if let Some(cmd) = json_command(rel)
-            && !std::path::Path::new(&cmd).is_file()
+            && !mcp_command_resolves(&repo, &cmd, std::env::var_os("PATH").as_deref())
         {
-            r.fixable(
-                &format!("{rel} MCP command `{cmd}` is not an existing executable path"),
-                "run `sinter install --mcp` to pin this binary",
-                || install::mcp(&repo),
+            r.warn(
+                &format!("{rel} MCP command `{cmd}` is not resolvable from PATH"),
+                "put `sinter` on the MCP client's PATH, then rerun `sinter doctor`",
             );
         }
     }
@@ -428,6 +428,61 @@ pub fn run(repo: &Path, fix: bool) -> Result<bool> {
     Ok(r.problems == 0)
 }
 
+fn mcp_command_resolves(repo: &Path, command: &str, search_path: Option<&OsStr>) -> bool {
+    let configured = Path::new(command);
+    let has_directory = configured
+        .parent()
+        .is_some_and(|parent| !parent.as_os_str().is_empty());
+    if configured.is_absolute() {
+        return is_executable_file(configured);
+    }
+    if has_directory {
+        return is_executable_file(&repo.join(configured));
+    }
+
+    let Some(search_path) = search_path else {
+        return false;
+    };
+    std::env::split_paths(search_path).any(|directory| {
+        let directory = if directory.as_os_str().is_empty() {
+            repo.to_path_buf()
+        } else {
+            directory
+        };
+        executable_candidates(directory.join(configured))
+            .into_iter()
+            .any(|candidate| is_executable_file(&candidate))
+    })
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn executable_candidates(path: PathBuf) -> Vec<PathBuf> {
+    let mut candidates = vec![path.clone()];
+    if !std::env::consts::EXE_SUFFIX.is_empty() && path.extension().is_none() {
+        let mut executable = path.into_os_string();
+        executable.push(std::env::consts::EXE_SUFFIX);
+        candidates.push(PathBuf::from(executable));
+    }
+    candidates
+}
+
 /// Spawn this binary as the MCP server (registrations say `sinter`; this
 /// binary IS that product, so testing current_exe tests the real path
 /// without depending on the caller's PATH), run initialize + tools/list
@@ -468,4 +523,53 @@ fn mcp_handshake(repo: &Path) -> anyhow::Result<Vec<String>> {
         anyhow::bail!("no tools/list response");
     }
     Ok(tools)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn portable_mcp_command_must_resolve_from_search_path() {
+        let repo = tempfile::tempdir().unwrap();
+        let bin = tempfile::tempdir().unwrap();
+        let executable = bin
+            .path()
+            .join(format!("sinter{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&executable, "fixture").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let search_path = std::env::join_paths([bin.path()]).unwrap();
+
+        assert!(mcp_command_resolves(
+            repo.path(),
+            "sinter",
+            Some(&search_path)
+        ));
+        assert!(!mcp_command_resolves(
+            repo.path(),
+            "missing-sinter",
+            Some(&search_path)
+        ));
+        assert!(!mcp_command_resolves(repo.path(), "sinter", None));
+    }
+
+    #[test]
+    fn configured_mcp_paths_are_resolved_at_their_owned_locations() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join("tools")).unwrap();
+        let executable = repo.path().join("tools/sinter");
+        std::fs::write(&executable, "fixture").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        assert!(mcp_command_resolves(repo.path(), "tools/sinter", None));
+        assert!(!mcp_command_resolves(repo.path(), "tools/missing", None));
+    }
 }

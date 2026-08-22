@@ -101,7 +101,12 @@ fn query_affected_path_impact() {
     let (ok, out) = sinter(repo, &["path", "test_entry", "core_fn"]);
     assert!(ok, "{out}");
     assert!(out.contains("-[calls/"), "{out}");
-    assert!(out.trim_end().ends_with("core_fn"), "{out}");
+    assert!(
+        out.lines()
+            .next()
+            .is_some_and(|line| line.ends_with("core_fn")),
+        "{out}"
+    );
 
     // impact: edit core_fn, commit, ask for the blast radius of the commit.
     std::fs::write(
@@ -289,6 +294,29 @@ fn json_flags_exit_codes_and_repo_flag() {
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert!(v["total"].as_u64().unwrap() >= 2, "{out}");
     assert!(v["dependents"][0]["s"].is_string(), "{out}");
+    assert!(v["dependents"][0]["c"].is_string(), "{out}");
+    assert_eq!(v["coverage"]["status"], "found", "{out}");
+    assert_eq!(v["coverage"]["completeness"], "partial", "{out}");
+    assert_eq!(
+        v["coverage"]["filters"]["relations"]["mode"], "all_dependencies",
+        "{out}"
+    );
+    assert!(
+        v["coverage"]["evidence"]["possible"]["results"]
+            .as_u64()
+            .unwrap()
+            >= 1,
+        "{out}"
+    );
+
+    // deps uses the same snapshot/filter/evidence coverage contract.
+    let (code, out) = sinter_code(repo, &["deps", "entry", "--json"]);
+    assert_eq!(code, Some(0), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v["snapshot"].is_string(), "{out}");
+    assert_eq!(v["coverage"]["status"], "found", "{out}");
+    assert_eq!(v["coverage"]["completeness"], "partial", "{out}");
+    assert!(v["dependencies"][0]["c"].is_string(), "{out}");
 
     // affected --limit: truncation footer, ask-style.
     let (code, out) = sinter_code(repo, &["affected", "core_fn", "--limit", "1"]);
@@ -302,6 +330,9 @@ fn json_flags_exit_codes_and_repo_flag() {
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["found"], serde_json::json!(true), "{out}");
     assert!(v["steps"][0]["relation"].is_string(), "{out}");
+    assert!(v["steps"][0]["confidence"].is_string(), "{out}");
+    assert_eq!(v["coverage"]["status"], "found", "{out}");
+    assert_eq!(v["coverage"]["completeness"], "partial", "{out}");
     // Each hop names where it is written.
     assert_eq!(
         v["steps"][0]["site"],
@@ -352,8 +383,9 @@ fn empty_graph_says_so() {
     assert!(out.contains("right directory"), "{out}");
 }
 
-/// Every negative answer is not-proven; missing/stale SCIP adds the precise
-/// compiler-coverage gap while a fresh index keeps the generic limitation.
+/// Every traversal carries coverage. Missing/stale SCIP makes hits and misses
+/// partial; a fresh index can only claim completeness for the indexed graph,
+/// never runtime exhaustiveness.
 #[test]
 fn negative_answers_flag_stale_scip() {
     let dir = tempfile::tempdir().unwrap();
@@ -374,7 +406,7 @@ fn negative_answers_flag_stale_scip() {
     let (_, out) = sinter(repo, &["path", "core_fn", "entry"]);
     assert!(
         out.contains("no path")
-            && out.contains("status: not proven")
+            && out.contains("coverage: partial")
             && out.contains("compiler index missing for rust"),
         "{out}"
     );
@@ -399,9 +431,9 @@ fn negative_answers_flag_stale_scip() {
         out.contains("0 dependents") && out.contains("compiler index is stale"),
         "{out}"
     );
-    // A hit never carries the note.
+    // A hit carries the same partial coverage instead of looking exhaustive.
     let (_, out) = sinter(repo, &["path", "entry", "core_fn"]);
-    assert!(!out.contains("status: not proven"), "{out}");
+    assert!(out.contains("coverage: partial"), "{out}");
 
     // Index newer than the source: still not-proven, without stale/missing.
     std::fs::OpenOptions::new()
@@ -413,9 +445,25 @@ fn negative_answers_flag_stale_scip() {
     let (_, out) = sinter(repo, &["path", "core_fn", "entry"]);
     assert!(
         out.contains("no path")
-            && out.contains("status: not proven")
+            && out.contains("coverage: complete_for_indexed_snapshot")
             && !out.contains("compiler index is stale")
             && !out.contains("compiler index missing"),
+        "{out}"
+    );
+
+    let (_, out) = sinter(repo, &["path", "entry", "core_fn", "--json"]);
+    let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        value["coverage"]["completeness"], "complete_for_indexed_snapshot",
+        "{out}"
+    );
+    assert_eq!(value["coverage"]["conclusive"], false, "{out}");
+    assert!(
+        value["coverage"]["available_sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|source| source["kind"] == "scip" && source["status"] == "available"),
         "{out}"
     );
 }
@@ -508,5 +556,192 @@ fn show_lists_implementations_and_dispatch() {
     assert!(
         out.contains("1 incoming edge(s) excluded by --evidence/--certain"),
         "{out}"
+    );
+}
+
+#[test]
+fn stable_handles_relocate_and_snapshot_preconditions_fail_typed() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(repo.join("src/lib.rs"), "pub fn run() -> u8 { 1 }\n").unwrap();
+
+    let (code, out) = sinter_code(repo, &["build"]);
+    assert_eq!(code, Some(0), "{out}");
+    let (code, out) = sinter_code(repo, &["query", "run", "--json"]);
+    assert_eq!(code, Some(0), "{out}");
+    let before: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let old_id = before["results"][0]["snapshot_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let symbol_key = before["results"][0]["symbol_key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(before["results"][0]["id"], symbol_key);
+    let old_snapshot = before["snapshot"].as_str().unwrap().to_string();
+
+    std::fs::write(
+        repo.join("src/lib.rs"),
+        "// harmless offset shift\n\npub fn run() -> u8 { 1 }\n",
+    )
+    .unwrap();
+
+    let (code, out) = sinter_code(repo, &["show", &symbol_key, "--json"]);
+    assert_eq!(code, Some(0), "{out}");
+    let current: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let new_id = current["symbol"]["snapshot_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let new_snapshot = current["snapshot"].as_str().unwrap().to_string();
+    assert_ne!(new_id, old_id);
+    assert_ne!(new_snapshot, old_snapshot);
+    assert_eq!(current["symbol"]["id"], symbol_key);
+    assert_eq!(current["symbol"]["symbol_key"], symbol_key);
+
+    let (code, out) = sinter_code(repo, &["show", &old_id, "--json"]);
+    assert_eq!(code, Some(2), "{out}");
+    let relocated: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(relocated["error"]["code"], "relocated_handle", "{out}");
+    assert_eq!(relocated["outcome"]["status"], "relocated", "{out}");
+    assert_eq!(relocated["error"]["candidates"][0]["snapshot_id"], new_id);
+    assert_eq!(relocated["error"]["candidates"][0]["id"], symbol_key);
+    assert_eq!(
+        relocated["error"]["candidates"][0]["symbol_key"],
+        symbol_key
+    );
+
+    let (code, out) = sinter_code(
+        repo,
+        &[
+            "show",
+            &symbol_key,
+            "--if-snapshot",
+            &old_snapshot,
+            "--json",
+        ],
+    );
+    assert_eq!(code, Some(2), "{out}");
+    let stale: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(stale["error"]["code"], "stale_snapshot", "{out}");
+    assert_eq!(stale["error"]["expected_snapshot"], old_snapshot);
+    assert_eq!(stale["error"]["actual_snapshot"], new_snapshot);
+
+    let (code, out) = sinter_code(
+        repo,
+        &["show", &new_id, "--if-snapshot", &new_snapshot, "--json"],
+    );
+    assert_eq!(code, Some(0), "{out}");
+}
+
+#[test]
+fn duplicate_declarations_make_stable_key_ambiguity_explicit() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::write(
+        repo.join("duplicate.py"),
+        "def duplicate(value):\n    return value\n\ndef duplicate(value, other):\n    return value + other\n",
+    )
+    .unwrap();
+    let (code, out) = sinter_code(repo, &["build"]);
+    assert_eq!(code, Some(0), "{out}");
+    let (code, out) = sinter_code(repo, &["query", "duplicate", "--json"]);
+    assert_eq!(code, Some(0), "{out}");
+    let query: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let results = query["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2, "{out}");
+    let key = results[0]["symbol_key"].as_str().unwrap();
+    assert_eq!(results[1]["symbol_key"], key);
+
+    let (code, out) = sinter_code(repo, &["show", key, "--json"]);
+    assert_eq!(code, Some(2), "{out}");
+    let ambiguous: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(ambiguous["error"]["code"], "ambiguous_symbol", "{out}");
+    assert_eq!(
+        ambiguous["error"]["candidates"].as_array().unwrap().len(),
+        2
+    );
+}
+
+#[test]
+fn syntax_visible_test_callers_drive_affected_and_impact_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    let source = |leaf: usize| {
+        format!(
+            "pub fn leaf() -> usize {{ {leaf} }}\n\
+             pub fn dispatch() -> usize {{ leaf() }}\n\
+             #[cfg(test)]\n\
+             mod tests {{\n\
+                 use super::dispatch;\n\
+                 #[test]\n\
+                 fn dispatch_works() {{\n\
+                     let result = dispatch();\n\
+                     assert!(result > 0);\n\
+                 }}\n\
+             }}\n"
+        )
+    };
+    std::fs::write(repo.join("src/lib.rs"), source(1)).unwrap();
+    git(repo, &["init", "-q"]);
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "base"]);
+    std::fs::write(repo.join("src/lib.rs"), source(2)).unwrap();
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "change leaf"]);
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+
+    let (code, out) = sinter_code(
+        repo,
+        &[
+            "affected",
+            "dispatch",
+            "--depth",
+            "1",
+            "--relations",
+            "calls",
+            "--json",
+        ],
+    );
+    assert_eq!(code, Some(0), "{out}");
+    let affected: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(
+        affected["dependents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|dependent| dependent["s"] == "tests::dispatch_works"),
+        "direct test caller missing: {out}"
+    );
+
+    let (code, out) = sinter_code(
+        repo,
+        &["affected", "leaf", "--relations", "calls", "--json"],
+    );
+    assert_eq!(code, Some(0), "{out}");
+    let affected: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(
+        affected["dependents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|dependent| dependent["s"] == "tests::dispatch_works"),
+        "transitive test caller missing: {out}"
+    );
+
+    let (code, out) = sinter_code(repo, &["impact", "HEAD~1..HEAD", "--json"]);
+    assert_eq!(code, Some(0), "{out}");
+    let impact: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(
+        impact["affected_tests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|test| test["qualified"] == "tests::dispatch_works"),
+        "impact did not select the evidence-backed test: {out}"
     );
 }

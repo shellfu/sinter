@@ -1,4 +1,5 @@
 mod affected;
+mod agent_protocol;
 mod ask;
 mod build;
 mod corpus;
@@ -6,6 +7,7 @@ mod coverage;
 mod deps;
 mod doctor;
 mod freshness;
+mod graph_tool;
 mod hooks;
 mod impact;
 mod init;
@@ -17,14 +19,17 @@ mod pathcmd;
 mod pipeline;
 mod query;
 mod render;
+mod repository_tools;
 mod scip;
 mod serve;
 mod show;
+mod tool_catalog;
 mod uninit;
 mod unresolved;
 mod update;
 mod watch;
 mod workspace;
+mod workspace_tools;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -90,6 +95,11 @@ enum Command {
     Workspace {
         /// Path to the workspace manifest (TOML)
         manifest: PathBuf,
+    },
+    /// Create or refresh only the derived code graph; install no integrations
+    Ensure {
+        #[command(flatten)]
+        repo: RepoArg,
     },
     /// Onboard a repo: build + git hooks + agent integration + MCP, then doctor
     Init {
@@ -205,9 +215,11 @@ enum Command {
         /// Maximum hits to print
         #[arg(long, default_value_t = 5)]
         limit: usize,
-        /// Structured output (same shape as the MCP `ask` tool; not
-        /// available with --workspace)
-        #[arg(long, conflicts_with = "workspace")]
+        /// Corpus roles to search (comma-separated, or `all`)
+        #[arg(long, value_delimiter = ',', default_value = "production,docs")]
+        scope: Vec<String>,
+        /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`)
+        #[arg(long)]
         json: bool,
     },
     /// One-screen orientation card for a symbol or file
@@ -217,9 +229,12 @@ enum Command {
         /// Repository to query
         #[arg(long, default_value = ".")]
         repo: PathBuf,
-        /// Structured output (same shape as the MCP `show` tool)
+        /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`)
         #[arg(long)]
         json: bool,
+        /// Fail if the graph changed since this snapshot token was returned
+        #[arg(long)]
+        if_snapshot: Option<String>,
     },
     /// Search symbols (exact + trigram), content-bearing results
     Query {
@@ -231,9 +246,15 @@ enum Command {
         /// Maximum results to print
         #[arg(long, default_value_t = 10)]
         limit: usize,
-        /// Structured output (same shape as the MCP `query` tool)
+        /// Corpus roles to search (comma-separated, or `all`)
+        #[arg(long, value_delimiter = ',', default_value = "all")]
+        scope: Vec<String>,
+        /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`)
         #[arg(long)]
         json: bool,
+        /// Fail if the graph changed since this snapshot token was returned
+        #[arg(long)]
+        if_snapshot: Option<String>,
     },
     /// Reverse blast radius of a symbol
     Affected {
@@ -251,10 +272,16 @@ enum Command {
         /// Maximum dependents to print
         #[arg(long, default_value_t = 200)]
         limit: usize,
-        /// Structured output (same shape as the MCP `affected` tool; not
+        /// Corpus roles traversal may enter (comma-separated, or `all`)
+        #[arg(long, value_delimiter = ',', default_value = "all")]
+        scope: Vec<String>,
+        /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`; not
         /// available with --workspace)
         #[arg(long, conflicts_with = "workspace")]
         json: bool,
+        /// Fail if the repository/workspace graph changed since this token
+        #[arg(long)]
+        if_snapshot: Option<String>,
         #[command(flatten)]
         filter: FilterArgs,
         #[command(flatten)]
@@ -273,9 +300,15 @@ enum Command {
         /// Maximum dependencies to print
         #[arg(long, default_value_t = 200)]
         limit: usize,
-        /// Structured output (same shape as the MCP `deps` tool)
+        /// Corpus roles traversal may enter (comma-separated, or `all`)
+        #[arg(long, value_delimiter = ',', default_value = "all")]
+        scope: Vec<String>,
+        /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`)
         #[arg(long)]
         json: bool,
+        /// Fail if the graph changed since this snapshot token was returned
+        #[arg(long)]
+        if_snapshot: Option<String>,
         #[command(flatten)]
         filter: FilterArgs,
         #[command(flatten)]
@@ -311,10 +344,16 @@ enum Command {
         /// Traverse across the workspace (path to manifest)
         #[arg(long)]
         workspace: Option<PathBuf>,
-        /// Structured output (same shape as the MCP `path` tool; not
+        /// Corpus roles traversal may enter (comma-separated, or `all`)
+        #[arg(long, value_delimiter = ',', default_value = "all")]
+        scope: Vec<String>,
+        /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`; not
         /// available with --workspace)
         #[arg(long, conflicts_with = "workspace")]
         json: bool,
+        /// Fail if the repository/workspace graph changed since this token
+        #[arg(long)]
+        if_snapshot: Option<String>,
         #[command(flatten)]
         filter: FilterArgs,
         #[command(flatten)]
@@ -332,7 +371,7 @@ enum Command {
         /// Traverse across the workspace (path to manifest)
         #[arg(long)]
         workspace: Option<PathBuf>,
-        /// Structured output (same shape as the MCP `impact` tool)
+        /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`)
         #[arg(long)]
         json: bool,
         #[command(flatten)]
@@ -374,6 +413,9 @@ enum Command {
     Map {
         #[command(flatten)]
         repo: RepoArg,
+        /// Corpus roles to include (comma-separated, or `all`)
+        #[arg(long, value_delimiter = ',', default_value = "production,docs")]
+        scope: Vec<String>,
         /// Structured output
         #[arg(long)]
         json: bool,
@@ -410,9 +452,14 @@ enum HooksAction {
 fn traversal_filter(
     filter: &FilterArgs,
     relations: &RelationsArg,
+    scope: &[String],
 ) -> anyhow::Result<sinter_store::EdgeFilter> {
     let mut f = lookup::edge_filter(&filter.evidence, filter.certain)?;
     f.relations = lookup::relation_set(&relations.relations)?;
+    let selection = corpus::ScopeSelection::parse(scope, corpus::ScopeSelection::all())?;
+    if !selection.is_all() {
+        f.scopes = Some(selection.as_set());
+    }
     Ok(f)
 }
 
@@ -429,6 +476,42 @@ fn grep_exit(result: anyhow::Result<bool>) -> ExitCode {
             } else {
                 ExitCode::from(2)
             }
+        }
+    }
+}
+
+/// JSON mode must never mix machine data with prose diagnostics. Successful
+/// commands already wrote their compact payload; failures use the same
+/// versioned outcome contract carried in MCP JSON-RPC `error.data`.
+fn grep_exit_json(operation: &str, result: anyhow::Result<bool>) -> ExitCode {
+    match result {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(error) => {
+            let no_match = error.is::<lookup::NoMatch>();
+            let failure = agent_protocol::failure(operation, &error);
+            if let Err(write_error) = agent_protocol::write_json(&failure) {
+                eprintln!("sinter: failed to encode {operation} error: {write_error:#}");
+                return ExitCode::from(2);
+            }
+            if no_match {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::from(2)
+            }
+        }
+    }
+}
+
+fn exit_json(operation: &str, result: anyhow::Result<()>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            let failure = agent_protocol::failure(operation, &error);
+            if let Err(write_error) = agent_protocol::write_json(&failure) {
+                eprintln!("sinter: failed to encode {operation} error: {write_error:#}");
+            }
+            ExitCode::from(2)
         }
     }
 }
@@ -476,6 +559,7 @@ fn main() -> ExitCode {
     }
     let result = match cli.command {
         Command::Workspace { manifest } => workspace::run(&manifest),
+        Command::Ensure { repo } => init::ensure(repo.path()),
         Command::Uninit { repo, global } => uninit::run(repo.path(), global).map(|_| ()),
         Command::Init {
             repo,
@@ -573,52 +657,119 @@ fn main() -> ExitCode {
             repo,
             workspace,
             limit,
+            scope,
             json,
         } => {
-            return grep_exit(match workspace {
-                Some(manifest) => ask::run_workspace(&manifest, &question, limit),
-                None => ask::run(&repo, &question, limit, json),
-            });
+            let result =
+                corpus::ScopeSelection::parse(&scope, corpus::ScopeSelection::agent_default())
+                    .and_then(|scopes| match workspace {
+                        Some(manifest) => {
+                            ask::run_workspace(&manifest, &question, limit, json, &scopes)
+                        }
+                        None => ask::run(&repo, &question, limit, json, &scopes),
+                    });
+            return if json {
+                grep_exit_json("ask", result)
+            } else {
+                grep_exit(result)
+            };
         }
-        Command::Show { symbol, repo, json } => return grep_exit(show::run(&repo, &symbol, json)),
+        Command::Show {
+            symbol,
+            repo,
+            json,
+            if_snapshot,
+        } => {
+            let result = show::run(&repo, &symbol, json, if_snapshot.as_deref());
+            return if json {
+                grep_exit_json("show", result)
+            } else {
+                grep_exit(result)
+            };
+        }
         Command::Query {
             symbol,
             repo,
             limit,
+            scope,
             json,
-        } => return grep_exit(query::run(&repo, &symbol, limit, json)),
+            if_snapshot,
+        } => {
+            let result = corpus::ScopeSelection::parse(&scope, corpus::ScopeSelection::all())
+                .and_then(|scopes| {
+                    query::run(&repo, &symbol, limit, json, if_snapshot.as_deref(), &scopes)
+                });
+            return if json {
+                grep_exit_json("query", result)
+            } else {
+                grep_exit(result)
+            };
+        }
         Command::Affected {
             symbol,
             repo,
             workspace,
             max_depth,
             limit,
+            scope,
             json,
+            if_snapshot,
             filter,
             relations,
         } => {
-            return grep_exit(traversal_filter(&filter, &relations).and_then(
-                |f| match workspace {
-                    Some(manifest) => {
-                        affected::run_workspace(&manifest, &symbol, &f, max_depth, limit)
-                    }
-                    None => affected::run(&repo, &symbol, &f, max_depth, limit, json),
-                },
-            ));
+            let result =
+                traversal_filter(&filter, &relations, &scope).and_then(|f| match workspace {
+                    Some(manifest) => affected::run_workspace(
+                        &manifest,
+                        &symbol,
+                        &f,
+                        max_depth,
+                        limit,
+                        if_snapshot.as_deref(),
+                    ),
+                    None => affected::run(
+                        &repo,
+                        &symbol,
+                        &f,
+                        max_depth,
+                        limit,
+                        json,
+                        if_snapshot.as_deref(),
+                    ),
+                });
+            return if json {
+                grep_exit_json("affected", result)
+            } else {
+                grep_exit(result)
+            };
         }
         Command::Deps {
             symbol,
             repo,
             max_depth,
             limit,
+            scope,
             json,
+            if_snapshot,
             filter,
             relations,
         } => {
-            return grep_exit(
-                traversal_filter(&filter, &relations)
-                    .and_then(|f| deps::run(&repo, &symbol, &f, max_depth, limit, json)),
-            );
+            let result = traversal_filter(&filter, &relations, &scope).and_then(|f| {
+                deps::run(
+                    &repo,
+                    &symbol,
+                    &f,
+                    max_depth,
+                    limit,
+                    json,
+                    if_snapshot.as_deref(),
+                )
+            });
+            return if json {
+                grep_exit_json("deps", result)
+            } else {
+                grep_exit(result)
+            };
         }
         Command::Unresolved {
             repo,
@@ -627,29 +778,36 @@ fn main() -> ExitCode {
             limit,
             json,
         } => {
-            return grep_exit(unresolved::run(
-                &repo,
-                file.as_deref(),
-                name.as_deref(),
-                limit,
-                json,
-            ));
+            let result = unresolved::run(&repo, file.as_deref(), name.as_deref(), limit, json);
+            return if json {
+                grep_exit_json("unresolved", result)
+            } else {
+                grep_exit(result)
+            };
         }
         Command::Path {
             from,
             to,
             repo,
             workspace,
+            scope,
             json,
+            if_snapshot,
             filter,
             relations,
         } => {
-            return grep_exit(traversal_filter(&filter, &relations).and_then(
-                |f| match workspace {
-                    Some(manifest) => pathcmd::run_workspace(&manifest, &from, &to, &f),
-                    None => pathcmd::run(&repo, &from, &to, &f, json),
-                },
-            ));
+            let result =
+                traversal_filter(&filter, &relations, &scope).and_then(|f| match workspace {
+                    Some(manifest) => {
+                        pathcmd::run_workspace(&manifest, &from, &to, &f, if_snapshot.as_deref())
+                    }
+                    None => pathcmd::run(&repo, &from, &to, &f, json, if_snapshot.as_deref()),
+                });
+            return if json {
+                grep_exit_json("path", result)
+            } else {
+                grep_exit(result)
+            };
         }
         Command::Impact {
             rev_range,
@@ -657,15 +815,27 @@ fn main() -> ExitCode {
             workspace,
             json,
             filter,
-        } => impact::run(
-            &repo,
-            &rev_range,
-            workspace.as_deref(),
-            &filter.evidence,
-            filter.certain,
-            json,
-        ),
-        Command::Overlap { ranges, repo, json } => overlap::run(&repo, &ranges, json),
+        } => {
+            let result = impact::run(
+                &repo,
+                &rev_range,
+                workspace.as_deref(),
+                &filter.evidence,
+                filter.certain,
+                json,
+            );
+            if json {
+                return exit_json("impact", result);
+            }
+            result
+        }
+        Command::Overlap { ranges, repo, json } => {
+            let result = overlap::run(&repo, &ranges, json);
+            if json {
+                return exit_json("overlap", result);
+            }
+            result
+        }
         Command::Serve { repo, workspace } => match workspace {
             Some(manifest) => serve::run_workspace(&manifest),
             None => serve::run(&repo),
@@ -679,7 +849,15 @@ fn main() -> ExitCode {
             None if force => scip::run(repo.path()),
             None => scip::run_if_stale(repo.path()),
         },
-        Command::Map { repo, json } => map::run(repo.path(), json),
+        Command::Map { repo, scope, json } => {
+            let result =
+                corpus::ScopeSelection::parse(&scope, corpus::ScopeSelection::agent_default())
+                    .and_then(|scopes| map::run(repo.path(), json, &scopes));
+            if json {
+                return exit_json("map", result);
+            }
+            result
+        }
         Command::Update { dry_run } => update::run(dry_run),
         Command::Completion { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "sinter", &mut std::io::stdout());
