@@ -1,28 +1,28 @@
 //! Empirical safety metadata for a ranked `ask` result.
 //!
-//! A score gap is a ranking fact, not a probability. Confidence labels are
-//! therefore tied to a named holdout calibration, and the routing decision
-//! stays conservative when the query falls outside that calibration.
+//! A score gap is a ranking fact, not a probability. Ranking-margin buckets
+//! are therefore tied to a named holdout calibration, and the routing
+//! decision stays conservative when the query falls outside that calibration.
 
 use serde::Serialize;
 
 pub(crate) const CALIBRATION_VERSION: &str = "ask-holdout-2026-08-21.v1";
 
-const HIGH_MARGIN_PERMILLE: i64 = 200;
+pub(crate) const HIGH_MARGIN_PERMILLE: i64 = 200;
 const MEDIUM_MARGIN_PERMILLE: i64 = 50;
 const MIN_CALIBRATION_SAMPLE: usize = 10;
 const AUTO_ACCEPT_PRECISION_PERMILLE: u16 = 950;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum Level {
+pub(crate) enum RankingBucket {
     High,
     Medium,
     Low,
     Unrated,
 }
 
-impl Level {
+impl RankingBucket {
     pub(crate) fn from_label(label: &str) -> Option<Self> {
         match label {
             "high" => Some(Self::High),
@@ -46,8 +46,26 @@ pub(crate) struct RankingMargin {
 pub(crate) struct Calibration {
     pub(crate) version: &'static str,
     pub(crate) sample_size: usize,
+    /// Holdout cases whose top-1 was correct in this bucket.
+    pub(crate) correct: usize,
     pub(crate) measured_precision: f64,
+    /// Wilson 95% interval for `measured_precision`; wide when the sample
+    /// is small, which is the point of showing it.
+    pub(crate) precision_interval_95: [f64; 2],
     pub(crate) in_calibration: bool,
+}
+
+/// Wilson score interval (z = 1.96). A bare percent from n = 25 reads as
+/// authority; the interval reads as what it is.
+pub(crate) fn wilson_95(correct: usize, total: usize) -> [f64; 2] {
+    if total == 0 {
+        return [0.0, 0.0];
+    }
+    let (z, n, p) = (1.96_f64, total as f64, correct as f64 / total as f64);
+    let denominator = 1.0 + z * z / n;
+    let center = (p + z * z / (2.0 * n)) / denominator;
+    let half = z * (p * (1.0 - p) / n + z * z / (4.0 * n * n)).sqrt() / denominator;
+    [(center - half).max(0.0), (center + half).min(1.0)]
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -59,7 +77,7 @@ pub(crate) struct TermCoverage {
 
 #[derive(Clone, Copy, Debug, Serialize)]
 pub(crate) struct Assessment {
-    pub(crate) level: Level,
+    pub(crate) ranking_bucket: RankingBucket,
     pub(crate) ranking_margin: RankingMargin,
     pub(crate) calibration: Calibration,
     pub(crate) term_coverage: TermCoverage,
@@ -100,13 +118,14 @@ pub(crate) fn assess_top(scores: &[i64], matched_terms: usize, total_terms: usiz
     let absolute = (score - runner_up).max(0);
     let permille = absolute * 1000 / score;
     let level = if permille >= HIGH_MARGIN_PERMILLE {
-        Level::High
+        RankingBucket::High
     } else if permille >= MEDIUM_MARGIN_PERMILLE {
-        Level::Medium
+        RankingBucket::Medium
     } else {
-        Level::Low
+        RankingBucket::Low
     };
-    let (sample_size, precision_permille) = calibration_bucket(level);
+    let (sample_size, correct) = calibration_bucket(level);
+    let precision_permille = (correct * 1000 / sample_size.max(1)) as u16;
     let in_calibration = sample_size >= MIN_CALIBRATION_SAMPLE;
     let weak_coverage = coverage.permille < 500;
     let abstain = weak_coverage || !in_calibration;
@@ -118,7 +137,7 @@ pub(crate) fn assess_top(scores: &[i64], matched_terms: usize, total_terms: usiz
         "calibrated_ranking"
     };
     Assessment {
-        level,
+        ranking_bucket: level,
         ranking_margin: RankingMargin {
             absolute: Some(absolute),
             permille: Some(permille),
@@ -126,7 +145,9 @@ pub(crate) fn assess_top(scores: &[i64], matched_terms: usize, total_terms: usiz
         calibration: Calibration {
             version: CALIBRATION_VERSION,
             sample_size,
-            measured_precision: f64::from(precision_permille) / 1000.0,
+            correct,
+            measured_precision: correct as f64 / sample_size.max(1) as f64,
+            precision_interval_95: wilson_95(correct, sample_size),
             in_calibration,
         },
         term_coverage: coverage,
@@ -138,7 +159,7 @@ pub(crate) fn assess_top(scores: &[i64], matched_terms: usize, total_terms: usiz
 
 fn unrated(coverage: TermCoverage, reason: &'static str) -> Assessment {
     Assessment {
-        level: Level::Unrated,
+        ranking_bucket: RankingBucket::Unrated,
         ranking_margin: RankingMargin {
             absolute: None,
             permille: None,
@@ -146,7 +167,9 @@ fn unrated(coverage: TermCoverage, reason: &'static str) -> Assessment {
         calibration: Calibration {
             version: CALIBRATION_VERSION,
             sample_size: 0,
+            correct: 0,
             measured_precision: 0.0,
+            precision_interval_95: [0.0, 0.0],
             in_calibration: false,
         },
         term_coverage: coverage,
@@ -156,14 +179,14 @@ fn unrated(coverage: TermCoverage, reason: &'static str) -> Assessment {
     }
 }
 
-/// Fixed observations from the named repository holdout run. These are
-/// descriptive measurements, not promises about an individual result.
-const fn calibration_bucket(level: Level) -> (usize, u16) {
+/// `(cases, correct top-1)` from the named repository holdout run. These
+/// are descriptive counts, not promises about an individual result.
+const fn calibration_bucket(level: RankingBucket) -> (usize, usize) {
     match level {
-        Level::High => (25, 880),
-        Level::Medium => (12, 667),
-        Level::Low => (9, 222),
-        Level::Unrated => (0, 0),
+        RankingBucket::High => (25, 22),
+        RankingBucket::Medium => (12, 8),
+        RankingBucket::Low => (9, 2),
+        RankingBucket::Unrated => (0, 0),
     }
 }
 
@@ -180,16 +203,20 @@ pub(crate) fn advice(assessment: Assessment, family_size: usize) -> Option<Strin
         ));
     }
     if assessment.verify_required {
+        let calibration = assessment.calibration;
+        let [low, high] = calibration.precision_interval_95;
         return Some(format!(
-            "verification required: {} confidence measured {:.1}% precision over {} holdout cases{family}",
-            match assessment.level {
-                Level::High => "high",
-                Level::Medium => "medium",
-                Level::Low => "low",
-                Level::Unrated => "unrated",
+            "verification required: {} ranking-margin bucket; holdout top-1 {}/{} correct (95% interval {:.0}-{:.0}%, small sample){family}",
+            match assessment.ranking_bucket {
+                RankingBucket::High => "high",
+                RankingBucket::Medium => "medium",
+                RankingBucket::Low => "low",
+                RankingBucket::Unrated => "unrated",
             },
-            assessment.calibration.measured_precision * 100.0,
-            assessment.calibration.sample_size,
+            calibration.correct,
+            calibration.sample_size,
+            low * 100.0,
+            high * 100.0,
         ));
     }
     None
@@ -197,24 +224,41 @@ pub(crate) fn advice(assessment: Assessment, family_size: usize) -> Option<Strin
 
 #[cfg(test)]
 mod tests {
-    use super::{Level, advice, assess_top};
+    use super::{RankingBucket, advice, assess_top, wilson_95};
+
+    #[test]
+    fn wilson_interval_widens_for_small_samples() {
+        let [low, high] = wilson_95(22, 25);
+        assert!((low - 0.70).abs() < 0.01, "{low}");
+        assert!((high - 0.96).abs() < 0.01, "{high}");
+        assert_eq!(wilson_95(0, 0), [0.0, 0.0]);
+        let [wide_low, wide_high] = wilson_95(2, 9);
+        assert!(wide_high - wide_low > 0.4);
+    }
 
     #[test]
     fn score_gap_is_named_separately_from_empirical_confidence() {
         let assessment = assess_top(&[400, 300], 2, 2);
-        assert_eq!(assessment.level, Level::High);
+        assert_eq!(assessment.ranking_bucket, RankingBucket::High);
         assert_eq!(assessment.ranking_margin.absolute, Some(100));
         assert_eq!(assessment.ranking_margin.permille, Some(250));
         assert_eq!(assessment.calibration.sample_size, 25);
+        assert_eq!(assessment.calibration.correct, 22);
         assert_eq!(assessment.calibration.measured_precision, 0.88);
         assert!(assessment.verify_required);
         assert!(!assessment.abstain);
+        assert_eq!(
+            advice(assessment, 1).as_deref(),
+            Some(
+                "verification required: high ranking-margin bucket; holdout top-1 22/25 correct (95% interval 70-96%, small sample)"
+            )
+        );
     }
 
     #[test]
     fn singleton_and_weak_evidence_abstain() {
         let singleton = assess_top(&[500], 1, 1);
-        assert_eq!(singleton.level, Level::Unrated);
+        assert_eq!(singleton.ranking_bucket, RankingBucket::Unrated);
         assert_eq!(singleton.ranking_margin.permille, None);
         assert_eq!(singleton.reason, "no_runner_up");
         assert!(singleton.abstain);
@@ -228,7 +272,7 @@ mod tests {
     #[test]
     fn undersampled_low_bucket_abstains() {
         let assessment = assess_top(&[1000, 980], 2, 2);
-        assert_eq!(assessment.level, Level::Low);
+        assert_eq!(assessment.ranking_bucket, RankingBucket::Low);
         assert!(!assessment.calibration.in_calibration);
         assert_eq!(assessment.reason, "insufficient_calibration_sample");
         assert!(assessment.abstain);

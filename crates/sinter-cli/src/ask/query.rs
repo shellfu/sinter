@@ -7,9 +7,9 @@ use std::collections::HashSet;
 const STOPWORDS: &[&str] = &[
     "a", "an", "and", "are", "as", "at", "be", "been", "by", "can", "could", "do", "does", "find",
     "for", "from", "how", "i", "in", "into", "is", "it", "its", "located", "may", "me", "might",
-    "must", "my", "of", "on", "or", "our", "shall", "should", "show", "that", "the", "these",
-    "this", "those", "to", "up", "was", "we", "were", "what", "where", "which", "who", "whom",
-    "will", "with", "would", "you", "your",
+    "must", "my", "of", "on", "only", "or", "our", "shall", "should", "show", "that", "the",
+    "these", "this", "those", "to", "up", "was", "we", "were", "what", "where", "which", "who",
+    "whom", "will", "with", "would", "you", "your",
 ];
 
 const SOFT_STOPWORDS: &[&str] = &[
@@ -341,6 +341,67 @@ impl QueryTerm {
     }
 }
 
+/// Words that mark a question as reaching for prose (install guide,
+/// publishing steps) rather than the code that implements it.
+const DOC_MARKERS: &[&str] = &[
+    "how do i",
+    "how to",
+    "install",
+    "publish",
+    "guide",
+    "tutorial",
+    "readme",
+    "documentation",
+    "docs",
+    "changelog",
+    "license",
+    "getting started",
+    "contributing",
+];
+
+/// Words that only an engineer asks with: the question wants a symbol.
+const CODE_WORDS: &[&str] = &[
+    "fn",
+    "function",
+    "functions",
+    "struct",
+    "structs",
+    "impl",
+    "trait",
+    "enum",
+    "type",
+    "types",
+    "method",
+    "methods",
+    "class",
+    "module",
+    "crate",
+    "test",
+    "tests",
+    "call",
+    "calls",
+    "caller",
+    "callers",
+    "callee",
+    "symbol",
+    "symbols",
+    "import",
+    "imports",
+    "return",
+    "returns",
+    "where",
+];
+
+/// `parse_args`, `Index::build`, `src/ask.rs`, `fooBar`, `run(`.
+fn looks_like_identifier(word: &str) -> bool {
+    word.contains('_')
+        || word.contains("::")
+        || word.contains('/')
+        || word.contains('(')
+        || word.contains(".rs")
+        || (word.chars().any(char::is_lowercase) && word.chars().skip(1).any(char::is_uppercase))
+}
+
 /// Parsed question. `phrases` pairs indexes into `terms` that were
 /// adjacent in the question ("command line" in "command line arguments"),
 /// so ranking can reward identifiers that keep the same order.
@@ -349,6 +410,8 @@ pub(super) struct Query {
     terms: Vec<QueryTerm>,
     phrases: Vec<(usize, usize)>,
     action: bool,
+    wants_docs: bool,
+    engineering: bool,
 }
 
 impl Query {
@@ -385,10 +448,18 @@ impl Query {
             .collect();
         let terms: Vec<QueryTerm> = positioned.into_iter().map(|(_, term)| term).collect();
         let action = terms.iter().any(QueryTerm::is_action);
+        let wants_docs = DOC_MARKERS.iter().any(|marker| lower.contains(marker));
+        let words = lower.split_whitespace().collect::<Vec<_>>();
+        let engineering = !wants_docs
+            && (action
+                || question.split_whitespace().any(looks_like_identifier)
+                || words.iter().any(|word| CODE_WORDS.contains(word)));
         Self {
             terms,
             phrases,
             action,
+            wants_docs,
+            engineering,
         }
     }
 
@@ -404,6 +475,17 @@ impl Query {
     /// what a thing is.
     pub(super) fn is_action(&self) -> bool {
         self.action
+    }
+
+    /// The question reaches for prose: a section may outrank code.
+    pub(super) fn wants_docs(&self) -> bool {
+        self.wants_docs
+    }
+
+    /// The question names code (identifier, path, code word, or action
+    /// verb): a section describing the code must not outrank the code.
+    pub(super) fn is_engineering(&self) -> bool {
+        self.engineering
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -653,6 +735,17 @@ mod tests {
         assert_eq!(query.surface_text(" "), "default error handler command");
         // "default error", "error handler" adjacent; "handler ... command" not.
         assert_eq!(query.phrases(), &[(0, 1), (1, 2)]);
+    }
+
+    #[test]
+    fn engineering_and_docs_intent_are_cheap_surface_checks() {
+        assert!(Query::parse("where is the trigram search").is_engineering());
+        assert!(Query::parse("Index::build callers").is_engineering());
+        assert!(Query::parse("tests proving impact selects affected tests").is_engineering());
+        let install = Query::parse("how do I install sinter");
+        assert!(install.wants_docs());
+        assert!(!install.is_engineering());
+        assert!(!Query::parse("sinter skill card hooks").is_engineering());
     }
 
     #[test]

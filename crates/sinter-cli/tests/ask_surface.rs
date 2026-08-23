@@ -292,7 +292,9 @@ fn agent_protocol_matches_cli_and_mcp() {
         writeln!(stdin, r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"ask","arguments":{{"question":"character controller"}}}}}}"#).unwrap();
         writeln!(stdin, r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"show","arguments":{{"symbol":"collide"}}}}}}"#).unwrap();
         writeln!(stdin, r#"{{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{{"name":"query","arguments":{{"symbol":"PlayerCharacterV2","limit":5}}}}}}"#).unwrap();
-        writeln!(stdin, r#"{{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{{"name":"ask","arguments":{{"question":"character controller","explain":true}}}}}}"#).unwrap();
+        // `explain` payloads exceed MCP's default 8000-byte budget; lift it
+        // so the parity check compares against the unbudgeted CLI output.
+        writeln!(stdin, r#"{{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{{"name":"ask","arguments":{{"question":"character controller","explain":true,"budget_bytes":0}}}}}}"#).unwrap();
     }
     drop(child.stdin.take());
     let output = child.wait_with_output().unwrap();
@@ -635,6 +637,52 @@ export class PlayerPawn {
 }
 
 /// Family boost across header/impl: out-of-class definitions name their
+#[test]
+fn ask_test_question_reaches_test_scope_and_code_outranks_prose() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::create_dir_all(repo.join("tests")).unwrap();
+    std::fs::write(
+        repo.join("src/impact.rs"),
+        "/// Selects affected tests for a change.\npub fn affected_tests() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("tests/impact_surface.rs"),
+        "#[test]\nfn impact_selects_affected_tests() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("README.md"),
+        "# Impact\n\nImpact selects affected tests. Impact selects affected tests for every change, and affected tests run first.\n",
+    )
+    .unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+    let (ok, out) = sinter(
+        repo,
+        &["ask", "tests proving impact selects affected tests"],
+    );
+    assert!(ok, "{out}");
+    let first = out.lines().find(|l| l.starts_with("1. ")).unwrap();
+    assert!(
+        first.contains("impact_selects_affected_tests"),
+        "test symbol outside the default scope not surfaced:\n{out}"
+    );
+    assert!(!out.contains("abstain"), "{out}");
+    let (ok, out) = sinter(repo, &["ask", "fn that selects affected tests", "--json"]);
+    assert!(ok, "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let hits = v["topics"][0]["hits"].as_array().unwrap();
+    assert_ne!(hits[0]["kind"], "section", "prose outranks code:\n{out}");
+    assert!(
+        hits.iter()
+            .all(|h| h["doc"].as_str().map_or(true, |d| d.chars().count() <= 201)),
+        "{out}"
+    );
+}
+
 /// class in their qualified prefix — that syntactic link counts as family
 /// even though their structural parent is the impl file.
 #[test]
@@ -716,7 +764,7 @@ fn install_writes_skill_card() {
         assert!(card.contains(contract), "installed card lost {contract}");
     }
     assert!(
-        card.contains("advisory at most once per session")
+        card.contains("each\nclass at most once per session")
             && card.contains("Calls without a session ID remain"),
         "hook session behavior missing from installed card: {card}"
     );
@@ -964,9 +1012,10 @@ fn version_subcommand_matches_flag() {
 }
 
 /// `sinter init` onboards a repo end to end: graph built, hooks installed,
-/// AGENTS.md block + MCP registered, doctor clean. HOME points at a temp
-/// dir so the global skill-card write never touches the real user
-/// environment (hermetic under any sandbox).
+/// AGENTS.md block + MCP registered, doctor clean — and every write lands
+/// inside the repo. HOME points at a temp dir so a leak outside the
+/// project is caught rather than silently landing in the real user
+/// environment.
 #[test]
 fn init_onboards_repo() {
     let dir = tempfile::tempdir().unwrap();
@@ -999,11 +1048,16 @@ fn init_onboards_repo() {
     };
     let (ok, out) = init(&["init"]);
     assert!(ok, "{out}");
+    // Project first: a plain init must not reach into the home directory.
     assert!(
-        home.path().join(".claude/skills/sinter/SKILL.md").exists(),
-        "{out}"
+        !home.path().join(".claude/skills/sinter/SKILL.md").exists(),
+        "init wrote the machine-wide skill card without --global: {out}"
     );
-    assert!(out.contains("== build =="), "{out}");
+    // Every write is disclosed before it happens.
+    assert!(out.contains("sinter init —"), "{out}");
+    assert!(out.contains("this repo"), "{out}");
+    assert!(out.contains("pass --global"), "{out}");
+    assert!(out.contains("symbols,"), "{out}");
     assert!(repo.join(".sinter/graph.redb").exists(), "{out}");
     assert!(
         std::fs::read_to_string(repo.join(".git/hooks/post-commit"))
@@ -1021,11 +1075,28 @@ fn init_onboards_repo() {
         serde_json::from_str(&std::fs::read_to_string(repo.join(".mcp.json")).unwrap()).unwrap();
     assert_eq!(mcp["mcpServers"]["sinter"]["command"], "sinter");
     assert!(out.contains("== doctor =="), "{out}");
+    // A project-scoped install is a complete install: the absent global
+    // skill card must not be reported as a problem to fix.
+    assert!(out.contains("0 problem(s)"), "{out}");
     // Idempotent: second init changes nothing and still succeeds.
     let (_, again) = init(&["init"]);
-    assert!(again.contains("0 changed"), "{again}");
     let agents = std::fs::read_to_string(repo.join("AGENTS.md")).unwrap();
     assert_eq!(agents.matches("BEGIN sinter").count(), 1, "{agents}");
+    assert!(again.contains("== doctor =="), "{again}");
+
+    // --global is the opt-in that reaches the machine.
+    let (ok, out) = init(&["init", "--global"]);
+    assert!(ok, "{out}");
+    assert!(
+        home.path().join(".claude/skills/sinter/SKILL.md").exists(),
+        "{out}"
+    );
+    assert!(
+        std::fs::read_to_string(home.path().join(".claude/settings.json"))
+            .unwrap()
+            .contains("sinter-first."),
+        "{out}"
+    );
 }
 
 /// Agent-safe setup creates only derived graph state. It must not acquire the
@@ -1129,7 +1200,7 @@ fn init_runs_indexers_only_with_consent() {
         "non-interactive init executed an indexer without consent"
     );
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(text.contains("skipped: non-interactive"), "{text}");
+    assert!(text.contains("not run — pass --scip"), "{text}");
 
     init(&["init", "--scip"]);
     assert!(marker.exists(), "--scip must run the indexer");
@@ -1540,16 +1611,16 @@ fn strict_hook_denies_first_search_then_nudges() {
     assert!(anon_again.contains("additionalContext"), "{anon_again}");
     assert!(!anon_again.contains("deny"), "{anon_again}");
 
-    // Git archaeology stays advisory even in strict mode.
+    // Git archaeology (`git log -S`) stays advisory even in strict mode.
     let git = run(
         "grep-strict",
-        r#"{"session_id":"sess-git","tool_input":{"command":"git log --oneline"}}"#,
+        r#"{"session_id":"sess-git","tool_input":{"command":"git log -S open_store"}}"#,
     );
     assert!(git.contains("additionalContext"), "{git}");
     assert!(!git.contains("deny"), "{git}");
     let git_again = run(
         "grep-strict",
-        r#"{"session_id":"sess-git","tool_input":{"command":"git diff"}}"#,
+        r#"{"session_id":"sess-git","tool_input":{"command":"git log -G foo"}}"#,
     );
     assert!(git_again.is_empty(), "{git_again}");
 
@@ -1568,7 +1639,8 @@ fn strict_hook_denies_first_search_then_nudges() {
 
 /// Advisory hooks deduplicate each class per session. Shell recursive search
 /// and the Grep tool intentionally share one search class, while git
-/// archaeology and subagent-task prompts have independent lifecycles.
+/// archaeology and the prompt router have independent lifecycles. Everyday
+/// commands and subagent spawns never nudge.
 #[cfg(unix)]
 #[test]
 fn advisory_hook_nudges_are_session_deduplicated() {
@@ -1610,20 +1682,54 @@ fn advisory_hook_nudges_are_session_deduplicated() {
     let other_search = run("greptool", r#"{"session_id":"other-search"}"#);
     assert!(other_search.contains("additionalContext"), "{other_search}");
 
-    let git_input = r#"{"session_id":"git-session","tool_input":{"command":"git show HEAD"}}"#;
+    let git_input =
+        r#"{"session_id":"git-session","tool_input":{"command":"git log -S open_store"}}"#;
     assert!(run("grep", git_input).contains("additionalContext"));
     assert!(run("grep", git_input).is_empty());
-    let other_git = r#"{"session_id":"other-git","tool_input":{"command":"git log"}}"#;
+    let other_git = r#"{"session_id":"other-git","tool_input":{"command":"git log -G foo"}}"#;
     assert!(run("grep", other_git).contains("additionalContext"));
 
-    let task_input = r#"{"session_id":"task-session"}"#;
-    assert!(run("task", task_input).contains("additionalContext"));
-    assert!(run("task", task_input).is_empty());
-    assert!(run("task", r#"{"session_id":"other-task"}"#).contains("additionalContext"));
+    // Quiet by default: everyday commands and subagent spawns never nudge.
+    for cmd in [
+        "git status",
+        "git log --oneline",
+        "git diff",
+        "cargo check",
+        "ls -la",
+        "cat README.md",
+        "sed -n 1,5p x",
+    ] {
+        let input = format!(r#"{{"session_id":"quiet","tool_input":{{"command":"{cmd}"}}}}"#);
+        assert!(run("grep", &input).is_empty(), "{cmd} must be silent");
+    }
+    assert!(
+        run(
+            "task",
+            r#"{"session_id":"task-session","tool_input":{"prompt":"find callers"}}"#
+        )
+        .is_empty()
+    );
+    for cmd in [
+        "grep -rn open_store crates",
+        "find . -name '*.rs'",
+        "ag foo",
+    ] {
+        let input =
+            format!(r#"{{"session_id":"search-{cmd}","tool_input":{{"command":"{cmd}"}}}}"#);
+        assert!(
+            run("grep", &input).contains("additionalContext"),
+            "{cmd} must nudge"
+        );
+    }
+
+    // The prompt router fires once per session.
+    let prompt = r#"{"session_id":"prompt-session"}"#;
+    assert!(run("prompt", prompt).contains("sinter graph"));
+    assert!(run("prompt", prompt).is_empty());
 
     // Without a usable session ID, hooks cannot safely deduplicate. They keep
     // nudging rather than silently disappearing, but never deny.
-    for mode in ["grep", "greptool", "task"] {
+    for mode in ["grep", "greptool"] {
         let input = if mode == "grep" {
             shell_search(None)
         } else {
@@ -1638,7 +1744,8 @@ fn advisory_hook_nudges_are_session_deduplicated() {
 
     // Raw session IDs never become path components. The marker name contains
     // only the advisory class and a digest.
-    let hostile = r#"{"session_id":"../../outside session","tool_input":{"command":"git diff"}}"#;
+    let hostile =
+        r#"{"session_id":"../../outside session","tool_input":{"command":"git log -S x"}}"#;
     assert!(run("grep", hostile).contains("additionalContext"));
     let marker_dir = std::fs::read_dir(tmp.path())
         .unwrap()

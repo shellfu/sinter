@@ -40,6 +40,14 @@ const DOC_SUMMARY_CHARS: usize = 400;
 const PT_CALLEE: i64 = 30;
 /// Only the leading hits earn callee credit; it is a rerank, not retrieval.
 const CALLEE_RERANK_DEPTH: usize = 30;
+/// A query term that appears only inside the symbol's body (a local, a
+/// callee argument, a comment): a quarter of a doc match at full IDF,
+/// scaled toward zero for words most bodies use.
+const PT_BODY: i64 = 10;
+/// Body-only candidates pulled in per term variant; retrieval, not recall.
+const BODY_RETRIEVAL_CAP: usize = 50;
+/// A body word carried by more than this share of nodes is glue, not topic.
+const BODY_DF_CEILING_PERMILLE: u64 = 100;
 const HUB_CAP: i64 = 20;
 const FAMILY_MIN_CHILDREN: usize = 2;
 const TEST_PENALTY: (i64, i64) = (1, 3);
@@ -55,9 +63,12 @@ pub(super) struct ScoreBreakdown {
     name_precision: i64,
     phrase: i64,
     callee: i64,
+    body: i64,
     evidence: i64,
-    coverage_numerator: usize,
-    coverage_denominator: usize,
+    /// Terms matched only in the body count half toward coverage.
+    pub(super) body_only: usize,
+    pub(super) coverage_numerator: usize,
+    pub(super) coverage_denominator: usize,
     kind_numerator: i64,
     kind_denominator: i64,
     penalty_numerator: i64,
@@ -72,12 +83,25 @@ pub(super) struct Hit {
     pub(super) scope: CorpusScope,
     pub(super) score: i64,
     pub(super) matched: Vec<String>,
+    /// Subset of `matched` whose only evidence is a body word.
+    body_matched: Vec<String>,
     pub(super) channels: Vec<&'static str>,
     /// Query roles this hit satisfied: "action", "phrase", "owner".
     pub(super) roles: Vec<&'static str>,
     pub(super) total_terms: usize,
     pub(super) breakdown: ScoreBreakdown,
+    /// Lower-ranked hits with the same bare name, folded into this one so
+    /// the visible top-k carries distinct names (`build` absorbs
+    /// `Index::build`).
+    pub(super) variants: Vec<String>,
     parent: Option<String>,
+}
+
+impl Hit {
+    /// Term coverage with body-only terms at half credit.
+    pub(super) fn coverage(&self) -> (usize, usize) {
+        coverage(&self.breakdown)
+    }
 }
 
 fn is_test_path(file: &str) -> bool {
@@ -106,8 +130,19 @@ fn is_vendor_path(file: &str) -> bool {
     })
 }
 
-fn kind_prior(kind: SymbolKind, action_query: bool) -> (i64, i64) {
-    if action_query {
+fn kind_prior(kind: SymbolKind, query: &Query) -> (i64, i64) {
+    if kind == SymbolKind::Section {
+        // Prose describes behavior; it never is the behavior. Only a
+        // question that reaches for prose lets a section stand level.
+        return if query.wants_docs() {
+            (1, 1)
+        } else if query.is_engineering() {
+            (1, 2)
+        } else {
+            (7, 10)
+        };
+    }
+    if query.is_action() {
         return match kind {
             SymbolKind::Function | SymbolKind::Method | SymbolKind::Macro => (3, 2),
             SymbolKind::Struct
@@ -118,8 +153,6 @@ fn kind_prior(kind: SymbolKind, action_query: bool) -> (i64, i64) {
             | SymbolKind::TypeAlias
             | SymbolKind::Module
             | SymbolKind::File => (1, 1),
-            // Prose describes behavior; it never is the behavior.
-            SymbolKind::Section => (1, 2),
             _ => (7, 10),
         };
     }
@@ -142,6 +175,23 @@ fn doc_summary(doc: &str) -> String {
         Some((cut, _)) => lower[..cut].to_owned(),
         None => lower,
     }
+}
+
+/// Trigram closeness alone credits `sync` to `syntax_error_files`; a
+/// close name must also share a four-character prefix with one token.
+const FUZZY_PREFIX_CHARS: usize = 4;
+
+fn shares_prefix(variants: &[String], tokens: &[String]) -> bool {
+    variants.iter().any(|variant| {
+        tokens.iter().any(|token| {
+            let shared = variant
+                .chars()
+                .zip(token.chars())
+                .take_while(|(a, b)| a == b)
+                .count();
+            shared >= FUZZY_PREFIX_CHARS.min(variant.len())
+        })
+    })
 }
 
 /// Owner segment of a qualified name: `JsonReader` in `JsonReader::peek`.
@@ -197,12 +247,21 @@ struct TermEvidence {
     doc: bool,
     signature: bool,
     path: bool,
+    /// The term appears only inside the body (see `FileFacts::body_terms`).
+    body: bool,
 }
 
 impl TermEvidence {
     fn any(self) -> bool {
         self.name_exact || self.name_close || self.owner || self.doc || self.signature || self.path
     }
+}
+
+/// Per-term body evidence: which node ids carry a variant as a body word,
+/// and that variant's IDF weight in permille (0 for glue words).
+struct BodyEvidence {
+    ids: HashSet<String>,
+    idf_permille: i64,
 }
 
 struct Candidate {
@@ -213,7 +272,12 @@ struct Candidate {
     matched_name_tokens: Vec<bool>,
 }
 
-fn gather(node: Node, query: &Query, close_ids: &[HashSet<String>]) -> Candidate {
+fn gather(
+    node: Node,
+    query: &Query,
+    close_ids: &[HashSet<String>],
+    body: &[BodyEvidence],
+) -> Candidate {
     let name = node.name.to_lowercase();
     let qualified = qualified_of(node.id.as_str()).to_lowercase();
     let owner = owner_of(&qualified).unwrap_or("").to_owned();
@@ -232,13 +296,15 @@ fn gather(node: Node, query: &Query, close_ids: &[HashSet<String>]) -> Candidate
                 name_exact: term.variants().contains(&name),
                 name_close: token_hit
                     || term.occurs_in(&name)
-                    || close_ids[index].contains(node.id.as_str()),
+                    || (close_ids[index].contains(node.id.as_str())
+                        && shares_prefix(term.variants(), &name_tokens)),
                 owner: !owner.is_empty() && term.occurs_in(&owner),
                 doc: !doc.is_empty() && term.occurs_in(&doc),
                 signature: term.occurs_in(&signature),
                 path: file
                     .split(['/', '.'])
                     .any(|segment| term.occurs_in(segment)),
+                body: body[index].ids.contains(node.id.as_str()),
                 ..TermEvidence::default()
             };
             for (token, flag) in name_tokens.iter().zip(matched_name_tokens.iter_mut()) {
@@ -291,14 +357,19 @@ pub(super) fn score_candidates(
         }
         close_ids.push(close);
     }
+    let body = body_evidence(store, query, &mut nodes, &mut seen)?;
+    // A question about tests wants test symbols even though the default
+    // scope (production, docs) leaves them out.
+    let test_query = terms
+        .iter()
+        .any(|term| term.variants().iter().any(|variant| variant == "test"));
     let file_scopes = store.file_scopes()?;
     nodes.retain(|node| {
-        scopes.contains(
-            file_scopes
-                .get(&node.file)
-                .copied()
-                .unwrap_or_else(|| CorpusScope::classify_path(&node.file)),
-        )
+        let scope = file_scopes
+            .get(&node.file)
+            .copied()
+            .unwrap_or_else(|| CorpusScope::classify_path(&node.file));
+        scopes.contains(scope) || (test_query && scope == CorpusScope::Test)
     });
     nodes.sort_by(|left, right| left.id.cmp(&right.id));
     let candidate_ids = nodes.iter().map(|node| node.id.clone()).collect::<Vec<_>>();
@@ -306,9 +377,8 @@ pub(super) fn score_candidates(
 
     let candidates = nodes
         .into_iter()
-        .map(|node| gather(node, query, &close_ids))
+        .map(|node| gather(node, query, &close_ids, &body))
         .collect::<Vec<_>>();
-    let test_query = terms.iter().any(|term| term.surface() == "test");
 
     let mut hits = Vec::new();
     for candidate in candidates {
@@ -321,6 +391,7 @@ pub(super) fn score_candidates(
         } = candidate;
         let mut breakdown = ScoreBreakdown::default();
         let mut matched = Vec::new();
+        let mut body_matched = Vec::new();
         let mut channels = Vec::new();
         let mut roles = Vec::new();
         for (index, term) in terms.iter().enumerate() {
@@ -359,6 +430,12 @@ pub(super) fn score_candidates(
             }
             if hit.any() {
                 matched.push(term.surface().to_owned());
+            } else if hit.body && body[index].idf_permille > 0 {
+                breakdown.body += PT_BODY * body[index].idf_permille / 1000;
+                breakdown.body_only += 1;
+                channels.push("body");
+                matched.push(term.surface().to_owned());
+                body_matched.push(term.surface().to_owned());
             }
         }
         let matched_tokens = matched_name_tokens.iter().filter(|hit| **hit).count() as i64;
@@ -381,12 +458,13 @@ pub(super) fn score_candidates(
             + breakdown.action_name_bonus
             + breakdown.name_precision
             + breakdown.phrase
+            + breakdown.body
             == 0
         {
             continue;
         }
 
-        let (kind_numerator, kind_denominator) = kind_prior(node.kind, action_query);
+        let (kind_numerator, kind_denominator) = kind_prior(node.kind, query);
         let (mut penalty_numerator, mut penalty_denominator) = if !test_query
             && (is_test_path(&node.file) || is_test_name(qualified_of(node.id.as_str())))
         {
@@ -426,10 +504,12 @@ pub(super) fn score_candidates(
             node,
             score,
             matched,
+            body_matched,
             channels,
             roles,
             total_terms: terms.len(),
             breakdown,
+            variants: Vec::new(),
             parent,
         });
     }
@@ -441,7 +521,33 @@ pub(super) fn score_candidates(
     sort_hits(&mut hits);
     apply_callee_evidence(store, query, &mut hits)?;
     sort_hits(&mut hits);
-    Ok(hits)
+    Ok(collapse_same_name(hits))
+}
+
+/// Keep the best hit per bare name among weak matches; later same-name
+/// weak hits become its `variants` so the next distinct name moves up. A
+/// hit covering at least half the query is an answer in its own right
+/// (`App::add_url_rule` beside `Blueprint::add_url_rule`) and stays.
+fn collapse_same_name(hits: Vec<Hit>) -> Vec<Hit> {
+    let mut kept: Vec<Hit> = Vec::with_capacity(hits.len());
+    let mut index_by_name: HashMap<String, usize> = HashMap::new();
+    for hit in hits {
+        let weak = hit.matched.len() * 2 < hit.total_terms;
+        if !weak {
+            kept.push(hit);
+            continue;
+        }
+        match index_by_name.get(hit.node.name.as_str()) {
+            Some(&at) => kept[at]
+                .variants
+                .push(qualified_of(hit.node.id.as_str()).to_owned()),
+            None => {
+                index_by_name.insert(hit.node.name.clone(), kept.len());
+                kept.push(hit);
+            }
+        }
+    }
+    kept
 }
 
 fn sort_hits(hits: &mut [Hit]) {
@@ -455,6 +561,17 @@ fn sort_hits(hits: &mut [Hit]) {
     });
 }
 
+/// Term coverage with body-only terms at half credit, as a fraction.
+fn coverage(breakdown: &ScoreBreakdown) -> (usize, usize) {
+    if breakdown.body_only == 0 {
+        return (breakdown.coverage_numerator, breakdown.coverage_denominator);
+    }
+    (
+        2 * breakdown.coverage_numerator - breakdown.body_only,
+        2 * breakdown.coverage_denominator,
+    )
+}
+
 /// evidence × coverage × kind prior × penalties + hub bonus.
 fn combine(breakdown: &mut ScoreBreakdown) -> i64 {
     breakdown.evidence = breakdown.name
@@ -464,14 +581,14 @@ fn combine(breakdown: &mut ScoreBreakdown) -> i64 {
         + breakdown.action_name_bonus
         + breakdown.name_precision
         + breakdown.phrase
-        + breakdown.callee;
+        + breakdown.callee
+        + breakdown.body;
+    let (covered, total) = coverage(breakdown);
     let score = breakdown.evidence
-        * breakdown.coverage_numerator as i64
+        * covered as i64
         * breakdown.kind_numerator
         * breakdown.penalty_numerator
-        / (breakdown.coverage_denominator as i64
-            * breakdown.kind_denominator
-            * breakdown.penalty_denominator)
+        / (total as i64 * breakdown.kind_denominator * breakdown.penalty_denominator)
         + breakdown.hub_bonus;
     breakdown.final_score = score;
     score
@@ -503,11 +620,20 @@ fn apply_callee_evidence(store: &Store, query: &Query, hits: &mut [Hit]) -> Resu
         }
         let mut gained = false;
         for term in query.terms() {
-            if hit.matched.iter().any(|m| m == term.surface()) {
+            let body_only = hit.body_matched.iter().position(|m| m == term.surface());
+            if body_only.is_none() && hit.matched.iter().any(|m| m == term.surface()) {
                 continue;
             }
             if callee_tokens.iter().any(|token| term.matches_token(token)) {
-                hit.matched.push(term.surface().to_owned());
+                // A callee named after the term outranks a body mention:
+                // the term graduates from half to full coverage.
+                match body_only {
+                    Some(at) => {
+                        hit.body_matched.remove(at);
+                        hit.breakdown.body_only -= 1;
+                    }
+                    None => hit.matched.push(term.surface().to_owned()),
+                }
                 hit.breakdown.callee += PT_CALLEE;
                 gained = true;
             }
@@ -520,6 +646,58 @@ fn apply_callee_evidence(store: &Store, query: &Query, hits: &mut [Hit]) -> Resu
         }
     }
     Ok(())
+}
+
+/// Body-word retrieval and evidence for every query term. Glue words (df
+/// above the ceiling) neither retrieve nor score; the rest pull in at
+/// most `BODY_RETRIEVAL_CAP` new candidates per variant and weigh by IDF.
+fn body_evidence(
+    store: &Store,
+    query: &Query,
+    nodes: &mut Vec<Node>,
+    seen: &mut HashSet<String>,
+) -> Result<Vec<BodyEvidence>> {
+    let total = store.node_count()?.max(2);
+    let ceiling = total * BODY_DF_CEILING_PERMILLE / 1000;
+    let log_total = (total as f64).ln();
+    let mut out = Vec::with_capacity(query.terms().len());
+    for term in query.terms() {
+        let mut evidence = BodyEvidence {
+            ids: HashSet::new(),
+            idf_permille: 0,
+        };
+        // Agent nouns name the actor, bodies name the act: "importers"
+        // reaches `is_import`/`importing_files` through the bare stem.
+        let stems = term.variants().iter().flat_map(|variant| {
+            let stem = ["ers", "er", "ors", "or"]
+                .iter()
+                .find_map(|suffix| variant.strip_suffix(suffix))
+                .filter(|stem| stem.len() >= 4)
+                .map(str::to_owned);
+            std::iter::once(variant.clone()).chain(stem)
+        });
+        for variant in stems {
+            let variant = variant.as_str();
+            let df = store.body_term_df(variant)?;
+            if df == 0 || df > ceiling {
+                continue;
+            }
+            let idf = ((total as f64 / df as f64).ln() / log_total * 1000.0) as i64;
+            evidence.idf_permille = evidence.idf_permille.max(idf);
+            let ids = store.body_term_ids(variant)?;
+            for id in ids.iter().take(BODY_RETRIEVAL_CAP) {
+                if !seen.contains(id)
+                    && let Some(node) = store.node(&sinter_core::NodeId::new(id))?
+                {
+                    seen.insert(id.clone());
+                    nodes.push(node);
+                }
+            }
+            evidence.ids.extend(ids);
+        }
+        out.push(evidence);
+    }
+    Ok(out)
 }
 
 fn apply_family_boost(hits: &mut [Hit]) {
@@ -579,7 +757,18 @@ fn apply_family_boost(hits: &mut [Hit]) {
 #[cfg(test)]
 mod tests {
     use super::super::query::{Query, identifier_tokens};
-    use super::{doc_phrase_hits, name_phrase_hits, owner_of};
+    use super::{doc_phrase_hits, name_phrase_hits, owner_of, shares_prefix};
+
+    #[test]
+    fn fuzzy_closeness_needs_a_shared_prefix() {
+        let tokens = identifier_tokens("syntax_error_files");
+        assert!(!shares_prefix(&["sync".into()], &tokens));
+        assert!(shares_prefix(
+            &["completion".into()],
+            &identifier_tokens("GenZshCompleation")
+        ));
+        assert!(shares_prefix(&["arg".into()], &identifier_tokens("args")));
+    }
 
     #[test]
     fn phrases_reward_ordered_adjacent_tokens() {

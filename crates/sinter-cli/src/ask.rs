@@ -24,7 +24,7 @@ use ranking::{Hit, score_candidates};
 
 /// Add agent-safety metadata to an already ordered list of hit objects.
 /// Runs after any merge so the ranking margin reflects the list the caller
-/// will actually see. Only rank one receives an empirical confidence label.
+/// will actually see. Only rank one receives a calibrated ranking assessment.
 pub(crate) fn annotate(hits: &mut [serde_json::Value]) {
     let scores = hits
         .iter()
@@ -38,12 +38,14 @@ pub(crate) fn annotate(hits: &mut [serde_json::Value]) {
         if let Some(object) = hit.as_object_mut() {
             for stale in [
                 "confidence",
+                "ranking_bucket",
                 "ranking_margin",
                 "calibration",
                 "term_coverage",
                 "verify_required",
                 "abstain",
                 "confidence_reason",
+                "ranking_reason",
                 "family_size",
             ] {
                 object.remove(stale);
@@ -54,29 +56,51 @@ pub(crate) fn annotate(hits: &mut [serde_json::Value]) {
     let Some(top) = hits.first_mut() else {
         return;
     };
-    let matched = top["matched"].as_array().map_or(0, std::vec::Vec::len);
-    let total = top["score_breakdown"]["coverage_denominator"]
-        .as_u64()
-        .unwrap_or(0) as usize;
+    let (matched, total) = coverage_of_json(top);
     let assessment = confidence::assess_top(&scores, matched, total);
     let name = top["name"].as_str().unwrap_or("");
     let family_size = names.iter().filter(|other| *other == name).count();
-    top["confidence"] = json!(assessment.level);
+    // `confidence` and `confidence_reason` are v1 compatibility aliases.
+    // New consumers should use the explicitly named ranking fields and the
+    // topic-level decision.
+    top["ranking_bucket"] = json!(assessment.ranking_bucket);
+    top["confidence"] = json!(assessment.ranking_bucket);
     top["ranking_margin"] = json!(assessment.ranking_margin);
     top["calibration"] = json!(assessment.calibration);
     top["term_coverage"] = json!(assessment.term_coverage);
     top["verify_required"] = json!(assessment.verify_required);
     top["abstain"] = json!(assessment.abstain);
+    top["ranking_reason"] = json!(assessment.reason);
     top["confidence_reason"] = json!(assessment.reason);
     top["family_size"] = json!(family_size);
 }
 
 /// Caveat line for an annotated list, or None when the top hit stands clear.
+/// Term coverage of a serialized hit, body-only terms at half credit
+/// (mirrors `ranking::coverage`). Falls back to the matched list when the
+/// breakdown carries no numerator.
+fn coverage_of_json(hit: &serde_json::Value) -> (usize, usize) {
+    let breakdown = &hit["score_breakdown"];
+    let field = |name: &str| breakdown[name].as_u64().map(|n| n as usize);
+    let total = field("coverage_denominator").unwrap_or(0);
+    let matched = field("coverage_numerator")
+        .unwrap_or_else(|| hit["matched"].as_array().map_or(0, std::vec::Vec::len));
+    match field("body_only") {
+        Some(body_only) if body_only > 0 => (2 * matched - body_only, 2 * total),
+        _ => (matched, total),
+    }
+}
+
 pub(crate) fn advice_for(hits: &[serde_json::Value]) -> Option<String> {
     let hit = hits.first()?;
-    let level = confidence::Level::from_label(hit["confidence"].as_str().unwrap_or(""))?;
+    let ranking_bucket = confidence::RankingBucket::from_label(
+        hit["ranking_bucket"]
+            .as_str()
+            .or_else(|| hit["confidence"].as_str())
+            .unwrap_or(""),
+    )?;
     let top = confidence::Assessment {
-        level,
+        ranking_bucket,
         ranking_margin: confidence::RankingMargin {
             absolute: hit["ranking_margin"]["absolute"].as_i64(),
             permille: hit["ranking_margin"]["permille"].as_i64(),
@@ -84,9 +108,14 @@ pub(crate) fn advice_for(hits: &[serde_json::Value]) -> Option<String> {
         calibration: confidence::Calibration {
             version: confidence::CALIBRATION_VERSION,
             sample_size: hit["calibration"]["sample_size"].as_u64().unwrap_or(0) as usize,
+            correct: hit["calibration"]["correct"].as_u64().unwrap_or(0) as usize,
             measured_precision: hit["calibration"]["measured_precision"]
                 .as_f64()
                 .unwrap_or(0.0),
+            precision_interval_95: confidence::wilson_95(
+                hit["calibration"]["correct"].as_u64().unwrap_or(0) as usize,
+                hit["calibration"]["sample_size"].as_u64().unwrap_or(0) as usize,
+            ),
             in_calibration: hit["calibration"]["in_calibration"]
                 .as_bool()
                 .unwrap_or(false),
@@ -98,7 +127,11 @@ pub(crate) fn advice_for(hits: &[serde_json::Value]) -> Option<String> {
         },
         verify_required: hit["verify_required"].as_bool().unwrap_or(true),
         abstain: hit["abstain"].as_bool().unwrap_or(true),
-        reason: match hit["confidence_reason"].as_str().unwrap_or("") {
+        reason: match hit["ranking_reason"]
+            .as_str()
+            .or_else(|| hit["confidence_reason"].as_str())
+            .unwrap_or("")
+        {
             "no_match" => "no_match",
             "no_runner_up" => "no_runner_up",
             "non_positive_score" => "non_positive_score",
@@ -242,7 +275,7 @@ pub fn run_workspace(
         .filter(|(_, _, h)| h.node.name == all[0].2.node.name)
         .count();
     if let Some(caveat) = confidence::advice(
-        confidence::assess_top(&scores, all[0].2.matched.len(), all[0].2.total_terms),
+        confidence::assess_top(&scores, all[0].2.coverage().0, all[0].2.coverage().1),
         family,
     ) {
         println!("{caveat}\n");
@@ -263,7 +296,7 @@ pub fn run_workspace(
         if let Some(doc) = &hit.node.doc
             && let Some(first) = doc.lines().next()
         {
-            println!("   /// {first}");
+            println!("   /// {}", ellipsize(first, 160));
         }
         if !hit.node.signature.is_empty() {
             println!("   {}", ellipsize(&hit.node.signature, 100));
@@ -274,6 +307,24 @@ pub fn run_workspace(
         println!("{} more matches below cutoff", all.len() - limit);
     }
     Ok(true)
+}
+
+/// Doc text an `ask` result carries: the first sentence, capped. The full
+/// doc stays one `show` away; a result is a pointer, not the page.
+const DOC_EXCERPT_CHARS: usize = 200;
+
+fn doc_excerpt(doc: &str) -> String {
+    let paragraph = doc.split("\n\n").next().unwrap_or("").trim();
+    let sentence = paragraph
+        .find(". ")
+        .map_or(paragraph, |end| &paragraph[..=end])
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    match sentence.char_indices().nth(DOC_EXCERPT_CHARS) {
+        Some((cut, _)) => format!("{}…", sentence[..cut].trim_end()),
+        None => sentence,
+    }
 }
 
 fn hit_json(repo: &Path, h: &Hit) -> serde_json::Value {
@@ -289,11 +340,12 @@ fn hit_json(repo: &Path, h: &Hit) -> serde_json::Value {
         "span": {"start": h.node.span.start, "end": h.node.span.end},
         "line": line_of(repo, &h.node.file, h.node.span.start),
         "signature": h.node.signature,
-        "doc": h.node.doc,
+        "doc": h.node.doc.as_deref().map(doc_excerpt),
         "score": h.score,
         "matched": h.matched,
         "channels": h.channels,
         "roles": h.roles,
+        "variants": h.variants,
         "score_breakdown": h.breakdown,
     })
 }
@@ -322,7 +374,7 @@ pub(crate) fn ask_response_json_current(
     ask_response_with_store(&repo, &store, question, limit, scopes, explain)
 }
 
-fn ask_response_with_store(
+pub(crate) fn ask_response_with_store(
     repo: &Path,
     store: &Store,
     question: &str,
@@ -432,7 +484,9 @@ fn topic_from_rendered(
             "status": "abstain",
             "verify_required": true,
             "confidence": {
-                "level": assessment.level,
+                "assessment_type": "ranking_margin_bucket",
+                "ranking_bucket": assessment.ranking_bucket,
+                "level": assessment.ranking_bucket,
                 "reason": reason,
                 "calibration": assessment.calibration,
             },
@@ -458,8 +512,10 @@ fn topic_from_rendered(
     let verify_required = hits[0]["verify_required"].as_bool().unwrap_or(true);
     let advice = advice_for(&hits);
     let confidence = json!({
+        "assessment_type": "ranking_margin_bucket",
+        "ranking_bucket": hits[0]["ranking_bucket"],
         "level": hits[0]["confidence"],
-        "reason": hits[0]["confidence_reason"],
+        "reason": hits[0]["ranking_reason"],
         "calibration": hits[0]["calibration"],
     });
     let ranking_margin = hits[0]["ranking_margin"].clone();
@@ -468,7 +524,9 @@ fn topic_from_rendered(
     for hit in &mut hits {
         if let Some(object) = hit.as_object_mut() {
             // Calibration describes the topic-level ranking decision, not an
-            // individual candidate. Keep the one authoritative copy above.
+            // individual candidate. Keep the one authoritative calibration
+            // above. Other per-hit assessment fields remain as v1 aliases;
+            // removing them requires a versioned wire-contract change.
             object.remove("calibration");
             if !explain {
                 object.remove("score_breakdown");
@@ -577,7 +635,7 @@ fn print_hit(repo: &Path, store: &Store, rank: usize, hit: &Hit) -> Result<()> {
     if let Some(doc) = &hit.node.doc
         && let Some(first) = doc.lines().next()
     {
-        println!("   /// {first}");
+        println!("   /// {}", ellipsize(first, 160));
     }
     if !hit.node.signature.is_empty() {
         println!("   {}", ellipsize(&hit.node.signature, 100));
@@ -595,6 +653,13 @@ fn print_hit(repo: &Path, store: &Store, rank: usize, hit: &Hit) -> Result<()> {
     }
     if !facts.is_empty() {
         println!("   {}", facts.join(" · "));
+    }
+    if !hit.variants.is_empty() {
+        println!(
+            "   {} same-name variants collapsed: {}",
+            hit.variants.len(),
+            hit.variants.join(", ")
+        );
     }
     println!();
     Ok(())
@@ -629,7 +694,7 @@ fn run_multi(
             .map(|hit| hit.score)
             .collect::<Vec<_>>();
         if let Some(caveat) = confidence::advice(
-            confidence::assess_top(&scores, hits[0].matched.len(), hits[0].total_terms),
+            confidence::assess_top(&scores, hits[0].coverage().0, hits[0].coverage().1),
             family_size(&hits[..topic_limit.min(hits.len())], 0),
         ) {
             println!("{caveat}\n");
@@ -701,7 +766,7 @@ pub fn run(
     let shown = limit.min(hits.len());
     if shown > 0
         && let Some(caveat) = confidence::advice(
-            confidence::assess_top(&scores, hits[0].matched.len(), hits[0].total_terms),
+            confidence::assess_top(&scores, hits[0].coverage().0, hits[0].coverage().1),
             family_size(&hits[..shown], 0),
         )
     {
@@ -740,13 +805,29 @@ pub fn run(
 mod tests {
     use serde_json::json;
 
-    use super::advice_for;
+    use super::{advice_for, doc_excerpt, topic_from_rendered};
+
+    #[test]
+    fn doc_excerpt_keeps_the_first_sentence_and_caps_length() {
+        assert_eq!(
+            doc_excerpt("One incremental build pass. `only` narrows\nthe scan."),
+            "One incremental build pass."
+        );
+        assert_eq!(
+            doc_excerpt("# sinter\nThis project uses sinter\n\nMore"),
+            "# sinter This project uses sinter"
+        );
+        let long = "word ".repeat(100);
+        let excerpt = doc_excerpt(&long);
+        assert!(excerpt.ends_with('…'));
+        assert!(excerpt.chars().count() <= 201);
+    }
 
     #[test]
     fn advice_uses_annotation_when_only_one_hit_is_returned() {
         let hits = vec![json!({
             "score": 100,
-            "confidence": "unrated",
+            "ranking_bucket": "unrated",
             "ranking_margin": {"absolute": null, "permille": null},
             "calibration": {
                 "version": "ask-holdout-2026-08-21.v1",
@@ -757,7 +838,7 @@ mod tests {
             "term_coverage": {"matched": 1, "total": 1, "permille": 1000},
             "verify_required": true,
             "abstain": true,
-            "confidence_reason": "no_runner_up",
+            "ranking_reason": "no_runner_up",
             "family_size": 1
         })];
 
@@ -765,5 +846,45 @@ mod tests {
             advice_for(&hits).as_deref(),
             Some("abstain: no_runner_up; refine the topic or inspect multiple candidates")
         );
+    }
+
+    #[test]
+    fn topic_names_the_ranking_assessment_and_retains_v1_hit_aliases() {
+        let topic = topic_from_rendered(
+            "request flow",
+            vec!["request".to_string(), "flow".to_string()],
+            vec![
+                json!({
+                    "name": "dispatch",
+                    "qualified": "dispatch",
+                    "score": 400,
+                    "matched": ["request", "flow"],
+                    "score_breakdown": {"coverage_denominator": 2}
+                }),
+                json!({
+                    "name": "fallback",
+                    "qualified": "fallback",
+                    "score": 300,
+                    "matched": ["flow"],
+                    "score_breakdown": {"coverage_denominator": 2}
+                }),
+            ],
+            1,
+            2,
+            false,
+        );
+
+        assert_eq!(
+            topic["confidence"]["assessment_type"],
+            "ranking_margin_bucket"
+        );
+        assert_eq!(topic["confidence"]["ranking_bucket"], "high");
+        assert_eq!(topic["confidence"]["level"], "high");
+        let hit = &topic["hits"][0];
+        assert_eq!(hit["ranking_bucket"], "high");
+        assert_eq!(hit["confidence"], "high");
+        assert_eq!(hit["ranking_reason"], "calibrated_ranking");
+        assert_eq!(hit["confidence_reason"], "calibrated_ranking");
+        assert!(hit.get("calibration").is_none());
     }
 }
