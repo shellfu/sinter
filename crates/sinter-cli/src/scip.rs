@@ -105,7 +105,8 @@ pub fn staleness(repo: &Path) -> Staleness {
     };
     // Only files a compiler indexer covers can make the index stale; a
     // markdown or shell edit (AGENTS.md written by init, say) cannot.
-    let indexable = indexable_languages(repo);
+    // Decided from the static indexer table: project discovery consults
+    // staleness itself, so it cannot be used here.
     let mut newer = 0;
     let mut walker = ignore::WalkBuilder::new(repo);
     walker.add_custom_ignore_filename(".sinterignore");
@@ -114,8 +115,10 @@ pub fn staleness(repo: &Path) -> Staleness {
             continue;
         }
         let rel = sinter_core::rel_display(entry.path().strip_prefix(repo).unwrap_or(entry.path()));
-        let indexable_source = sinter_extract::spec_for_path(&rel)
-            .is_some_and(|spec| indexable.iter().any(|language| language == spec.name));
+        let indexable_source = sinter_extract::spec_for_path(&rel).is_some_and(|spec| {
+            let indexer = if spec.name == "c" { "cpp" } else { spec.name };
+            INDEXERS.iter().any(|(candidate, ..)| *candidate == indexer)
+        });
         if rel.starts_with(".sinter/")
             || crate::corpus::excluded(&rel)
             || (!indexable_source && !is_project_marker(file_name(&rel)))
