@@ -268,7 +268,7 @@ fn ask_singleton_abstains_instead_of_claiming_high_confidence() {
     assert_eq!(topic["verify_required"], true, "{out}");
     assert_eq!(
         topic["confidence"]["calibration"]["version"],
-        "ask-holdout-2026-08-21.v1"
+        "ask-holdout-2026-08-23.v2"
     );
 }
 
@@ -1891,5 +1891,79 @@ fn install_enforce_strict_switches_slots() {
     assert!(
         doctor.contains("enforcement hooks installed and current"),
         "{doctor}"
+    );
+}
+
+/// Domain-blind ranking: three common terms in a harness doc must not beat
+/// the one symbol that carries the rare domain word (`cedar`). The harness
+/// functions never mention it and pay the rarest-term penalty.
+fn domain_fixture(repo: &Path) {
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    let mut harness = String::new();
+    for i in 0..6 {
+        harness.push_str(&format!(
+            "def run_harness_{i}(events):\n    \"\"\"Adjudicate trajectory events against the configured policies.\"\"\"\n    return events\n\n"
+        ));
+    }
+    std::fs::write(repo.join("src/harness.py"), harness).unwrap();
+    std::fs::write(
+        repo.join("src/engine.py"),
+        r#"class CedarPolicyEngine:
+    """Cedar engine."""
+
+    def check(self, request):
+        """Decide a request against cedar policies."""
+        return record_trajectory(request)
+
+
+def record_trajectory(events):
+    """Store trajectory events for later replay."""
+    return events
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn ask_rare_domain_term_beats_common_terms() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    domain_fixture(repo);
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+    let (ok, out) = sinter(
+        repo,
+        &["ask", "adjudicate trajectory events against cedar policies"],
+    );
+    assert!(ok, "{out}");
+    let first = out.lines().find(|l| l.starts_with("1. ")).unwrap();
+    assert!(
+        first.contains("CedarPolicyEngine::check"),
+        "harness outranked the cedar engine:\n{out}"
+    );
+}
+
+#[test]
+fn ask_relational_question_names_the_connected_pair() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    domain_fixture(repo);
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+    let (ok, out) = sinter(repo, &["ask", "cedar engine check, record trajectory"]);
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("connects: CedarPolicyEngine::check -> record_trajectory"),
+        "{out}"
+    );
+    let (ok, out) = sinter(
+        repo,
+        &["ask", "cedar engine check, record trajectory", "--json"],
+    );
+    assert!(ok, "{out}");
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        json["connects"][0],
+        "CedarPolicyEngine::check -> record_trajectory"
     );
 }

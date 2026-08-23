@@ -5,28 +5,113 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::Result;
-use sinter_core::{Edge, Evidence, Relation};
+use serde_json::{Value, json};
+use sinter_core::{Edge, Evidence, Node, Relation};
 use sinter_resolve::qualified_of;
+use sinter_store::{EdgeFilter, Store};
 
-use crate::lookup::{ensure_snapshot, open_store, unique_symbol};
+use crate::lookup::{ensure_snapshot, open_store, unique_symbol_in};
 use crate::render::{ellipsize, line_of, location, node_json, site_json, site_location};
 
-const EXEMPLARS: usize = 8;
+/// Rows shown per relation group before collapsing to `… (+N)`.
+pub const DEFAULT_LIMIT: usize = 20;
 
-fn names(edges: &[&Edge], end: fn(&Edge) -> &str) -> String {
-    let shown: Vec<&str> = edges
-        .iter()
-        .take(EXEMPLARS)
-        .map(|e| {
-            let q = qualified_of(end(e));
-            q.rsplit("::").next().unwrap_or(q)
-        })
+/// The symbol's edges after `--relations` / `--scope`: outgoing first,
+/// incoming second. Scope applies to the far end of each edge; contains
+/// edges survive only when no relation restriction was given.
+pub fn edges(store: &Store, node: &Node, filter: &EdgeFilter) -> Result<(Vec<Edge>, Vec<Edge>)> {
+    let scopes = store.scope_index()?;
+    let keep = |e: &Edge, other: &str| {
+        filter
+            .relations
+            .as_ref()
+            .is_none_or(|set| set.contains(&e.relation))
+            && filter.scopes.as_ref().is_none_or(|set| {
+                let file = other.split_once('#').map_or(other, |(f, _)| f);
+                set.contains(&scopes.scope_of_id(other, file))
+            })
+    };
+    let out = store
+        .out_edges(&node.id)?
+        .into_iter()
+        .filter(|e| keep(e, e.dst.as_str()))
         .collect();
+    let inn = store
+        .in_edges(&node.id)?
+        .into_iter()
+        .filter(|e| keep(e, e.src.as_str()))
+        .collect();
+    Ok((out, inn))
+}
+
+/// `outgoing`/`incoming` arrays capped at `limit` per relation, plus
+/// `totals` and (only when something was cut) `truncated` per group —
+/// the same convention as `affected`. Shared by the CLI and MCP `show`.
+pub fn edges_json(
+    repo: &Path,
+    store: &Store,
+    node: &Node,
+    filter: &EdgeFilter,
+    limit: usize,
+) -> Result<Value> {
+    let (out, inn) = edges(store, node, filter)?;
+    let mut totals = json!({});
+    let mut truncated = json!({});
+    let mut direction = |name: &str, edges: &[Edge], other: fn(&Edge) -> &str| -> Vec<Value> {
+        let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut rows = Vec::new();
+        for e in edges {
+            let n = seen.entry(e.relation.as_str()).or_default();
+            *n += 1;
+            if *n <= limit {
+                rows.push(json!({
+                    "symbol": qualified_of(other(e)),
+                    "relation": e.relation.as_str(),
+                    "evidence": e.evidence.as_str(),
+                    "site": site_json(repo, e),
+                }));
+            }
+        }
+        for (rel, n) in seen {
+            totals[name][rel] = json!(n);
+            if n > limit {
+                truncated[name][rel] = json!(n - limit);
+            }
+        }
+        rows
+    };
+    let outgoing = direction("outgoing", &out, |e| e.dst.as_str());
+    let incoming = direction("incoming", &inn, |e| e.src.as_str());
+    let mut v = json!({"outgoing": outgoing, "incoming": incoming, "totals": totals});
+    if truncated.as_object().is_some_and(|m| !m.is_empty()) {
+        v["truncated"] = truncated;
+    }
+    Ok(v)
+}
+
+/// Join `shown` exemplars and collapse the rest to `… (+N) · --limit`.
+fn listed(shown: Vec<String>, total: usize) -> String {
     let mut out = shown.join(", ");
-    if edges.len() > EXEMPLARS {
-        out.push_str(&format!(", … (+{})", edges.len() - EXEMPLARS));
+    if total > shown.len() {
+        out.push_str(&format!(", … (+{}) · --limit", total - shown.len()));
     }
     out
+}
+
+fn short(id: &str) -> &str {
+    let q = qualified_of(id);
+    q.rsplit("::").next().unwrap_or(q)
+}
+
+fn names(edges: &[&Edge], end: fn(&Edge) -> &str, limit: usize) -> String {
+    listed(
+        edges
+            .iter()
+            .take(limit)
+            .map(|e| short(end(e)).to_string())
+            .collect(),
+        edges.len(),
+    )
 }
 
 fn evidence_tally(edges: &[&Edge]) -> String {
@@ -42,40 +127,27 @@ fn evidence_tally(edges: &[&Edge]) -> String {
 }
 
 /// Ok(true) when the symbol resolved (grep-style exit codes).
-pub fn run(repo: &Path, symbol: &str, json: bool, if_snapshot: Option<&str>) -> Result<bool> {
+pub fn run(
+    repo: &Path,
+    symbol: &str,
+    filter: &EdgeFilter,
+    limit: usize,
+    json: bool,
+    if_snapshot: Option<&str>,
+) -> Result<bool> {
     let repo = repo.canonicalize()?;
     let store = open_store(&repo)?;
     let snapshot = ensure_snapshot(&store, if_snapshot)?;
-    let node = unique_symbol(&store, symbol)?;
+    let node = unique_symbol_in(&store, symbol, filter.scopes.as_ref())?;
     let scope = store.file_scope(&node.file)?;
     if json {
         // Same shape as the MCP `show` tool.
-        let edge_json = |e: &Edge, other: &str| {
-            serde_json::json!({
-                "symbol": qualified_of(other),
-                "relation": e.relation.as_str(),
-                "evidence": e.evidence.as_str(),
-                "site": site_json(&repo, e),
-            })
-        };
-        let out: Vec<serde_json::Value> = store
-            .out_edges(&node.id)?
-            .iter()
-            .map(|e| edge_json(e, e.dst.as_str()))
-            .collect();
-        let inn: Vec<serde_json::Value> = store
-            .in_edges(&node.id)?
-            .iter()
-            .map(|e| edge_json(e, e.src.as_str()))
-            .collect();
+        let mut out = edges_json(&repo, &store, &node, filter, limit)?;
         let mut symbol_json = node_json(&node);
-        symbol_json["scope"] = serde_json::json!(scope.as_str());
-        crate::agent_protocol::write_json(&serde_json::json!({
-            "symbol": symbol_json,
-            "snapshot": snapshot,
-            "outgoing": out,
-            "incoming": inn,
-        }))?;
+        symbol_json["scope"] = json!(scope.as_str());
+        out["symbol"] = symbol_json;
+        out["snapshot"] = json!(snapshot);
+        crate::agent_protocol::write_json(&out)?;
         return Ok(true);
     }
     let line = line_of(&repo, &node.file, node.span.start);
@@ -98,8 +170,7 @@ pub fn run(repo: &Path, symbol: &str, json: bool, if_snapshot: Option<&str>) -> 
     }
     println!();
 
-    let out = store.out_edges(&node.id)?;
-    let inn = store.in_edges(&node.id)?;
+    let (out, inn) = edges(&store, &node, filter)?;
 
     let group =
         |rel: Relation| -> Vec<&Edge> { out.iter().filter(|e| e.relation == rel).collect() };
@@ -108,14 +179,14 @@ pub fn run(repo: &Path, symbol: &str, json: bool, if_snapshot: Option<&str>) -> 
         println!(
             "contains ({})    {}",
             contains.len(),
-            names(&contains, |e| e.dst.as_str())
+            names(&contains, |e| e.dst.as_str(), limit)
         );
     }
     let extends = group(Relation::Extends);
     if !extends.is_empty() {
         println!(
             "extends          {}    [{}]",
-            names(&extends, |e| e.dst.as_str()),
+            names(&extends, |e| e.dst.as_str(), limit),
             evidence_tally(&extends)
         );
     }
@@ -124,7 +195,7 @@ pub fn run(repo: &Path, symbol: &str, json: bool, if_snapshot: Option<&str>) -> 
         println!(
             "imports ({})     {}    [{}]",
             imports.len(),
-            names(&imports, |e| e.dst.as_str()),
+            names(&imports, |e| e.dst.as_str(), limit),
             evidence_tally(&imports)
         );
     }
@@ -133,7 +204,7 @@ pub fn run(repo: &Path, symbol: &str, json: bool, if_snapshot: Option<&str>) -> 
     if !implements.is_empty() {
         println!(
             "implements       {}    [{}]",
-            names(&implements, |e| e.dst.as_str()),
+            names(&implements, |e| e.dst.as_str(), limit),
             evidence_tally(&implements)
         );
     }
@@ -147,7 +218,7 @@ pub fn run(repo: &Path, symbol: &str, json: bool, if_snapshot: Option<&str>) -> 
         println!(
             "implemented by ({})    {}    [{}]",
             implementors.len(),
-            names(&implementors, |e| e.src.as_str()),
+            names(&implementors, |e| e.src.as_str(), limit),
             evidence_tally(&implementors)
         );
     }
@@ -181,12 +252,12 @@ pub fn run(repo: &Path, symbol: &str, json: bool, if_snapshot: Option<&str>) -> 
         );
         let mut rows: Vec<(&str, (usize, Option<u64>))> = per_file.into_iter().collect();
         rows.sort_by(|a, b| b.1.0.cmp(&a.1.0).then_with(|| a.0.cmp(b.0)));
-        for (file, (count, site)) in rows.iter().take(EXEMPLARS) {
+        for (file, (count, site)) in rows.iter().take(limit) {
             let line = site.and_then(|byte| line_of(&repo, file, byte));
             println!("  {}   {count} edges", location(&repo, file, line));
         }
-        if rows.len() > EXEMPLARS {
-            println!("  … (+{} files)", rows.len() - EXEMPLARS);
+        if rows.len() > limit {
+            println!("  … (+{} files) · --limit", rows.len() - limit);
         }
     }
 
@@ -198,16 +269,16 @@ pub fn run(repo: &Path, symbol: &str, json: bool, if_snapshot: Option<&str>) -> 
         .filter(|e| e.relation == Relation::Calls && e.evidence == Evidence::Dynamic)
         .collect();
     if !dispatches.is_empty() {
-        let shown: Vec<&str> = dispatches
+        let shown = dispatches
             .iter()
-            .take(EXEMPLARS)
-            .map(|e| qualified_of(e.dst.as_str()))
+            .take(limit)
+            .map(|e| qualified_of(e.dst.as_str()).to_string())
             .collect();
-        let mut listed = shown.join(", ");
-        if dispatches.len() > EXEMPLARS {
-            listed.push_str(&format!(", … (+{})", dispatches.len() - EXEMPLARS));
-        }
-        println!("dispatches to ({})    {}", dispatches.len(), listed);
+        println!(
+            "dispatches to ({})    {}",
+            dispatches.len(),
+            listed(shown, dispatches.len())
+        );
     }
 
     // One row per relation: a `uses` edge (type reference) is never a call.
@@ -221,26 +292,21 @@ pub fn run(repo: &Path, symbol: &str, json: bool, if_snapshot: Option<&str>) -> 
         }
         // Exemplars carry their site (`name (file:line)`) so "A calls B"
         // comes with "at file:line" instead of forcing a follow-up grep.
-        let shown: Vec<String> = edges
+        let shown = edges
             .iter()
-            .take(EXEMPLARS)
+            .take(limit)
             .map(|e| {
-                let q = qualified_of(e.dst.as_str());
-                let name = q.rsplit("::").next().unwrap_or(q);
+                let name = short(e.dst.as_str());
                 match site_location(&repo, e) {
                     Some(site) => format!("{name} ({site})"),
                     None => name.to_string(),
                 }
             })
             .collect();
-        let mut listed = shown.join(", ");
-        if edges.len() > EXEMPLARS {
-            listed.push_str(&format!(", … (+{})", edges.len() - EXEMPLARS));
-        }
         println!(
             "{:<16} {}    [{}]",
             format!("{label} ({})", edges.len()),
-            listed,
+            listed(shown, edges.len()),
             evidence_tally(&edges)
         );
     }

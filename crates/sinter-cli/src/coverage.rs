@@ -241,7 +241,7 @@ pub fn category_counts(
     counts
 }
 
-fn repository_coverage(repo: &Path, store: &Store) -> Result<serde_json::Value> {
+pub(crate) fn repository_coverage(repo: &Path, store: &Store) -> Result<serde_json::Value> {
     let repo = crate::pipeline::discover_root(repo);
     let health = read_health(&repo);
     let head = git_output(&repo, &["rev-parse", "HEAD"]);

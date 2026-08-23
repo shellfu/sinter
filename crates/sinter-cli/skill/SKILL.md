@@ -108,7 +108,8 @@ radius; implements/extends follows interface fan-out.
 
 Text footers are one `coverage:` line plus query-specific gaps; set `SINTER_VERBOSE_COVERAGE=1` for filters and every repository-wide limitation.
 
-Every verb defaults to `production,test,docs`. Pass `--scope` (or MCP `scope`)
+Traversal verbs default to `production,test,docs`; `ask` defaults to
+`production,docs`; `--scope` (or MCP `scope`) overrides. Pass it
 when fixtures, examples, generated files, or vendor code are relevant.
 Exact `show` remains unfiltered. Result nodes carry their persisted `scope`;
 do not infer production ownership from a path string.

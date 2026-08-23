@@ -1,11 +1,13 @@
 //! Symbol-argument resolution shared by every query-side command: exact
 //! name, qualified suffix, node id, or trigram suggestions.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use sinter_core::{Confidence, CorpusScope, Evidence, Node, SymbolKey, SymbolKind};
+use sinter_core::{
+    Confidence, CorpusScope, Evidence, Node, NodeId, Relation, SymbolKey, SymbolKind,
+};
 use sinter_resolve::qualified_of;
 use sinter_store::{EdgeFilter, Store};
 
@@ -319,18 +321,40 @@ pub fn candidates_in(
                 .cloned()
                 .unwrap_or_else(|| crate::corpus::ScopeSelection::agent_default().as_set());
             let scope_index = store.scope_index()?;
-            let (keep, ignored) = select_tier(nodes, &preferred, |n| scope_index.scope_of(n));
-            if keep.len() == 1 && !ignored.is_empty() {
+            let (mut keep, mut ignored) =
+                select_tier(nodes, &preferred, |n| scope_index.scope_of(n));
+            let mut reason = {
                 let mut kinds: Vec<&str> = ignored
                     .iter()
                     .map(|n| scope_index.scope_of(n).as_str())
                     .collect();
                 kinds.sort_unstable();
                 kinds.dedup();
+                kinds.join("/")
+            };
+            if keep.len() > 1 {
+                let dominant = dominant_language(&store.file_scopes()?);
+                let ids: Vec<NodeId> = keep.iter().map(|n| n.id.clone()).collect();
+                let in_edges = store.in_edges_many(&ids)?;
+                let in_degree = |n: &Node| {
+                    in_edges.get(&n.id).map_or(0, |edges| {
+                        edges
+                            .iter()
+                            .filter(|e| e.relation != Relation::Contains)
+                            .count()
+                    })
+                };
+                let (kept, dropped, why) = break_ties(keep, dominant.as_deref(), in_degree);
+                keep = kept;
+                if let Some(why) = why {
+                    ignored = dropped;
+                    reason = why.to_string();
+                }
+            }
+            if keep.len() == 1 && !ignored.is_empty() {
                 eprintln!(
-                    "note: {} other `{symbol}` ignored ({}): {}",
+                    "note: {} other `{symbol}` ignored ({reason}): {}",
                     ignored.len(),
-                    kinds.join("/"),
                     short_list(&ignored)
                 );
             }
@@ -379,6 +403,64 @@ fn select_tier(
     };
     let best = nodes.iter().map(&tier).min().unwrap_or(0);
     nodes.into_iter().partition(|n| tier(n) == best)
+}
+
+/// Language name (`spec_for_path`) of the file a node lives in.
+fn language_of(node: &Node) -> Option<&'static str> {
+    sinter_extract::spec_for_path(&node.file).map(|spec| spec.name)
+}
+
+/// The language with the most production-scoped files, if any.
+fn dominant_language(file_scopes: &HashMap<String, CorpusScope>) -> Option<String> {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for (file, scope) in file_scopes {
+        if *scope == CorpusScope::Production {
+            if let Some(spec) = sinter_extract::spec_for_path(file) {
+                *counts.entry(spec.name).or_default() += 1;
+            }
+        }
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_, n)| *n)
+        .map(|(name, _)| name.to_string())
+}
+
+/// Narrow a same-tier tie: first to candidates in the repository's
+/// dominant language, then to the highest non-containment in-degree.
+/// Returns (kept, dropped, reason); reason is `None` when nothing was
+/// dropped. Ties that survive both steps are returned intact.
+fn break_ties(
+    nodes: Vec<Node>,
+    dominant: Option<&str>,
+    in_degree: impl Fn(&Node) -> usize,
+) -> (Vec<Node>, Vec<Node>, Option<&'static str>) {
+    let mut dropped = Vec::new();
+    let mut reason = None;
+    let mut keep = nodes;
+    if let Some(dominant) = dominant {
+        if keep.len() > 1 && keep.iter().any(|n| language_of(n) == Some(dominant)) {
+            let (same, other): (Vec<Node>, Vec<Node>) = keep
+                .into_iter()
+                .partition(|n| language_of(n) == Some(dominant));
+            keep = same;
+            if !other.is_empty() {
+                dropped.extend(other);
+                reason = Some("language");
+            }
+        }
+    }
+    if keep.len() > 1 {
+        let best = keep.iter().map(&in_degree).max().unwrap_or(0);
+        let (top, rest): (Vec<Node>, Vec<Node>) =
+            keep.into_iter().partition(|n| in_degree(n) == best);
+        keep = top;
+        if !rest.is_empty() {
+            dropped.extend(rest);
+            reason = Some("in-degree");
+        }
+    }
+    (keep, dropped, reason)
 }
 
 /// One place a symbol not defined in this repo is referenced: the
@@ -479,7 +561,7 @@ pub fn relation_set(relations: &[String]) -> Result<Option<BTreeSet<sinter_core:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sinter_core::{NodeId, Span};
+    use sinter_core::Span;
 
     fn node(file: &str, kind: SymbolKind) -> Node {
         Node {
@@ -522,6 +604,60 @@ mod tests {
         assert_eq!(rest, ["generated/a.rs", "vendor/a.rs"]);
         let (keep, _) = pick(&["generated/a.rs", "vendor/a.rs"]);
         assert_eq!(keep, ["generated/a.rs", "vendor/a.rs"]);
+    }
+
+    fn files(v: Vec<Node>) -> Vec<String> {
+        v.into_iter().map(|n| n.file).collect()
+    }
+
+    #[test]
+    fn dominant_language_breaks_production_tie() {
+        let nodes = vec![
+            node("proto/event.proto", SymbolKind::Struct),
+            node("src/event.rs", SymbolKind::Enum),
+        ];
+        let (keep, rest, why) = break_ties(nodes, Some("rust"), |_| 0);
+        assert_eq!(files(keep), ["src/event.rs"]);
+        assert_eq!(files(rest), ["proto/event.proto"]);
+        assert_eq!(why, Some("language"));
+    }
+
+    #[test]
+    fn in_degree_breaks_same_language_tie() {
+        let nodes = vec![
+            node("crates/a/src/lib.rs", SymbolKind::Struct),
+            node("crates/b/src/lib.rs", SymbolKind::Struct),
+        ];
+        let (keep, rest, why) = break_ties(nodes, Some("rust"), |n| {
+            usize::from(n.file.starts_with("crates/b"))
+        });
+        assert_eq!(files(keep), ["crates/b/src/lib.rs"]);
+        assert_eq!(files(rest), ["crates/a/src/lib.rs"]);
+        assert_eq!(why, Some("in-degree"));
+    }
+
+    #[test]
+    fn fully_tied_candidates_stay_ambiguous() {
+        let nodes = vec![
+            node("crates/a/src/main.rs", SymbolKind::Function),
+            node("crates/b/src/main.rs", SymbolKind::Function),
+        ];
+        let (keep, rest, why) = break_ties(nodes, Some("rust"), |_| 3);
+        assert_eq!(keep.len(), 2);
+        assert!(rest.is_empty());
+        assert_eq!(why, None);
+    }
+
+    #[test]
+    fn dominant_language_counts_production_files_only() {
+        let scopes = HashMap::from([
+            ("a.proto".to_string(), CorpusScope::Production),
+            ("b.proto".to_string(), CorpusScope::Production),
+            ("src/x.rs".to_string(), CorpusScope::Production),
+            ("tests/y.rs".to_string(), CorpusScope::Test),
+            ("tests/z.rs".to_string(), CorpusScope::Test),
+        ]);
+        assert_eq!(dominant_language(&scopes).as_deref(), Some("proto"));
     }
 
     #[test]

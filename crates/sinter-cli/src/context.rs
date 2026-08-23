@@ -133,7 +133,7 @@ pub(crate) fn response(repo: &Path, store: &Store, task: &str) -> Result<Value> 
         store,
         task,
         ASK_LIMIT,
-        &ScopeSelection::agent_default(),
+        &ScopeSelection::ask_default(),
         false,
     )?;
     let abstain = ask["decision"] == "abstain";

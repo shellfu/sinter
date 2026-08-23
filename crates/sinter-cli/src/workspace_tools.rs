@@ -95,7 +95,7 @@ fn ask(workspace: &crate::workspace::Workspace, args: &Value) -> Result<Value> {
     let question = required_string(args, "question")?;
     let scopes = crate::corpus::ScopeSelection::from_json(
         args,
-        crate::corpus::ScopeSelection::agent_default(),
+        crate::corpus::ScopeSelection::ask_default(),
     )?;
     let explain = args
         .get("explain")
@@ -142,31 +142,13 @@ fn show(workspace: &crate::workspace::Workspace, args: &Value) -> Result<Value> 
     let member_root = workspace.members[&member].clone();
     let store = sinter_store::Store::open(crate::pipeline::db_path(&member_root))?;
     let scope = store.file_scope(&node.file)?;
-    let edge_json = |edge: &sinter_core::Edge, other: &sinter_core::NodeId| {
-        json!({
-            "symbol": qualified_of(other.as_str()),
-            "relation": edge.relation.as_str(),
-            "evidence": edge.evidence.as_str(),
-            "site": crate::render::site_json(&member_root, edge),
-        })
-    };
-    let outgoing: Vec<Value> = store
-        .out_edges(&node.id)?
-        .iter()
-        .map(|edge| edge_json(edge, &edge.dst))
-        .collect();
-    let incoming: Vec<Value> = store
-        .in_edges(&node.id)?
-        .iter()
-        .map(|edge| edge_json(edge, &edge.src))
-        .collect();
-    Ok(json!({
-        "symbol": member_node(&node, &member, scope),
-        "outgoing": outgoing,
-        "incoming": incoming,
-        "boundary_outgoing": boundary_outgoing,
-        "boundary_incoming": boundary_incoming,
-    }))
+    let filter = traversal_filter(args)?;
+    let limit = limit(args, crate::show::DEFAULT_LIMIT);
+    let mut out = crate::show::edges_json(&member_root, &store, &node, &filter, limit)?;
+    out["symbol"] = member_node(&node, &member, scope);
+    out["boundary_outgoing"] = json!(boundary_outgoing);
+    out["boundary_incoming"] = json!(boundary_incoming);
+    Ok(out)
 }
 
 fn impact(workspace: &crate::workspace::Workspace, args: &Value) -> Result<Value> {

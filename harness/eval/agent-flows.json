@@ -31,7 +31,7 @@
           "expect": [
             {"pointer": "/topics/0/hits", "predicate": "contains", "value": {"qualified": "entry"}},
             {"pointer": "/topics/0/verify_required", "predicate": "exists"},
-            {"pointer": "/topics/0/confidence/calibration/version", "predicate": "equals", "value": "ask-holdout-2026-08-21.v1"}
+            {"pointer": "/topics/0/confidence/calibration/version", "predicate": "equals", "value": "ask-holdout-2026-08-23.v2"}
           ]
         }
       ]

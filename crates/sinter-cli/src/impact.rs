@@ -82,6 +82,8 @@ pub struct ChangedFile {
     pub git_status: String,
     pub kind: FileChangeKind,
     pub mapped_symbols: usize,
+    /// Why this file contributes what it does to the blast radius.
+    pub reason: String,
 }
 
 #[derive(Serialize, Clone, Copy, Debug, Eq, PartialEq)]
@@ -103,6 +105,8 @@ pub struct UnmappedFile {
     pub old_path: Option<String>,
     pub git_status: String,
     pub reason: UnmappedReason,
+    /// Human explanation, same text as the `changed_files` entry.
+    pub detail: String,
 }
 
 #[derive(Serialize, Clone, Debug, Eq, PartialEq)]
@@ -253,6 +257,7 @@ fn parse_changed_files(raw: &[u8]) -> Result<Vec<ChangedFile>> {
             git_status,
             kind,
             mapped_symbols: 0,
+            reason: String::new(),
         });
     }
     files.sort_by(|a, b| {
@@ -407,11 +412,45 @@ fn parse_hunks(raw: &[u8]) -> BTreeMap<String, Vec<Hunk>> {
     hunks
 }
 
+const NOT_INDEXED: &str = "not indexed (language unsupported / excluded)";
+
+/// Dependents of a file's symbols living in other files: the edges the
+/// blast radius will actually follow.
+fn file_reason(
+    store: &sinter_store::Store,
+    change: &ChangedFile,
+    nodes: &[Node],
+) -> Result<String> {
+    let ids: Vec<sinter_core::NodeId> = nodes.iter().map(|n| n.id.clone()).collect();
+    let dependents = store
+        .in_edges_many(&ids)?
+        .values()
+        .flatten()
+        .filter(|e| e.relation != sinter_core::Relation::Contains)
+        .filter(|e| {
+            e.src
+                .as_str()
+                .split_once('#')
+                .map_or(e.src.as_str(), |(f, _)| f)
+                != change.path
+        })
+        .count();
+    Ok(if change.kind == FileChangeKind::Added && dependents == 0 {
+        "new file, 0 inbound edges (nothing references it yet)".to_string()
+    } else {
+        format!(
+            "indexed, {} symbols, {dependents} dependents",
+            change.mapped_symbols
+        )
+    })
+}
+
 fn unmapped(change: &ChangedFile, reason: UnmappedReason) -> UnmappedFile {
     UnmappedFile {
         path: change.path.clone(),
         old_path: change.old_path.clone(),
         git_status: change.git_status.clone(),
+        detail: change.reason.clone(),
         reason,
     }
 }
@@ -578,6 +617,7 @@ fn compute_with_store_mode(
                 git_status: "??".to_string(),
                 kind: FileChangeKind::Added,
                 mapped_symbols: 0,
+                reason: String::new(),
             });
         }
     }
@@ -588,15 +628,19 @@ fn compute_with_store_mode(
     let mut unmapped_files = Vec::new();
     for change in &mut changed_files {
         let reason = if change.kind == FileChangeKind::Deleted {
+            change.reason = "deleted".to_string();
             Some(UnmappedReason::Deleted)
         } else if change.kind == FileChangeKind::Unknown {
+            change.reason = "unknown git status".to_string();
             Some(UnmappedReason::UnknownGitStatus)
         } else {
             let Some(facts) = store.facts(&change.path)? else {
+                change.reason = NOT_INDEXED.to_string();
                 unmapped_files.push(unmapped(change, UnmappedReason::NotIndexed));
                 continue;
             };
             let Ok(source) = std::fs::read_to_string(repo.join(&change.path)) else {
+                change.reason = "unreadable".to_string();
                 unmapped_files.push(unmapped(change, UnmappedReason::Unreadable));
                 continue;
             };
@@ -618,6 +662,7 @@ fn compute_with_store_mode(
                 }
             } else if ranges.is_empty() {
                 change.mapped_symbols = 0;
+                change.reason = "no content hunks".to_string();
                 unmapped_files.push(unmapped(change, UnmappedReason::NoContentHunks));
                 continue;
             } else {
@@ -670,6 +715,7 @@ fn compute_with_store_mode(
                 }
             }
             change.mapped_symbols = mapped_ids.len();
+            change.reason = file_reason(store, change, &facts.nodes)?;
             if ranges.iter().any(|hunk| hunk.deleted_only) {
                 Some(UnmappedReason::DeletedContentNotInCurrentGraph)
             } else if mapped_ids.is_empty() {
@@ -825,24 +871,31 @@ pub fn run(
     for file in &report.changed_files {
         if let Some(old) = &file.old_path {
             println!(
-                "  {}  {} -> {}  ({} graph symbols)",
-                file.git_status, old, file.path, file.mapped_symbols
+                "  {}  {} -> {}  ({} graph symbols) — {}",
+                file.git_status, old, file.path, file.mapped_symbols, file.reason
             );
         } else {
             println!(
-                "  {}  {}  ({} graph symbols)",
-                file.git_status, file.path, file.mapped_symbols
+                "  {}  {}  ({} graph symbols) — {}",
+                file.git_status, file.path, file.mapped_symbols, file.reason
             );
         }
     }
     if !report.unmapped_files.is_empty() {
         println!("unmapped files:");
         for file in &report.unmapped_files {
-            println!("  {:?}  {}", file.reason, file.path);
+            println!("  {:?}  {}  — {}", file.reason, file.path, file.detail);
         }
     }
     print_symbols("changed", &report.changed_symbols, limit);
-    print_symbols("blast radius", &report.blast_radius, limit);
+    if report.blast_radius.is_empty() && !report.changed_symbols.is_empty() {
+        let scope = filter.scopes.as_ref().map_or("all".to_string(), |set| {
+            set.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(",")
+        });
+        println!("blast radius empty: changed symbols have no dependents in scope {scope}");
+    } else {
+        print_symbols("blast radius", &report.blast_radius, limit);
+    }
     print_symbols("affected tests", &report.affected_tests, limit);
     Ok(())
 }
@@ -998,6 +1051,7 @@ mod tests {
                     git_status: "M".to_string(),
                     kind: FileChangeKind::Modified,
                     mapped_symbols: 1,
+                    reason: String::new(),
                 })
                 .collect(),
             working_tree_changes: (0..4)
@@ -1014,6 +1068,7 @@ mod tests {
                 old_path: None,
                 git_status: "M".to_string(),
                 reason: UnmappedReason::NoSymbolOverlap,
+                detail: String::new(),
             }],
             changed_symbols: symbols("changed", 3),
             blast_radius: symbols("blast", 4),
@@ -1302,6 +1357,52 @@ mod tests {
             "{changes:?}"
         );
         assert!(changes.iter().any(|c| c.path == "src/new.rs"));
+    }
+
+    #[test]
+    fn changed_files_explain_their_blast_radius_contribution() {
+        let repo = repository();
+        write(repo.path(), "src/new.rs", "pub fn fresh() -> u32 { 4 }\n");
+        write(repo.path(), "src/lib.rs", "pub fn value() -> u32 { 2 }\n");
+        write(repo.path(), "notes.txt", "not code\n");
+        crate::pipeline::build(repo.path(), None).expect("build fixture graph");
+        let store = crate::lookup::open_store(repo.path()).expect("open store");
+        let report = compute_with_store_mode(
+            repo.path(),
+            "HEAD",
+            false,
+            &sinter_store::EdgeFilter::default(),
+            &store,
+        )
+        .expect("compute working-tree impact");
+        let reason = |path: &str| {
+            report
+                .changed_files
+                .iter()
+                .find(|file| file.path == path)
+                .unwrap_or_else(|| panic!("{path} listed"))
+                .reason
+                .clone()
+        };
+        assert_eq!(
+            reason("src/new.rs"),
+            "new file, 0 inbound edges (nothing references it yet)"
+        );
+        assert_eq!(reason("src/lib.rs"), "indexed, 1 symbols, 0 dependents");
+        assert_eq!(reason("notes.txt"), super::NOT_INDEXED);
+        let unmapped = report
+            .unmapped_files
+            .iter()
+            .find(|file| file.path == "notes.txt")
+            .expect("unindexed file is unmapped");
+        assert_eq!(unmapped.detail, super::NOT_INDEXED);
+        let json = to_json(&report, 0);
+        assert_eq!(
+            json["changed_files"][0]["reason"]
+                .as_str()
+                .map(str::is_empty),
+            Some(false)
+        );
     }
 
     #[test]

@@ -6,7 +6,7 @@
 
 use serde::Serialize;
 
-pub(crate) const CALIBRATION_VERSION: &str = "ask-holdout-2026-08-21.v1";
+pub(crate) const CALIBRATION_VERSION: &str = "ask-holdout-2026-08-23.v2";
 
 pub(crate) const HIGH_MARGIN_PERMILLE: i64 = 200;
 const MEDIUM_MARGIN_PERMILLE: i64 = 50;
@@ -184,8 +184,8 @@ fn unrated(coverage: TermCoverage, reason: &'static str) -> Assessment {
 const fn calibration_bucket(level: RankingBucket) -> (usize, usize) {
     match level {
         RankingBucket::High => (25, 22),
-        RankingBucket::Medium => (12, 8),
-        RankingBucket::Low => (9, 2),
+        RankingBucket::Medium => (15, 9),
+        RankingBucket::Low => (6, 2),
         RankingBucket::Unrated => (0, 0),
     }
 }
@@ -200,12 +200,10 @@ pub(crate) fn advice(assessment: Assessment, family_size: usize) -> Option<Strin
     // never "no answer": the ranked list still follows this line.
     if assessment.abstain {
         return Some(match assessment.reason {
-            "insufficient_calibration_sample" => format!(
-                "confidence: not calibrated for this margin bucket (holdout n<{MIN_CALIBRATION_SAMPLE}){family}; verify top hit"
-            ),
-            reason => format!(
-                "confidence: unrated ({reason}){family}; verify top hit or inspect multiple candidates"
-            ),
+            "weak_term_coverage" => {
+                format!("confidence: unrated (weak term coverage){family}; verify top hit")
+            }
+            _ => format!("confidence: unrated{family}; verify top hit"),
         });
     }
     if assessment.verify_required {
@@ -283,7 +281,17 @@ mod tests {
         assert_eq!(assessment.reason, "insufficient_calibration_sample");
         assert!(assessment.abstain);
         let line = advice(assessment, 1).unwrap();
-        assert!(line.starts_with("confidence: not calibrated"), "{line}");
-        assert!(!line.contains("abstain"), "{line}");
+        assert_eq!(line, "confidence: unrated; verify top hit");
+    }
+
+    #[test]
+    fn weak_coverage_names_its_reason_in_plain_words() {
+        let assessment = assess_top(&[1000, 100], 1, 4);
+        assert_eq!(assessment.reason, "weak_term_coverage");
+        let line = advice(assessment, 1).unwrap();
+        assert_eq!(
+            line,
+            "confidence: unrated (weak term coverage); verify top hit"
+        );
     }
 }

@@ -119,9 +119,12 @@ pub(crate) fn repository() -> Value {
         },
         {
             "name": "show",
-            "description": "One symbol: signature, doc, file, every incoming/outgoing edge with site. e.g. {symbol:\"Store::in_edges\"}",
+            "description": "One symbol: signature, doc, file, incoming/outgoing edges with site, capped per relation. e.g. {symbol:\"Store::in_edges\"}",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": symbol(),
+                "limit": {"type": "integer", "description": "rows per relation (default 20)"},
+                "relations": filters["relations"],
+                "scope": scope_filter(&["all"]),
                 "if_snapshot": snapshot_precondition(),
             }, "required": ["symbol"]},
         },
@@ -226,6 +229,9 @@ pub(crate) fn workspace() -> Value {
             "description": "One symbol: signature, doc, edges in its member, boundary links to other members. e.g. {symbol:\"common:Backoff\"}",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": symbol(),
+                "limit": {"type": "integer", "description": "rows per relation (default 20)"},
+                "relations": filters["relations"],
+                "scope": scope_filter(&["all"]),
                 "if_snapshot": snapshot_precondition(),
             }, "required": ["symbol"]},
         },

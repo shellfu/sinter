@@ -7,10 +7,27 @@ use anyhow::Result;
 use serde::Serialize;
 use sinter_core::{CorpusScope, Node, Relation, SymbolKind};
 use sinter_resolve::qualified_of;
-use sinter_store::Store;
+use sinter_store::{EdgeFilter, Store};
 
 use super::query::{Query, identifier_tokens};
 use crate::corpus::ScopeSelection;
+
+/// Every field match is weighed by the term's rarity, ln(1 + N/df) in
+/// permille, so `cedar` (a handful of symbols) outweighs `events` (a
+/// thousand docs). Clamped: glue words never vanish, one-off words never
+/// dominate on their own.
+const IDF_FLOOR_PERMILLE: i64 = 500;
+const IDF_CEILING_PERMILLE: i64 = 4000;
+/// The rarest query term names the domain (`cedar`, `online`); a hit that
+/// never mentions it keeps half its score, however many common terms it
+/// matched. Only applies when the term exists somewhere in the corpus.
+const RAREST_MISS_PERMILLE: i64 = 500;
+/// Relational questions (two or more topics): the leading hits per topic
+/// are checked for a graph connection within this many hops, and a
+/// connected pair is boosted. 5 × 5 = 25 pair checks per topic pair.
+const PLANNER_TOP: usize = 5;
+const PLANNER_HOPS: usize = 3;
+const CONNECTED_PERMILLE: i64 = 1300;
 
 // Scoring policy. A value change requires an evaluation or focused fixture.
 const PT_EXACT_NAME: i64 = 100;
@@ -95,7 +112,46 @@ pub(super) struct ScoreBreakdown {
     penalty_denominator: i64,
     hub_bonus: i64,
     family_bonus: i64,
+    /// Per-term IDF weight, permille, in query-term order.
+    idf_permille: Vec<i64>,
+    /// The rarest query term is absent from every field of this hit.
+    rarest_miss: bool,
+    /// Boosted because a hit in the neighbouring topic is graph-connected.
+    connected: bool,
     final_score: i64,
+}
+
+/// The query term that names the domain: the one with the fewest field
+/// hits, when it is at least `RAREST_MARGIN` times rarer than the runner-up.
+/// Nouns only: an inflected verb (`configured`) can be just as rare without
+/// naming anything, and two equally rare words (`sub`, `mounted`) do not
+/// single out one.
+const RAREST_MARGIN: usize = 2;
+
+fn rarest_term<'q>(query: &'q Query, df: &[usize]) -> Option<&'q str> {
+    let mut ranked = (0..df.len())
+        .filter(|&index| df[index] >= 1 && !query.terms()[index].is_action())
+        .collect::<Vec<_>>();
+    ranked.sort_by_key(|&index| df[index]);
+    match ranked.as_slice() {
+        [] => None,
+        [only] => Some(query.terms()[*only].surface()),
+        [first, second, ..] if df[*first] * RAREST_MARGIN <= df[*second] => {
+            Some(query.terms()[*first].surface())
+        }
+        _ => None,
+    }
+}
+
+/// ln(1 + N/df) in permille, clamped; df 0 weighs like df 1.
+fn idf_permille(total: u64, df: usize) -> i64 {
+    let ratio = total.max(1) as f64 / df.max(1) as f64;
+    (((1.0 + ratio).ln() * 1000.0) as i64).clamp(IDF_FLOOR_PERMILLE, IDF_CEILING_PERMILLE)
+}
+
+/// `points` scaled by a permille weight.
+fn weigh(points: i64, permille: i64) -> i64 {
+    points * permille / 1000
 }
 
 pub(super) struct Hit {
@@ -221,9 +277,9 @@ fn owner_of(qualified: &str) -> Option<&str> {
         .map(|(prefix, _)| prefix.rsplit("::").next().unwrap_or(prefix))
 }
 
-/// Count of adjacent query pairs whose tokens appear consecutively, in
-/// order, in `tokens`.
-fn name_phrase_hits(tokens: &[String], query: &Query) -> usize {
+/// Summed weight (permille, rarer term of each pair) of adjacent query
+/// pairs whose tokens appear consecutively, in order, in `tokens`.
+fn name_phrase_hits(tokens: &[String], query: &Query, idf: &[i64]) -> i64 {
     query
         .phrases()
         .iter()
@@ -233,11 +289,13 @@ fn name_phrase_hits(tokens: &[String], query: &Query) -> usize {
                 .windows(2)
                 .any(|pair| first.matches_token(&pair[0]) && second.matches_token(&pair[1]))
         })
-        .count()
+        .map(|(first, second)| idf[*first].max(idf[*second]))
+        .sum()
 }
 
-/// Count of adjacent query pairs that appear verbatim ("a b") in `doc`.
-fn doc_phrase_hits(doc: &str, query: &Query) -> usize {
+/// Summed weight of adjacent query pairs that appear verbatim ("a b") in
+/// `doc`.
+fn doc_phrase_hits(doc: &str, query: &Query, idf: &[i64]) -> i64 {
     if doc.is_empty() {
         return 0;
     }
@@ -253,7 +311,8 @@ fn doc_phrase_hits(doc: &str, query: &Query) -> usize {
                     .any(|b| doc.contains(&format!("{a} {b}")))
             })
         })
-        .count()
+        .map(|(first, second)| idf[*first].max(idf[*second]))
+        .sum()
 }
 
 /// Where one query term touched one candidate.
@@ -408,6 +467,23 @@ pub(super) fn score_candidates(
         .into_iter()
         .map(|node| gather(node, query, &close_ids, &body))
         .collect::<Vec<_>>();
+    // Document frequency over the retrieved pool: token retrieval is
+    // exhaustive per term, so a field hit count here is the corpus count
+    // (plus the few fuzzy extras), without a second index walk.
+    let df = (0..terms.len())
+        .map(|index| {
+            candidates
+                .iter()
+                .filter(|candidate| candidate.evidence[index].any())
+                .count()
+        })
+        .collect::<Vec<_>>();
+    let total = store.node_count()?;
+    let idf = df
+        .iter()
+        .map(|&df| idf_permille(total, df))
+        .collect::<Vec<_>>();
+    let rarest = rarest_term(query, &df);
 
     let mut hits = Vec::new();
     for candidate in candidates {
@@ -425,36 +501,37 @@ pub(super) fn score_candidates(
         let mut roles = Vec::new();
         for (index, term) in terms.iter().enumerate() {
             let hit = evidence[index];
+            let w = idf[index];
             if hit.name_exact {
-                breakdown.name += PT_EXACT_NAME;
+                breakdown.name += weigh(PT_EXACT_NAME, w);
                 channels.push("name");
             } else if hit.name_close {
-                breakdown.name += PT_NAME_CLOSE;
+                breakdown.name += weigh(PT_NAME_CLOSE, w);
                 channels.push("name");
             } else if hit.owner {
-                breakdown.name += PT_OWNER;
+                breakdown.name += weigh(PT_OWNER, w);
                 channels.push("owner");
                 roles.push("owner");
             }
             if term.is_action() && hit.action_token {
-                breakdown.action_name_bonus += PT_ACTION_TOKEN;
+                breakdown.action_name_bonus += weigh(PT_ACTION_TOKEN, w);
                 channels.push("action-name");
                 roles.push("action");
             } else if term.is_action() && (hit.name_exact || hit.name_close) {
-                breakdown.action_name_bonus += PT_ACTION_NAME;
+                breakdown.action_name_bonus += weigh(PT_ACTION_NAME, w);
                 channels.push("action-name");
                 roles.push("action");
             }
             if hit.doc {
-                breakdown.doc += PT_DOC;
+                breakdown.doc += weigh(PT_DOC, w);
                 channels.push("doc");
             }
             if hit.signature {
-                breakdown.signature += PT_SIGNATURE;
+                breakdown.signature += weigh(PT_SIGNATURE, w);
                 channels.push("sig");
             }
             if hit.path {
-                breakdown.path += PT_PATH;
+                breakdown.path += weigh(PT_PATH, w);
                 channels.push("path");
             }
             if hit.any() {
@@ -472,10 +549,9 @@ pub(super) fn score_candidates(
             let total = name_tokens.len() as i64;
             breakdown.name_precision = PT_NAME_PRECISION * (2 * matched_tokens - total) / total;
         }
-        let name_phrases = name_phrase_hits(&name_tokens, query);
-        let doc_phrases = doc_phrase_hits(&doc, query);
-        breakdown.phrase =
-            PT_PHRASE_NAME * name_phrases as i64 + PT_PHRASE_DOC * doc_phrases as i64;
+        let name_phrases = name_phrase_hits(&name_tokens, query, &idf);
+        let doc_phrases = doc_phrase_hits(&doc, query, &idf);
+        breakdown.phrase = weigh(PT_PHRASE_NAME, name_phrases) + weigh(PT_PHRASE_DOC, doc_phrases);
         if name_phrases + doc_phrases > 0 {
             channels.push("phrase");
             roles.push("phrase");
@@ -519,6 +595,8 @@ pub(super) fn score_candidates(
         breakdown.kind_denominator = kind_denominator;
         breakdown.penalty_numerator = penalty_numerator;
         breakdown.penalty_denominator = penalty_denominator;
+        breakdown.idf_permille = idf.clone();
+        breakdown.rarest_miss = rarest.is_some_and(|term| !matched.iter().any(|m| m == term));
         let score = combine(&mut breakdown);
         let parent = in_edges
             .iter()
@@ -548,9 +626,82 @@ pub(super) fn score_candidates(
         apply_family_boost(&mut hits);
     }
     sort_hits(&mut hits);
-    apply_callee_evidence(store, query, &mut hits)?;
+    apply_callee_evidence(store, query, rarest, &mut hits)?;
     sort_hits(&mut hits);
     Ok(collapse_same_name(hits))
+}
+
+/// Relational planner: for each neighbouring topic pair, a leading hit on
+/// one side that reaches (or is reached by) a leading hit on the other
+/// within `PLANNER_HOPS` is the pair the question is about. Both are
+/// boosted and the pair is reported as `"left -> right"`. `connected`
+/// answers whether two ids are graph-connected; the store-backed version
+/// is `connect_topics`.
+pub(super) fn boost_connected(
+    groups: &mut [(String, Vec<Hit>)],
+    mut connected: impl FnMut(&Node, &Node) -> Result<bool>,
+) -> Result<Vec<String>> {
+    let mut pairs = Vec::new();
+    for at in 1..groups.len() {
+        let (left, right) = groups.split_at_mut(at);
+        let left = &mut left[at - 1].1;
+        let right = &mut right[0].1;
+        let mut boosted_left = vec![false; left.len().min(PLANNER_TOP)];
+        let mut boosted_right = vec![false; right.len().min(PLANNER_TOP)];
+        for (li, lhit) in left.iter().take(PLANNER_TOP).enumerate() {
+            for (ri, rhit) in right.iter().take(PLANNER_TOP).enumerate() {
+                if connected(&lhit.node, &rhit.node)? {
+                    boosted_left[li] = true;
+                    boosted_right[ri] = true;
+                    pairs.push(format!(
+                        "{} -> {}",
+                        qualified_of(lhit.node.id.as_str()),
+                        qualified_of(rhit.node.id.as_str())
+                    ));
+                }
+            }
+        }
+        for (hits, boosted) in [(&mut *left, boosted_left), (&mut *right, boosted_right)] {
+            for (hit, boost) in hits.iter_mut().zip(boosted) {
+                if boost {
+                    hit.score = hit.score * CONNECTED_PERMILLE / 1000;
+                    hit.breakdown.connected = true;
+                    hit.breakdown.final_score = hit.score;
+                    hit.channels.push("connected");
+                    hit.channels.sort_unstable();
+                }
+            }
+            sort_hits(hits);
+        }
+    }
+    Ok(pairs)
+}
+
+/// `boost_connected` over the store graph, either direction, any relation
+/// but containment.
+pub(super) fn connect_topics(
+    store: &Store,
+    groups: &mut [(String, Vec<Hit>)],
+) -> Result<Vec<String>> {
+    // ponytail: one 3-hop closure per left hit (10 per topic pair); a hub
+    // node's closure can be large on a big repo. Cap the closure size if
+    // it shows up in timings.
+    let filter = EdgeFilter::default();
+    let mut closures: HashMap<String, HashSet<String>> = HashMap::new();
+    boost_connected(groups, |left, right| {
+        if !closures.contains_key(left.id.as_str()) {
+            let mut reached = HashSet::new();
+            for step in store
+                .dependencies(&left.id, &filter, PLANNER_HOPS)?
+                .into_iter()
+                .chain(store.dependents(&left.id, &filter, PLANNER_HOPS)?)
+            {
+                reached.insert(step.node.id.as_str().to_owned());
+            }
+            closures.insert(left.id.as_str().to_owned(), reached);
+        }
+        Ok(closures[left.id.as_str()].contains(right.id.as_str()))
+    })
 }
 
 /// Keep the best hit per bare name among weak matches; later same-name
@@ -613,19 +764,27 @@ fn combine(breakdown: &mut ScoreBreakdown) -> i64 {
         + breakdown.callee
         + breakdown.body;
     let (covered, total) = coverage(breakdown);
-    let score = breakdown.evidence
+    let mut score = breakdown.evidence
         * covered as i64
         * breakdown.kind_numerator
         * breakdown.penalty_numerator
-        / (total as i64 * breakdown.kind_denominator * breakdown.penalty_denominator)
-        + breakdown.hub_bonus;
+        / (total as i64 * breakdown.kind_denominator * breakdown.penalty_denominator);
+    if breakdown.rarest_miss {
+        score = score * RAREST_MISS_PERMILLE / 1000;
+    }
+    score += breakdown.hub_bonus;
     breakdown.final_score = score;
     score
 }
 
 /// Rerank the leading hits with one hop of call evidence: a term the
 /// symbol itself never mentions, but a direct callee is named after.
-fn apply_callee_evidence(store: &Store, query: &Query, hits: &mut [Hit]) -> Result<()> {
+fn apply_callee_evidence(
+    store: &Store,
+    query: &Query,
+    rarest: Option<&str>,
+    hits: &mut [Hit],
+) -> Result<()> {
     let depth = hits.len().min(CALLEE_RERANK_DEPTH);
     let ids = hits[..depth]
         .iter()
@@ -669,6 +828,8 @@ fn apply_callee_evidence(store: &Store, query: &Query, hits: &mut [Hit]) -> Resu
         }
         if gained {
             hit.breakdown.coverage_numerator = hit.matched.len();
+            hit.breakdown.rarest_miss =
+                rarest.is_some_and(|term| !hit.matched.iter().any(|m| m == term));
             hit.channels.push("callee");
             hit.roles.push("callee");
             hit.score = combine(&mut hit.breakdown);
@@ -787,10 +948,109 @@ fn apply_family_boost(hits: &mut [Hit]) {
 mod tests {
     use super::super::query::{Query, identifier_tokens};
     use super::{
-        PRIOR_PRODUCTION, ScoreBreakdown, combine, doc_phrase_hits, name_phrase_hits, owner_of,
-        scope_prior, shares_prefix,
+        CONNECTED_PERMILLE, Hit, IDF_CEILING_PERMILLE, IDF_FLOOR_PERMILLE, PRIOR_PRODUCTION,
+        PT_DOC, ScoreBreakdown, boost_connected, combine, doc_phrase_hits, idf_permille,
+        name_phrase_hits, owner_of, scope_prior, shares_prefix, weigh,
     };
-    use sinter_core::CorpusScope;
+    use sinter_core::{CorpusScope, Node, NodeId, Span, SymbolKind};
+
+    fn full_coverage(evidence_name: i64) -> ScoreBreakdown {
+        ScoreBreakdown {
+            name: evidence_name,
+            coverage_numerator: 1,
+            coverage_denominator: 1,
+            kind_numerator: 1,
+            kind_denominator: 1,
+            penalty_numerator: PRIOR_PRODUCTION,
+            penalty_denominator: PRIOR_PRODUCTION,
+            ..ScoreBreakdown::default()
+        }
+    }
+
+    #[test]
+    fn idf_is_clamped_and_monotone() {
+        assert_eq!(idf_permille(29_000, 0), IDF_CEILING_PERMILLE);
+        assert_eq!(idf_permille(29_000, 20), IDF_CEILING_PERMILLE);
+        assert!(idf_permille(29_000, 1_000) < idf_permille(29_000, 100));
+        assert_eq!(idf_permille(10, 10), IDF_FLOOR_PERMILLE.max(693));
+        assert_eq!(idf_permille(10, 10_000), IDF_FLOOR_PERMILLE);
+    }
+
+    #[test]
+    fn rare_term_beats_three_common_terms() {
+        // 29k nodes, "adjudicate trajectory events against cedar policies":
+        // "cedar" in 20 docs, the other three in 3000 each. The Cedar
+        // engine's doc says "cedar policies"; the Python harness doc says
+        // "adjudicate ... events ... policies" and never "cedar".
+        let rare = weigh(PT_DOC, idf_permille(29_000, 20));
+        let common = weigh(PT_DOC, idf_permille(29_000, 3_000));
+        assert!(rare > common, "rare {rare} common {common}");
+        let mut engine = full_coverage(rare + common);
+        engine.coverage_numerator = 2;
+        engine.coverage_denominator = 4;
+        let mut harness = full_coverage(3 * common);
+        harness.coverage_numerator = 3;
+        harness.coverage_denominator = 4;
+        harness.rarest_miss = true;
+        assert!(combine(&mut engine) > combine(&mut harness));
+        // Without the rarest-miss penalty the harness still wins.
+        harness.rarest_miss = false;
+        assert!(combine(&mut engine) < combine(&mut harness));
+    }
+
+    #[test]
+    fn missing_the_rarest_term_halves_the_score() {
+        let mut with = full_coverage(200);
+        let mut without = full_coverage(200);
+        without.rarest_miss = true;
+        assert_eq!(combine(&mut with), 200);
+        assert_eq!(combine(&mut without), 100);
+    }
+
+    fn hit(id: &str, score: i64) -> Hit {
+        Hit {
+            node: Node {
+                id: NodeId::new(id),
+                name: id.to_owned(),
+                kind: SymbolKind::Function,
+                file: "a.rs".to_owned(),
+                span: Span { start: 0, end: 0 },
+                signature: String::new(),
+                doc: None,
+            },
+            scope: CorpusScope::Production,
+            score,
+            matched: Vec::new(),
+            body_matched: Vec::new(),
+            channels: Vec::new(),
+            roles: Vec::new(),
+            total_terms: 1,
+            breakdown: ScoreBreakdown::default(),
+            variants: Vec::new(),
+            parent: None,
+        }
+    }
+
+    #[test]
+    fn planner_boosts_the_connected_pair_across_topics() {
+        // Graph: b -> y. Topic one prefers a (100) over b (90); topic two
+        // prefers x over y. The connected pair b/y should win both topics.
+        let edges = [("b", "y")];
+        let mut groups = vec![
+            ("one".to_owned(), vec![hit("a", 100), hit("b", 90)]),
+            ("two".to_owned(), vec![hit("x", 100), hit("y", 90)]),
+        ];
+        let pairs = boost_connected(&mut groups, |l, r| {
+            Ok(edges.contains(&(l.id.as_str(), r.id.as_str())))
+        })
+        .unwrap();
+        assert_eq!(pairs, vec!["b -> y".to_owned()]);
+        assert_eq!(groups[0].1[0].node.name, "b");
+        assert_eq!(groups[0].1[0].score, 90 * CONNECTED_PERMILLE / 1000);
+        assert_eq!(groups[1].1[0].node.name, "y");
+        assert!(groups[1].1[0].breakdown.connected);
+        assert!(groups[1].1[0].channels.contains(&"connected"));
+    }
 
     #[test]
     fn fuzzy_closeness_needs_a_shared_prefix() {
@@ -806,15 +1066,19 @@ mod tests {
     #[test]
     fn phrases_reward_ordered_adjacent_tokens() {
         let query = Query::parse("where is zsh completion generated");
+        let idf = vec![1000; query.len()];
         assert_eq!(
-            name_phrase_hits(&identifier_tokens("GenZshCompletion"), &query),
-            1
+            name_phrase_hits(&identifier_tokens("GenZshCompletion"), &query, &idf),
+            1000
         );
         assert_eq!(
-            name_phrase_hits(&identifier_tokens("CompletionZsh"), &query),
+            name_phrase_hits(&identifier_tokens("CompletionZsh"), &query, &idf),
             0
         );
-        assert_eq!(doc_phrase_hits("writes zsh completion to w", &query), 1);
+        assert_eq!(
+            doc_phrase_hits("writes zsh completion to w", &query, &idf),
+            1000
+        );
     }
 
     #[test]

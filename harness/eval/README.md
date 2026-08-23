@@ -55,15 +55,17 @@ reports ranking-margin-bucket precision only on holdout repositories, and lists
 every wrong top result beside the first relevant rank.
 
 The agent contract names the current frozen observation
-`ask-holdout-2026-08-21.v1`: high-margin results were correct in 22/25
-holdout cases, medium in 8/12, and low in 2/9. These are descriptive bucket
+`ask-holdout-2026-08-23.v2`: high-margin results were correct in 22/25
+holdout cases, medium in 9/15, and low in 2/6. These are descriptive bucket
 measurements, not per-result probabilities, and 46 holdout cases is a small
 sample: the high bucket's Wilson 95% interval is about 70-96%. Runtime output
 therefore exposes the score gap as `ranking_margin`, reports the calibration
 version, counts, measured precision, and `precision_interval_95` separately,
-and requires verification below 95% measured precision. The 2026-08-22
-stopword and fuzzy-name-prefix ranking change was re-run on the holdout and
-reproduced the same bucket counts, so the calibration version is unchanged. A result abstains when there is no runner-up, query-term
+and requires verification below 95% measured precision. The 2026-08-23
+IDF-weighted field scoring, rarest-term penalty, and relational topic
+planner were re-run on the holdout (top-1 0.717 before and after; tuning
+0.700 to 0.708) and moved cases between the medium and low buckets, hence
+version v2. A result abstains when there is no runner-up, query-term
 coverage is below 50%, or its calibration bucket has fewer than 10 cases.
 Changing these constants requires a new full holdout run and calibration
 version; tuning-only results cannot be substituted.

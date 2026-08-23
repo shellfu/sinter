@@ -515,7 +515,7 @@ mod tests {
         let ranking_context = json!({
             "confidence": {
                 "calibration": {
-                    "version": "ask-holdout-2026-08-21.v1",
+                    "version": "ask-holdout-2026-08-23.v2",
                     "sample_size": 25,
                     "measured_precision": 0.88
                 }

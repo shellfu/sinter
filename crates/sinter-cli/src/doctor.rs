@@ -1,7 +1,8 @@
 //! `sinter doctor`: diagnose the installation and (optionally) a repo's
 //! graph. Every finding names its fix. Findings in the `graph` section are
-//! problems (exit 1); findings in the `integration` section are notes
-//! (drifted cards/hooks/registrations) and never fail the exit code.
+//! problems (exit 1) or completeness warnings (`warn`: evidence the graph
+//! admits it lacks, never fails); findings in the `integration` section are
+//! notes (drifted cards/hooks/registrations) and never fail the exit code.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -15,6 +16,7 @@ use crate::{install, pipeline};
 
 struct Report {
     problems: usize,
+    warnings: usize,
     notes: usize,
     fix: bool,
     fixed: usize,
@@ -29,6 +31,7 @@ impl Report {
     fn new(fix: bool, json: bool) -> Self {
         Self {
             problems: 0,
+            warnings: 0,
             notes: 0,
             fix,
             fixed: 0,
@@ -57,6 +60,13 @@ impl Report {
     }
     fn ok(&mut self, msg: &str) {
         self.emit("ok", msg, None);
+    }
+    /// Graph-section completeness warning: the graph is honest about a
+    /// gap (`map` calls it `partial`); nothing to fix by hand, exit code
+    /// unchanged.
+    fn completeness(&mut self, msg: &str) {
+        self.warnings += 1;
+        self.emit("warn", msg, None);
     }
     fn section(&mut self, name: &str) {
         self.integration = name == "integration";
@@ -97,20 +107,20 @@ impl Report {
                 "version": env!("CARGO_PKG_VERSION"),
                 "graph": sections.remove("graph").unwrap_or_default(),
                 "integration": sections.remove("integration").unwrap_or_default(),
-                "summary": { "fixed": self.fixed, "problems": self.problems, "notes": self.notes },
+                "summary": { "fixed": self.fixed, "problems": self.problems, "warnings": self.warnings, "notes": self.notes },
             });
             println!("{out}");
             return;
         }
         if self.fix {
             println!(
-                "{} fixed, {} graph problem(s), {} integration note(s) remaining",
-                self.fixed, self.problems, self.notes
+                "{} fixed, {} graph problem(s), {} completeness warning(s), {} integration note(s) remaining",
+                self.fixed, self.problems, self.warnings, self.notes
             );
         } else {
             println!(
-                "{} graph problem(s), {} integration note(s)",
-                self.problems, self.notes
+                "{} graph problem(s), {} completeness warning(s), {} integration note(s)",
+                self.problems, self.warnings, self.notes
             );
         }
     }
@@ -498,7 +508,44 @@ fn graph_checks(r: &mut Report, repo: &Path) -> Result<()> {
             r.ok("no SCIP index (optional; `sinter scip` would bind external/method refs)")
         }
     }
+    completeness_warnings(r, &crate::coverage::repository_coverage(repo, &store)?);
     Ok(())
+}
+
+/// Gaps `map` already reports as `partial`, surfaced here so `0 problems`
+/// never reads as "complete". Same `repository_coverage` document, one
+/// line per gap.
+fn completeness_warnings(r: &mut Report, coverage: &serde_json::Value) {
+    let graph = &coverage["graph"];
+    let count = |field: &str| graph[field].as_u64().unwrap_or(0);
+    let partial: Vec<&str> = graph["syntax_error_files"]
+        .as_array()
+        .map(|files| files.iter().filter_map(|f| f.as_str()).collect())
+        .unwrap_or_default();
+    if !partial.is_empty() {
+        let first: Vec<&str> = partial.iter().copied().take(3).collect();
+        let more = if partial.len() > 3 { ", ..." } else { "" };
+        r.completeness(&format!(
+            "{} file(s) indexed from partial syntax trees ({}{more})",
+            partial.len(),
+            first.join(", ")
+        ));
+    }
+    let scip_state = coverage["compiler_index"]["state"]
+        .as_str()
+        .unwrap_or("missing");
+    let waiting = count("missing_compiler_index");
+    if scip_state != "fresh" && waiting > 0 {
+        r.completeness(&format!(
+            "compiler index {scip_state}: {waiting} unresolved refs waiting on `sinter scip`"
+        ));
+    }
+    let actionable = count("actionable_unresolved");
+    if actionable > 0 {
+        r.completeness(&format!(
+            "{actionable} actionable unresolved refs point inside this repo (`sinter unresolved`)"
+        ));
+    }
 }
 
 /// Files newer than the SCIP index whose content provably predates it.
@@ -641,6 +688,38 @@ fn mcp_handshake(repo: &Path) -> anyhow::Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completeness_warnings_count_but_never_fail() {
+        let mut r = Report::new(false, true);
+        r.section("graph");
+        completeness_warnings(
+            &mut r,
+            &serde_json::json!({
+                "compiler_index": {"state": "missing"},
+                "graph": {
+                    "syntax_error_files": ["a.rs", "b.rs", "c.rs", "d.rs"],
+                    "missing_compiler_index": 7,
+                    "actionable_unresolved": 2,
+                },
+            }),
+        );
+        assert_eq!((r.problems, r.warnings, r.notes), (0, 3, 0));
+        let graph = &r.json.as_ref().unwrap()["graph"];
+        assert!(graph.iter().all(|f| f["status"] == "warn"));
+        let msg = graph[0]["message"].as_str().unwrap();
+        assert!(msg.starts_with("4 file(s)") && msg.contains("c.rs, ...") && !msg.contains("d.rs"));
+
+        let mut r = Report::new(false, true);
+        completeness_warnings(
+            &mut r,
+            &serde_json::json!({
+                "compiler_index": {"state": "fresh"},
+                "graph": {"syntax_error_files": [], "missing_compiler_index": 0, "actionable_unresolved": 0},
+            }),
+        );
+        assert_eq!(r.warnings, 0);
+    }
 
     #[test]
     fn portable_mcp_command_must_resolve_from_search_path() {

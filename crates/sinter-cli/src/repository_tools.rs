@@ -14,7 +14,9 @@ use crate::graph_tool::{
     affected_json, affected_options, by_file, limit, required_string, scoped_node_json,
     traversal_filter,
 };
-use crate::lookup::{Found, ensure_snapshot, find_symbol, open_current, unique_symbol};
+use crate::lookup::{
+    Found, ensure_snapshot, find_symbol, open_current, unique_symbol, unique_symbol_in,
+};
 
 pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
     if name == "impact" {
@@ -26,7 +28,7 @@ pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
         let limit = limit(args, 5);
         let scopes = crate::corpus::ScopeSelection::from_json(
             args,
-            crate::corpus::ScopeSelection::agent_default(),
+            crate::corpus::ScopeSelection::ask_default(),
         )?;
         let explain = args
             .get("explain")
@@ -75,31 +77,17 @@ pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
             Ok(crate::unresolved::to_json(&root, &classifier, &refs, limit))
         }
         "show" => {
-            let node = unique_symbol(store, &required_string(args, "symbol")?)?;
+            let filter = traversal_filter(args)?;
+            let node = unique_symbol_in(
+                store,
+                &required_string(args, "symbol")?,
+                filter.scopes.as_ref(),
+            )?;
             let scopes = store.scope_index()?;
-            let edge_json = |edge: &sinter_core::Edge, other: &sinter_core::NodeId| {
-                json!({
-                    "symbol": qualified_of(other.as_str()),
-                    "relation": edge.relation.as_str(),
-                    "evidence": edge.evidence.as_str(),
-                    "site": crate::render::site_json(repo, edge),
-                })
-            };
-            let outgoing: Vec<Value> = store
-                .out_edges(&node.id)?
-                .iter()
-                .map(|edge| edge_json(edge, &edge.dst))
-                .collect();
-            let incoming: Vec<Value> = store
-                .in_edges(&node.id)?
-                .iter()
-                .map(|edge| edge_json(edge, &edge.src))
-                .collect();
-            Ok(json!({
-                "symbol": scoped_node_json(&node, &scopes),
-                "outgoing": outgoing,
-                "incoming": incoming,
-            }))
+            let limit = limit(args, crate::show::DEFAULT_LIMIT);
+            let mut out = crate::show::edges_json(repo, store, &node, &filter, limit)?;
+            out["symbol"] = scoped_node_json(&node, &scopes);
+            Ok(out)
         }
         "query" => {
             let limit = limit(args, 10);

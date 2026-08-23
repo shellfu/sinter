@@ -35,11 +35,22 @@ pub struct ScopeSelection {
 /// Tests count toward blast radius; fixtures, examples, generated, and
 /// vendor code are opt-in (`--scope all` or an explicit list).
 pub const DEFAULT_SCOPE: &str = "production,test,docs";
+/// `ask` default: discovery ranks production code and docs; tests are
+/// opt-in (`--scope test`) so they do not crowd out the thing itself.
+pub const ASK_DEFAULT_SCOPE: &str = "production,docs";
 
 impl ScopeSelection {
     pub fn agent_default() -> Self {
-        let values: Vec<String> = DEFAULT_SCOPE.split(',').map(str::to_owned).collect();
-        Self::parse(&values, Self::all()).expect("DEFAULT_SCOPE parses")
+        Self::from_const(DEFAULT_SCOPE)
+    }
+
+    pub fn ask_default() -> Self {
+        Self::from_const(ASK_DEFAULT_SCOPE)
+    }
+
+    fn from_const(scope: &str) -> Self {
+        let values: Vec<String> = scope.split(',').map(str::to_owned).collect();
+        Self::parse(&values, Self::all()).expect("default scope parses")
     }
 
     pub fn all() -> Self {

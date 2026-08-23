@@ -61,7 +61,7 @@ const EXIT_CODES: &str =
   1  valid query, no results
   2  usage or execution error";
 
-#[derive(Args)]
+#[derive(Args, Default)]
 struct FilterArgs {
     /// Restrict traversal to these evidence kinds (structural, scope, import, scip, dynamic)
     #[arg(long, value_delimiter = ',')]
@@ -233,7 +233,7 @@ enum Command {
         #[arg(long, default_value_t = 5)]
         limit: usize,
         /// Corpus roles to search (comma-separated, or `all`)
-        #[arg(long, value_delimiter = ',', default_value = corpus::DEFAULT_SCOPE)]
+        #[arg(long, value_delimiter = ',', default_value = corpus::ASK_DEFAULT_SCOPE)]
         scope: Vec<String>,
         /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`)
         #[arg(long)]
@@ -261,12 +261,21 @@ enum Command {
         /// Repository to query
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        /// Maximum rows per relation group (the rest collapse to `… (+N)`)
+        #[arg(long, default_value_t = show::DEFAULT_LIMIT)]
+        limit: usize,
+        /// Corpus roles the far end of an edge may be in (comma-separated,
+        /// or `all`)
+        #[arg(long, value_delimiter = ',', default_value = corpus::DEFAULT_SCOPE)]
+        scope: Vec<String>,
         /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`)
         #[arg(long)]
         json: bool,
         /// Fail if the graph changed since this snapshot token was returned
         #[arg(long)]
         if_snapshot: Option<String>,
+        #[command(flatten)]
+        relations: RelationsArg,
     },
     /// Find symbols by name or fragment (exact + trigram); for relations
     /// use `show`, `affected`, `deps`, `path`
@@ -726,7 +735,7 @@ fn main() -> ExitCode {
             explain,
         } => {
             let result =
-                corpus::ScopeSelection::parse(&scope, corpus::ScopeSelection::agent_default())
+                corpus::ScopeSelection::parse(&scope, corpus::ScopeSelection::ask_default())
                     .and_then(|scopes| match workspace {
                         Some(manifest) => {
                             ask::run_workspace(&manifest, &question, limit, json, explain, &scopes)
@@ -750,10 +759,14 @@ fn main() -> ExitCode {
         Command::Show {
             symbol,
             repo,
+            limit,
+            scope,
             json,
             if_snapshot,
+            relations,
         } => {
-            let result = show::run(&repo, &symbol, json, if_snapshot.as_deref());
+            let result = traversal_filter(&FilterArgs::default(), &relations, &scope)
+                .and_then(|f| show::run(&repo, &symbol, &f, limit, json, if_snapshot.as_deref()));
             return if json {
                 grep_exit_json("show", result)
             } else {

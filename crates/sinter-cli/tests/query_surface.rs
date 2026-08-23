@@ -790,3 +790,60 @@ fn lookup_prefers_production_over_fixture_copies() {
     assert_eq!(v["direct"], 1, "{out}");
     assert!(v.get("importing_files").is_some(), "{out}");
 }
+
+/// `show` is one bounded screen: `--limit` collapses every relation group
+/// to `… (+N) · --limit`, `--relations` drops the others, `--scope` drops
+/// edges whose far end is outside the selected corpus roles.
+#[test]
+fn show_is_bounded_by_limit_relations_and_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::create_dir_all(repo.join("tests")).unwrap();
+    std::fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname = \"x\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    let mut lib = String::from("pub struct Node;\n");
+    for i in 0..5 {
+        lib.push_str(&format!("pub fn user_{i}(n: &Node) -> &Node {{ n }}\n"));
+    }
+    std::fs::write(repo.join("src/lib.rs"), lib).unwrap();
+    std::fs::write(
+        repo.join("tests/probe.rs"),
+        "use x::Node;\n#[test]\nfn probe_uses_node() { let _n: Option<Node> = None; }\n",
+    )
+    .unwrap();
+    git(repo, &["init", "-q"]);
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "init"]);
+    let (ok, out) = sinter(repo, &["build", "."]);
+    assert!(ok, "{out}");
+
+    let (ok, full) = sinter(repo, &["show", "Node", "--scope", "production"]);
+    assert!(ok, "{full}");
+    assert!(full.contains("used by (1 files, 5 edges)"), "{full}");
+    assert!(!full.contains("--limit"), "{full}");
+
+    let (ok, out) = sinter(repo, &["show", "user_0", "--limit", "0"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("… (+1) · --limit"), "{out}");
+
+    let (ok, out) = sinter(repo, &["show", "Node", "--relations", "calls"]);
+    assert!(ok, "{out}");
+    assert!(!out.contains("used by"), "{out}");
+
+    let (ok, out) = sinter(repo, &["show", "Node", "--json", "--limit", "2"]);
+    assert!(ok, "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let uses = v["incoming"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["relation"] == "uses")
+        .count();
+    assert_eq!(uses, 2, "{out}");
+    assert_eq!(v["totals"]["incoming"]["uses"], 6, "{out}");
+    assert_eq!(v["truncated"]["incoming"]["uses"], 4, "{out}");
+}

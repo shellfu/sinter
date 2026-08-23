@@ -154,12 +154,15 @@ fn family_size(hits: &[Hit], rank: usize) -> usize {
 /// Score each clause independently, then dedup: a node hit by several
 /// clauses shows once, in its best clause (highest score; earlier clause
 /// on ties). Output budgeting happens after grouping and is globally strict.
+/// Ranked hits per topic label.
+type TopicHits = Vec<(String, Vec<Hit>)>;
+
 fn multi_hits(
     store: &Store,
     clauses: &[(String, Query)],
     scopes: &ScopeSelection,
-) -> Result<Vec<(String, Vec<Hit>)>> {
-    let mut groups: Vec<(String, Vec<Hit>)> = Vec::with_capacity(clauses.len());
+) -> Result<(TopicHits, Vec<String>)> {
+    let mut groups: TopicHits = Vec::with_capacity(clauses.len());
     for (label, query) in clauses {
         groups.push((label.clone(), score_candidates(store, query, scopes)?));
     }
@@ -178,7 +181,8 @@ fn multi_hits(
     for (ci, (_, hits)) in groups.iter_mut().enumerate() {
         hits.retain(|h| best[h.node.id.as_str()].1 == ci);
     }
-    Ok(groups)
+    let connects = ranking::connect_topics(store, &mut groups)?;
+    Ok((groups, connects))
 }
 
 fn adjacency_counts(store: &Store, node: &Node) -> Result<(usize, usize, Vec<String>)> {
@@ -386,14 +390,14 @@ pub(crate) fn ask_response_with_store(
     if clauses.is_empty() {
         bail!("no searchable terms in {question:?} — try naming the thing you're looking for");
     }
-    let groups = multi_hits(store, &clauses, scopes)?;
+    let (groups, connects) = multi_hits(store, &clauses, scopes)?;
     let limits = distribute_limit(limit, groups.len());
     let mut topics = Vec::with_capacity(groups.len());
     for (((label, query), (_, hits)), topic_limit) in clauses.iter().zip(groups.iter()).zip(limits)
     {
         topics.push(topic_json(repo, label, query, hits, topic_limit, explain));
     }
-    Ok(response_json(question, limit, scopes, topics))
+    Ok(response_json(question, limit, scopes, topics, connects))
 }
 
 fn response_json(
@@ -401,6 +405,7 @@ fn response_json(
     limit: usize,
     scopes: &ScopeSelection,
     topics: Vec<serde_json::Value>,
+    connects: Vec<String>,
 ) -> serde_json::Value {
     let returned = topics
         .iter()
@@ -422,6 +427,7 @@ fn response_json(
         "truncated": candidate_count.saturating_sub(returned),
         "decision": if any_abstain { "abstain" } else if verify_required { "verify" } else { "answer" },
         "verify_required": verify_required,
+        "connects": connects,
         "topics": topics,
     })
 }
@@ -611,7 +617,7 @@ pub(crate) fn merge_workspace_responses(
             topic_from_rendered(&label, terms, hits, topic_limit, candidate_count, explain)
         })
         .collect();
-    response_json(question, limit, scopes, topics)
+    response_json(question, limit, scopes, topics, Vec::new())
 }
 
 pub(crate) fn workspace_candidate_limit(question: &str, limit: usize) -> usize {
@@ -674,9 +680,12 @@ fn run_multi(
     limit: usize,
     scopes: &ScopeSelection,
 ) -> Result<bool> {
-    let groups = multi_hits(store, clauses, scopes)?;
+    let (groups, connects) = multi_hits(store, clauses, scopes)?;
     let limits = distribute_limit(limit, groups.len());
     println!("Best matches ({} topics):\n", groups.len());
+    if !connects.is_empty() {
+        println!("connects: {}\n", connects.join("; "));
+    }
     let mut best: Option<(i64, &Hit)> = None;
     for ((topic, hits), topic_limit) in groups.iter().zip(limits) {
         println!("## {topic}");
@@ -830,7 +839,7 @@ mod tests {
             "ranking_bucket": "unrated",
             "ranking_margin": {"absolute": null, "permille": null},
             "calibration": {
-                "version": "ask-holdout-2026-08-21.v1",
+                "version": "ask-holdout-2026-08-23.v2",
                 "sample_size": 0,
                 "measured_precision": 0.0,
                 "in_calibration": false
@@ -844,9 +853,7 @@ mod tests {
 
         assert_eq!(
             advice_for(&hits).as_deref(),
-            Some(
-                "confidence: unrated (no_runner_up); verify top hit or inspect multiple candidates"
-            )
+            Some("confidence: unrated; verify top hit")
         );
     }
 
