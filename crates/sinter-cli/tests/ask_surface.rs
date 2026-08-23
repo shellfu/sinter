@@ -678,7 +678,7 @@ fn ask_test_question_reaches_test_scope_and_code_outranks_prose() {
     assert_ne!(hits[0]["kind"], "section", "prose outranks code:\n{out}");
     assert!(
         hits.iter()
-            .all(|h| h["doc"].as_str().map_or(true, |d| d.chars().count() <= 201)),
+            .all(|h| h["doc"].as_str().is_none_or(|d| d.chars().count() <= 201)),
         "{out}"
     );
 }
