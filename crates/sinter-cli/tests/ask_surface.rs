@@ -309,26 +309,6 @@ fn agent_protocol_matches_cli_and_mcp() {
         assert_eq!(tool["inputSchema"]["additionalProperties"], false, "{tool}");
         assert!(tool["outputSchema"].is_object(), "{tool}");
     }
-    let query_tool = responses[0]["result"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|tool| tool["name"] == "query")
-        .unwrap();
-    let query_schema = &query_tool["outputSchema"]["properties"]["data"];
-    assert_eq!(query_schema["properties"]["snapshot"]["type"], "string");
-    assert_eq!(query_schema["properties"]["scope"]["type"], "array");
-    assert!(
-        query_schema["anyOf"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|shape| {
-                let required = shape["required"].as_array().unwrap();
-                required.iter().any(|field| field == "snapshot")
-                    && required.iter().any(|field| field == "scope")
-            })
-    );
     let ask_tool = responses[0]["result"]["tools"]
         .as_array()
         .unwrap()
@@ -1077,7 +1057,7 @@ fn init_onboards_repo() {
     assert!(out.contains("== doctor =="), "{out}");
     // A project-scoped install is a complete install: the absent global
     // skill card must not be reported as a problem to fix.
-    assert!(out.contains("0 problem(s)"), "{out}");
+    assert!(out.contains("0 graph problem(s)"), "{out}");
     // Idempotent: second init changes nothing and still succeeds.
     let (_, again) = init(&["init"]);
     let agents = std::fs::read_to_string(repo.join("AGENTS.md")).unwrap();

@@ -269,8 +269,8 @@ fn workspace_impact_crosses_members() {
     let output = child.wait_with_output().unwrap();
     let text = String::from_utf8_lossy(&output.stdout);
     let response: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
-    let body = response["result"]["content"][0]["text"].as_str().unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
+    let parsed = response["result"]["structuredContent"]["data"].clone();
+    let body = parsed.to_string();
     assert!(
         parsed["changed_symbols"]
             .as_array()
@@ -482,10 +482,9 @@ fn serve_workspace_answers_across_members() {
     );
 
     let affected: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
-    let body = affected["result"]["content"][0]["text"]
-        .as_str()
-        .unwrap_or_else(|| panic!("affected tool failed: {affected}"));
-    let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
+    let parsed = affected["result"]["structuredContent"]["data"].clone();
+    assert!(parsed.is_object(), "affected tool failed: {affected}");
+    let body = parsed.to_string();
     assert_eq!(parsed["symbol"]["member"], "common", "{body}");
     assert!(parsed["total"].as_u64().unwrap() >= 1, "{body}");
     let deps = parsed["dependents"].as_array().unwrap();
@@ -516,8 +515,8 @@ fn serve_workspace_answers_across_members() {
     // ask fans out across members; top hit carries member attribution and
     // CLI/MCP share the exact calibrated topic payload.
     let ask: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
-    let body = ask["result"]["content"][0]["text"].as_str().unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
+    let parsed = ask["result"]["structuredContent"]["data"].clone();
+    let body = parsed.to_string();
     let first = &parsed["topics"][0]["hits"][0];
     assert_eq!(first["member"], "common", "{body}");
     assert_eq!(first["name"], "Backoff", "{body}");
@@ -526,8 +525,8 @@ fn serve_workspace_answers_across_members() {
 
     // show carries in-member edges plus boundary links from other members.
     let show: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
-    let body = show["result"]["content"][0]["text"].as_str().unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
+    let parsed = show["result"]["structuredContent"]["data"].clone();
+    let body = parsed.to_string();
     assert_eq!(parsed["symbol"]["member"], "common", "{body}");
     let boundary_in = parsed["boundary_incoming"].as_array().unwrap();
     assert!(
@@ -540,8 +539,8 @@ fn serve_workspace_answers_across_members() {
 
     // unresolved spans members; every entry is tagged with its member.
     let unresolved: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
-    let body = unresolved["result"]["content"][0]["text"].as_str().unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
+    let parsed = unresolved["result"]["structuredContent"]["data"].clone();
+    let body = parsed.to_string();
     assert!(parsed["total"].is_u64(), "{body}");
     for e in parsed["unresolved"].as_array().unwrap() {
         let member = e["member"].as_str().unwrap();
@@ -567,8 +566,8 @@ fn serve_workspace_answers_across_members() {
     );
 
     let path: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
-    let body = path["result"]["content"][0]["text"].as_str().unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
+    let parsed = path["result"]["structuredContent"]["data"].clone();
+    let body = parsed.to_string();
     assert_eq!(parsed["found"], true, "{body}");
     assert_eq!(parsed["coverage"]["status"], "found", "{body}");
     assert!(parsed["steps"][0]["confidence"].is_string(), "{body}");

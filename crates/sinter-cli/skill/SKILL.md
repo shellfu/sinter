@@ -95,7 +95,7 @@ Agents should always pass `--json`: it emits the compact data payload from
 the versioned `sinter.agent.v1` contract. Omitting `--json` selects the
 human-oriented renderer. MCP `structuredContent` wraps that same payload as
 `{protocol, operation, outcome, data}`; the CLI value is exactly `data`.
-MCP's `content[].text` retains the bare payload for older clients. Repo-scope
+MCP's `content[0].text` is a one-line summary; read `structuredContent`. Repo-scope
 read verbs exit grep-style: 0 results found, 1 valid query with no results,
 2 error — branch on the exit code instead of parsing. In `--json` mode,
 errors are structured `sinter.agent.v1` outcomes; MCP exposes the identical
@@ -140,10 +140,13 @@ When the sinter MCP server is registered (`.mcp.json`, `.cursor/mcp.json`,
 `.codex/config.toml` — full `sinter init` does this), the same verbs are
 available as `mcp__sinter__*` tools (`ask`, `show`, `query`, `affected`,
 `deps`, `path`, `unresolved`, `impact`, `overlap`, `map`). Every tool has a
-closed input schema and a versioned output schema. Read
-`structuredContent.data` as the CLI `--json` payload and inspect `outcome`
+closed input schema. Read `structuredContent.data` as the CLI `--json`
+payload (`content[0].text` is only a one-line summary) and inspect `outcome`
 before acting: `not_proven` is explicitly non-conclusive, and neither
 `partial` nor `not_found` may be silently upgraded into a negative proof.
+Terse `affected`/`deps` rows use short keys; a `legend` field decodes them on
+the first page. Long-form guidance (coverage semantics, batching, budget
+paging) is the MCP resource `sinter://guide`.
 
 ## Orchestrating subagents
 

@@ -94,10 +94,35 @@ fn handle(scope: &Scope, method: &str, params: &Value) -> Result<Value> {
                 .get("protocolVersion")
                 .and_then(Value::as_str)
                 .unwrap_or("2024-11-05"),
-            "capabilities": {"tools": {}},
+            "capabilities": {"tools": {}, "resources": {}},
             "serverInfo": {"name": "sinter", "version": env!("CARGO_PKG_VERSION")},
+            "instructions": format!(
+                "sinter answers code-structure questions from a dependency graph. \
+                 Read `structuredContent` (content text is a summary only) and check \
+                 `outcome.status` before acting. Key legend, coverage semantics, \
+                 batching, and budget paging: see resource {}",
+                crate::tool_catalog::GUIDE_URI
+            ),
         })),
         "ping" => Ok(json!({})),
+        "resources/list" => Ok(json!({"resources": [{
+            "uri": crate::tool_catalog::GUIDE_URI,
+            "name": "guide",
+            "description": "How to read sinter results: key legend, coverage, batching, paging",
+            "mimeType": "text/markdown",
+        }]})),
+        "resources/templates/list" => Ok(json!({"resourceTemplates": []})),
+        "resources/read" => {
+            let uri = params.get("uri").and_then(Value::as_str).unwrap_or("");
+            if uri != crate::tool_catalog::GUIDE_URI {
+                anyhow::bail!("unknown resource {uri}");
+            }
+            Ok(json!({"contents": [{
+                "uri": uri,
+                "mimeType": "text/markdown",
+                "text": crate::tool_catalog::GUIDE,
+            }]}))
+        }
         "tools/list" => Ok(match scope {
             Scope::Repo { .. } => crate::tool_catalog::repository(),
             Scope::Workspace(_) => crate::tool_catalog::workspace(),

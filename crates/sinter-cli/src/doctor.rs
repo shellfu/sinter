@@ -1,5 +1,7 @@
 //! `sinter doctor`: diagnose the installation and (optionally) a repo's
-//! graph. Every finding names its fix; exit 1 when anything needs action.
+//! graph. Every finding names its fix. Findings in the `graph` section are
+//! problems (exit 1); findings in the `integration` section are notes
+//! (drifted cards/hooks/registrations) and never fail the exit code.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -13,17 +15,38 @@ use crate::{install, pipeline};
 
 struct Report {
     problems: usize,
+    notes: usize,
     fix: bool,
     fixed: usize,
+    /// Findings after `integration()` are notes, not problems.
+    integration: bool,
 }
 
 impl Report {
+    fn new(fix: bool) -> Self {
+        Self {
+            problems: 0,
+            notes: 0,
+            fix,
+            fixed: 0,
+            integration: false,
+        }
+    }
     fn ok(&mut self, msg: &str) {
         println!("  ok    {msg}");
     }
+    fn section(&mut self, name: &str) {
+        self.integration = name == "integration";
+        println!("{name}");
+    }
     fn warn(&mut self, msg: &str, fix: &str) {
-        self.problems += 1;
-        println!("  FIX   {msg}\n        -> {fix}");
+        if self.integration {
+            self.notes += 1;
+            println!("  note  {msg}\n        -> {fix}");
+        } else {
+            self.problems += 1;
+            println!("  FIX   {msg}\n        -> {fix}");
+        }
     }
     /// A finding doctor can repair itself. Under `--fix` the action runs
     /// (falling back to a warning naming the failure); otherwise it
@@ -46,11 +69,14 @@ impl Report {
     fn summary(&self) {
         if self.fix {
             println!(
-                "{} fixed, {} problem(s) remaining",
-                self.fixed, self.problems
+                "{} fixed, {} graph problem(s), {} integration note(s) remaining",
+                self.fixed, self.problems, self.notes
             );
         } else {
-            println!("{} problem(s)", self.problems);
+            println!(
+                "{} graph problem(s), {} integration note(s)",
+                self.problems, self.notes
+            );
         }
     }
 }
@@ -64,11 +90,7 @@ pub fn run_workspace(manifest: &Path, fix: bool) -> Result<bool> {
         crate::workspace::run(manifest)?;
     }
     let ws = crate::workspace::load(manifest)?;
-    let mut r = Report {
-        problems: 0,
-        fix,
-        fixed: 0,
-    };
+    let mut r = Report::new(fix);
     println!(
         "workspace `{}` ({} members)",
         ws.manifest.workspace.name,
@@ -106,16 +128,21 @@ pub fn run_workspace(manifest: &Path, fix: bool) -> Result<bool> {
 }
 
 pub fn run(repo: &Path, fix: bool) -> Result<bool> {
-    let mut r = Report {
-        problems: 0,
-        fix,
-        fixed: 0,
-    };
+    let mut r = Report::new(fix);
 
     println!("sinter {}", env!("CARGO_PKG_VERSION"));
+    r.section("graph");
     let names: Vec<&str> = LANGUAGES.iter().map(|l| l.name).collect();
     r.ok(&format!("languages: {}", names.join(", ")));
 
+    // Repo checks. Subdirectory invocation resolves to the graph root,
+    // matching every query command.
+    let repo = pipeline::discover_root(repo);
+    let repo = repo.canonicalize()?;
+
+    graph_checks(&mut r, &repo)?;
+
+    r.section("integration");
     // Release check: one HEAD request, TTY-only, 24h-cached, opt-out via
     // SINTER_NO_UPDATE_CHECK=1. Not auto-fixable — replacing the running
     // binary is the installer's job, not doctor's.
@@ -156,11 +183,6 @@ pub fn run(repo: &Path, fix: bool) -> Result<bool> {
             "pass --dir to `sinter install`",
         ),
     }
-
-    // Repo checks. Subdirectory invocation resolves to the graph root,
-    // matching every query command.
-    let repo = pipeline::discover_root(repo);
-    let repo = repo.canonicalize()?;
 
     // Enforcement hooks: script current with this binary and the three
     // settings entries present (per-prompt router, Bash + Grep nudges),
@@ -222,80 +244,6 @@ pub fn run(repo: &Path, fix: bool) -> Result<bool> {
             );
         }
     }
-    let db = pipeline::db_path(&repo);
-    if !db.exists() {
-        r.fixable(
-            &format!("no graph at {}", db.display()),
-            "run `sinter build`",
-            || pipeline::build(&repo, None).map(drop),
-        );
-        if !db.exists() {
-            r.summary();
-            return Ok(r.problems == 0);
-        }
-    }
-    // A held lock (long-lived serve/watch from another process) is a
-    // finding to report, never a crash.
-    let schema = match Store::schema_of(&db) {
-        Ok(schema) => schema,
-        Err(e) => {
-            r.warn(
-                &format!("graph database is not readable right now: {e}"),
-                "another process holds it (serve/watch?); stop it or retry, then `sinter doctor`",
-            );
-            r.summary();
-            return Ok(false);
-        }
-    };
-    match schema {
-        Some(v) if v == Store::CURRENT_SCHEMA => r.ok(&format!("graph schema v{v} (current)")),
-        Some(v) => r.fixable(
-            &format!(
-                "graph schema v{v}, binary writes v{}",
-                Store::CURRENT_SCHEMA
-            ),
-            "run `sinter build` (rebuilds automatically)",
-            || pipeline::build(&repo, None).map(drop),
-        ),
-        None => r.fixable("graph has no schema stamp", "run `sinter build`", || {
-            pipeline::build(&repo, None).map(drop)
-        }),
-    }
-
-    let store = Store::open(&db)?;
-    let stored: HashMap<String, sinter_store::FileStamp> =
-        store.file_hashes()?.into_iter().collect();
-    let current = pipeline::scan_hashes(&repo, &stored)?;
-    let stale = current
-        .iter()
-        .filter(|(f, h)| stored.get(f).map(|s| &s.hash) != Some(h))
-        .count();
-    let removed = {
-        let live: std::collections::HashSet<&str> =
-            current.iter().map(|(f, _)| f.as_str()).collect();
-        stored.keys().filter(|f| !live.contains(f.as_str())).count()
-    };
-    // The rebuild (and the stats reopen below) needs this handle released.
-    drop(store);
-    if stale == 0 && removed == 0 {
-        r.ok(&format!("graph fresh ({} files indexed)", stored.len()));
-    } else {
-        r.fixable(
-            &format!("graph stale: {stale} changed, {removed} removed files"),
-            "run `sinter build`",
-            || pipeline::build(&repo, None).map(drop),
-        );
-    }
-
-    let store = Store::open(&db)?;
-    r.ok(&format!(
-        "{} nodes, {} edges, {} unresolved refs, {} on disk",
-        store.node_count()?,
-        store.edge_count()?,
-        store.unresolved_count()?,
-        pipeline::db_size(&repo),
-    ));
-
     if repo.join(".git").exists() {
         let hook = repo.join(".git/hooks/post-commit");
         let installed = std::fs::read_to_string(&hook).is_ok_and(|s| s.contains("sinter build"));
@@ -412,21 +360,148 @@ pub fn run(repo: &Path, fix: bool) -> Result<bool> {
             ),
         }
     }
-    match crate::scip::staleness(&repo) {
-        crate::scip::Staleness::Fresh => {
-            r.ok("SCIP index present and fresh (compiler-grade evidence tier active)")
+    r.summary();
+    Ok(r.problems == 0)
+}
+
+/// Graph-section findings. Returns early when there is no readable graph
+/// so the integration section still runs and the summary stays whole.
+fn graph_checks(r: &mut Report, repo: &Path) -> Result<()> {
+    let db = pipeline::db_path(repo);
+    if !db.exists() {
+        r.fixable(
+            &format!("no graph at {}", db.display()),
+            "run `sinter build`",
+            || pipeline::build(repo, None).map(drop),
+        );
+        if !db.exists() {
+            return Ok(());
         }
-        crate::scip::Staleness::Stale(n) => r.warn(
-            &format!("SCIP index stale ({n} source files newer than the index)"),
+    }
+    // A held lock (long-lived serve/watch from another process) is a
+    // finding to report, never a crash.
+    let schema = match Store::schema_of(&db) {
+        Ok(schema) => schema,
+        Err(e) => {
+            r.warn(
+                &format!("graph database is not readable right now: {e}"),
+                "another process holds it (serve/watch?); stop it or retry, then `sinter doctor`",
+            );
+            return Ok(());
+        }
+    };
+    match schema {
+        Some(v) if v == Store::CURRENT_SCHEMA => r.ok(&format!("graph schema v{v} (current)")),
+        Some(v) => r.fixable(
+            &format!(
+                "graph schema v{v}, binary writes v{}",
+                Store::CURRENT_SCHEMA
+            ),
+            "run `sinter build` (rebuilds automatically)",
+            || pipeline::build(repo, None).map(drop),
+        ),
+        None => r.fixable("graph has no schema stamp", "run `sinter build`", || {
+            pipeline::build(repo, None).map(drop)
+        }),
+    }
+
+    let store = Store::open(&db)?;
+    let stored: HashMap<String, sinter_store::FileStamp> =
+        store.file_hashes()?.into_iter().collect();
+    let current = pipeline::scan_hashes(repo, &stored)?;
+    let stale = current
+        .iter()
+        .filter(|(f, h)| stored.get(f).map(|s| &s.hash) != Some(h))
+        .count();
+    let removed = {
+        let live: std::collections::HashSet<&str> =
+            current.iter().map(|(f, _)| f.as_str()).collect();
+        stored.keys().filter(|f| !live.contains(f.as_str())).count()
+    };
+    // The rebuild (and the stats reopen below) needs this handle released.
+    drop(store);
+    if stale == 0 && removed == 0 {
+        r.ok(&format!("graph fresh ({} files indexed)", stored.len()));
+    } else {
+        r.fixable(
+            &format!("graph stale: {stale} changed, {removed} removed files"),
+            "run `sinter build`",
+            || pipeline::build(repo, None).map(drop),
+        );
+    }
+
+    let store = Store::open(&db)?;
+    r.ok(&format!(
+        "{} nodes, {} edges, {} unresolved refs, {} on disk",
+        store.node_count()?,
+        store.edge_count()?,
+        store.unresolved_count()?,
+        pipeline::db_size(repo),
+    ));
+
+    // SCIP staleness is mtime-based in `scip::staleness`; a file whose
+    // content hash still matches the stamp recorded before the index was
+    // written was merely touched (checkout, restore) and is excused.
+    // ponytail: once `sinter build` re-stamps a touched file the proof is
+    // gone; recording a corpus fingerprint at `sinter scip` time would fix
+    // that at the source.
+    let excused = scip_excused(repo, &stored, &current);
+    match crate::scip::staleness(repo) {
+        crate::scip::Staleness::Stale(n) if n > excused => r.warn(
+            &format!(
+                "SCIP index stale ({} source files changed since the index)",
+                n - excused
+            ),
             "run `sinter scip` (newer files fall back to import/scope evidence until then)",
         ),
+        crate::scip::Staleness::Fresh | crate::scip::Staleness::Stale(_) => {
+            r.ok("SCIP index present and fresh (compiler-grade evidence tier active)")
+        }
         crate::scip::Staleness::Missing => {
             r.ok("no SCIP index (optional; `sinter scip` would bind external/method refs)")
         }
     }
+    Ok(())
+}
 
-    r.summary();
-    Ok(r.problems == 0)
+/// Files newer than the SCIP index whose content provably predates it.
+fn scip_excused(
+    repo: &Path,
+    stored: &HashMap<String, sinter_store::FileStamp>,
+    current: &[(String, String)],
+) -> usize {
+    let Some(index_mtime) =
+        pipeline::scip_index_path(repo).and_then(|p| std::fs::metadata(p).ok()?.modified().ok())
+    else {
+        return 0;
+    };
+    let index_nanos = index_mtime
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    current
+        .iter()
+        .filter(|(file, hash)| {
+            let Some(stamp) = stored.get(file) else {
+                return false;
+            };
+            let newer = std::fs::metadata(repo.join(file))
+                .and_then(|m| m.modified())
+                .is_ok_and(|m| m > index_mtime);
+            newer && stamp.hash == *hash && stamp_mtime_nanos(stamp) <= index_nanos
+        })
+        .count()
+}
+
+/// Mtime half of a stored stamp identity (unix packs mtime above ctime).
+fn stamp_mtime_nanos(stamp: &sinter_store::FileStamp) -> u128 {
+    #[cfg(unix)]
+    {
+        stamp.identity_nanos >> 64
+    }
+    #[cfg(not(unix))]
+    {
+        stamp.identity_nanos
+    }
 }
 
 fn mcp_command_resolves(repo: &Path, command: &str, search_path: Option<&OsStr>) -> bool {

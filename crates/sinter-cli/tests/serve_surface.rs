@@ -68,10 +68,13 @@ fn call(id: u64, args: serde_json::Value) -> String {
     call_tool(id, "affected", args)
 }
 
-fn body(response: &serde_json::Value) -> &str {
-    response["result"]["content"][0]["text"]
-        .as_str()
-        .unwrap_or_else(|| panic!("missing MCP text body: {response}"))
+fn body(response: &serde_json::Value) -> serde_json::Value {
+    let data = &response["result"]["structuredContent"]["data"];
+    assert!(
+        data.is_object(),
+        "missing MCP structuredContent: {response}"
+    );
+    data.clone()
 }
 
 fn cli_impact(repo: &Path, limit: Option<usize>) -> serde_json::Value {
@@ -165,12 +168,15 @@ fn affected_is_terse_capped_and_batchable() {
     );
 
     // (1) Summary-first, terse dependents, no per-dependent doc/signature.
-    let text = body(&responses[0]);
+    let text = responses[0]["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
     assert!(
-        !text.contains("\n  "),
-        "must be compact, not pretty: {text}"
+        text.starts_with("affected Base:") && text.len() <= 200,
+        "text body must be a one-line summary: {text}"
     );
-    let v: serde_json::Value = serde_json::from_str(text).unwrap();
+    let v = body(&responses[0]);
+    let text = &v;
     assert!(v["total"].as_u64().unwrap() > 3, "{text}");
     assert!(!v["by_file"].as_array().unwrap().is_empty(), "{text}");
     let deps = v["dependents"].as_array().unwrap();
@@ -203,12 +209,12 @@ fn affected_is_terse_capped_and_batchable() {
     );
 
     // (2) limit caps dependents and reports the omission.
-    let v: serde_json::Value = serde_json::from_str(body(&responses[1])).unwrap();
+    let v: serde_json::Value = body(&responses[1]);
     assert_eq!(v["dependents"].as_array().unwrap().len(), 2);
     assert!(v["truncated"].as_u64().unwrap() >= 1, "{v}");
 
     // (3) Batch: one call, two results.
-    let v: serde_json::Value = serde_json::from_str(body(&responses[2])).unwrap();
+    let v: serde_json::Value = body(&responses[2]);
     let results = v["results"].as_array().unwrap();
     assert_eq!(results.len(), 2, "{v}");
     assert!(results.iter().all(|r| r.get("error").is_none()), "{v}");
@@ -217,7 +223,7 @@ fn affected_is_terse_capped_and_batchable() {
     // (4) A missed path explains itself (CLI parity): Base never reaches
     // A3, so the answer carries forward reach, who reaches A3, and the
     // filter-excluded count.
-    let v: serde_json::Value = serde_json::from_str(body(&responses[3])).unwrap();
+    let v: serde_json::Value = body(&responses[3]);
     assert_eq!(v["found"], false, "{v}");
     assert!(v["miss"]["forward_reached"].is_u64(), "{v}");
     assert!(v["miss"]["reached_by"].is_array(), "{v}");
@@ -281,7 +287,7 @@ fn map_tool_and_error_hints() {
 
     // map: explicit inventory semantics, health, modules, and dependency
     // hubs (Base has four dependents).
-    let v: serde_json::Value = serde_json::from_str(body(&responses[1])).unwrap();
+    let v: serde_json::Value = body(&responses[1]);
     assert_eq!(v["scope"], serde_json::json!(["production", "docs"]));
     assert_eq!(v["orientation"]["kind"], "repository_inventory");
     assert_eq!(v["health"]["status"], "partial");
@@ -313,7 +319,7 @@ fn map_tool_and_error_hints() {
     let msg = responses[3]["error"]["message"].as_str().unwrap();
     assert!(msg.contains("two rev-ranges"), "{msg}");
 
-    let all: serde_json::Value = serde_json::from_str(body(&responses[4])).unwrap();
+    let all: serde_json::Value = body(&responses[4]);
     assert_eq!(all["scope"].as_array().unwrap().len(), 7, "{all}");
 }
 
@@ -350,7 +356,7 @@ fn overlap_ranks_pairwise_risk() {
             serde_json::json!({"ranges": ["a=HEAD~1..HEAD", "b=HEAD~1..HEAD"]}),
         )],
     );
-    let v: serde_json::Value = serde_json::from_str(body(&responses[0])).unwrap();
+    let v: serde_json::Value = body(&responses[0]);
     assert_eq!(v["changes"].as_array().unwrap().len(), 2, "{v}");
     let pair = &v["pairs"].as_array().unwrap()[0];
     assert_eq!(pair["risk"], "high", "{v}");
@@ -385,7 +391,7 @@ fn server_refreshes_after_source_event() {
     let mut line = String::new();
     stdout.read_line(&mut line).unwrap();
     let first: serde_json::Value = serde_json::from_str(&line).unwrap();
-    let first_body: serde_json::Value = serde_json::from_str(body(&first)).unwrap();
+    let first_body: serde_json::Value = body(&first);
     assert_eq!(first_body["exact"], false);
 
     let mut source = std::fs::read_to_string(repo.join("lib.go")).unwrap();
@@ -400,7 +406,7 @@ fn server_refreshes_after_source_event() {
         line.clear();
         stdout.read_line(&mut line).unwrap();
         let response: serde_json::Value = serde_json::from_str(&line).unwrap();
-        let value: serde_json::Value = serde_json::from_str(body(&response)).unwrap();
+        let value: serde_json::Value = body(&response);
         if value["exact"] == true {
             found = true;
             break;
@@ -419,7 +425,7 @@ fn mcp_reports_snapshot_staleness_and_handle_relocation_as_typed_errors() {
         &repo,
         &[call_tool(1, "query", serde_json::json!({"symbol": "Base"}))],
     );
-    let query: serde_json::Value = serde_json::from_str(body(&initial[0])).unwrap();
+    let query: serde_json::Value = body(&initial[0]);
     let snapshot = query["snapshot"].as_str().unwrap().to_string();
     let id = query["results"][0]["snapshot_id"]
         .as_str()

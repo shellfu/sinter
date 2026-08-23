@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::Result;
-use sinter_core::{Edge, Evidence, Relation, SymbolKind};
+use sinter_core::{Edge, Evidence, Relation};
 use sinter_resolve::qualified_of;
 
 use crate::lookup::{ensure_snapshot, open_store, unique_symbol};
@@ -120,7 +120,7 @@ pub fn run(repo: &Path, symbol: &str, json: bool, if_snapshot: Option<&str>) -> 
         );
     }
     let imports = group(Relation::Imports);
-    if node.kind == SymbolKind::File && !imports.is_empty() {
+    if !imports.is_empty() {
         println!(
             "imports ({})     {}    [{}]",
             imports.len(),
@@ -210,17 +210,18 @@ pub fn run(repo: &Path, symbol: &str, json: bool, if_snapshot: Option<&str>) -> 
         println!("dispatches to ({})    {}", dispatches.len(), listed);
     }
 
-    let calls: Vec<&Edge> = out
-        .iter()
-        .filter(|e| {
-            matches!(e.relation, Relation::Calls | Relation::Uses)
-                && e.evidence != Evidence::Dynamic
-        })
-        .collect();
-    if !calls.is_empty() {
-        // Exemplars carry their call site (`name (file:line)`) so "A calls
-        // B" comes with "at file:line" instead of forcing a follow-up grep.
-        let shown: Vec<String> = calls
+    // One row per relation: a `uses` edge (type reference) is never a call.
+    for (label, rel) in [("calls", Relation::Calls), ("uses", Relation::Uses)] {
+        let edges: Vec<&Edge> = out
+            .iter()
+            .filter(|e| e.relation == rel && e.evidence != Evidence::Dynamic)
+            .collect();
+        if edges.is_empty() {
+            continue;
+        }
+        // Exemplars carry their site (`name (file:line)`) so "A calls B"
+        // comes with "at file:line" instead of forcing a follow-up grep.
+        let shown: Vec<String> = edges
             .iter()
             .take(EXEMPLARS)
             .map(|e| {
@@ -233,14 +234,14 @@ pub fn run(repo: &Path, symbol: &str, json: bool, if_snapshot: Option<&str>) -> 
             })
             .collect();
         let mut listed = shown.join(", ");
-        if calls.len() > EXEMPLARS {
-            listed.push_str(&format!(", … (+{})", calls.len() - EXEMPLARS));
+        if edges.len() > EXEMPLARS {
+            listed.push_str(&format!(", … (+{})", edges.len() - EXEMPLARS));
         }
         println!(
-            "calls ({})       {}    [{}]",
-            calls.len(),
+            "{:<16} {}    [{}]",
+            format!("{label} ({})", edges.len()),
             listed,
-            evidence_tally(&calls)
+            evidence_tally(&edges)
         );
     }
 

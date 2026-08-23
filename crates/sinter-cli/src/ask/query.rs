@@ -6,10 +6,10 @@ use std::collections::HashSet;
 
 const STOPWORDS: &[&str] = &[
     "a", "an", "and", "are", "as", "at", "be", "been", "by", "can", "could", "do", "does", "find",
-    "for", "from", "how", "i", "in", "into", "is", "it", "its", "located", "may", "me", "might",
-    "must", "my", "of", "on", "only", "or", "our", "shall", "should", "show", "that", "the",
-    "these", "this", "those", "to", "up", "was", "we", "were", "what", "where", "which", "who",
-    "whom", "will", "with", "would", "you", "your",
+    "for", "from", "how", "i", "in", "include", "inside", "into", "is", "it", "its", "like",
+    "located", "make", "may", "me", "might", "must", "my", "of", "on", "only", "or", "our",
+    "shall", "should", "show", "that", "the", "these", "this", "those", "to", "up", "was", "we",
+    "were", "what", "where", "which", "who", "whom", "will", "with", "would", "you", "your",
 ];
 
 const SOFT_STOPWORDS: &[&str] = &[

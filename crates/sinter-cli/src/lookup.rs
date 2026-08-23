@@ -426,24 +426,3 @@ pub fn relation_set(relations: &[String]) -> Result<Option<BTreeSet<sinter_core:
     }
     Ok(Some(set))
 }
-
-/// Content-bearing one-node listing (R3): the reader should not need to
-/// open the file.
-pub fn print_node(node: &Node) {
-    println!(
-        "{} {}  {}:{}..{}",
-        node.kind.as_str(),
-        qualified_of(node.id.as_str()),
-        node.file,
-        node.span.start,
-        node.span.end
-    );
-    if !node.signature.is_empty() {
-        println!("    {}", node.signature);
-    }
-    if let Some(doc) = &node.doc {
-        for line in doc.lines().take(3) {
-            println!("    /// {line}");
-        }
-    }
-}

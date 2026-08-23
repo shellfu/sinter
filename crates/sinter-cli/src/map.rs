@@ -177,12 +177,20 @@ pub fn run(repo: &Path, json: bool, scopes: &ScopeSelection) -> Result<()> {
     let health = &view["health"];
     println!();
     println!("Graph health");
+    let waiting = health["graph"]["missing_compiler_index"]
+        .as_u64()
+        .unwrap_or(0);
     println!(
-        "  {} · compiler index {} · actionable unresolved {} · partial-syntax files {} · unindexed files {}",
+        "  {} · compiler index {}{} · actionable unresolved {} · partial-syntax files {} · unindexed files {}",
         health["status"].as_str().unwrap_or("partial"),
         health["compiler_index"]["state"]
             .as_str()
             .unwrap_or("unknown"),
+        if waiting > 0 {
+            format!(" · {waiting} refs waiting on `sinter scip`")
+        } else {
+            String::new()
+        },
         health["graph"]["actionable_unresolved"]
             .as_u64()
             .unwrap_or(0),

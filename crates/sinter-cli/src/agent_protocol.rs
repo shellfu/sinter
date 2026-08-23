@@ -76,26 +76,153 @@ pub fn write_json(value: &Value) -> Result<()> {
     Ok(())
 }
 
-/// MCP's legacy text body remains the bare data value for older clients;
-/// agents with structured-content support receive the versioned contract.
-/// Bounded to `budget`, measured on the whole tool result (the legacy text
-/// body duplicates `data`, so both halves count).
+/// Key legend for terse dependent rows, emitted only for keys actually
+/// present so repository (`d`) and workspace (`p`) rows each get theirs.
+const LEGEND: [(&str, &str); 8] = [
+    ("s", "symbol"),
+    ("k", "kind"),
+    ("f", "file"),
+    ("e", "evidence"),
+    ("c", "certainty"),
+    ("d", "depth"),
+    ("p", "parent"),
+    ("site", "file:line"),
+];
+
+/// MCP tool result: `structuredContent` carries the versioned contract and
+/// `content[0].text` is a one-line summary (the MCP spec allows text to
+/// summarize when structured content is present). Bounded to `budget`,
+/// measured on the whole tool result. `coverage.compiler_index` is slimmed
+/// here: per-project indexer detail stays on CLI `--json` and `doctor`.
 pub fn mcp_success(operation: &str, payload: &Value, budget: Budget) -> Result<Value> {
     let envelope = |data: &Value| -> Result<Value> {
+        let mut data = data.clone();
+        if (budget.cursor == 0 || data.get("truncated").is_some_and(|t| t != false))
+            && let Some(legend) = legend(&data)
+        {
+            data["legend"] = json!(legend);
+        }
         Ok(json!({
-            "content": [{
-                "type": "text",
-                "text": serde_json::to_string(data)?,
-            }],
-            "structuredContent": success(operation, protocol_data(operation, data)),
+            "content": [{"type": "text", "text": summary(operation, &data)}],
+            "structuredContent": success(operation, data),
             "isError": false,
         }))
     };
     let mut data = payload.clone();
+    slim_compiler_index(&mut data);
     fit(&mut data, budget, |data| {
         Ok(serde_json::to_string(&envelope(data)?)?.len())
     })?;
     envelope(&data)
+}
+
+/// Legend for the first terse row (an object carrying `s`) reachable from
+/// `data`, `None` when the response has no terse rows.
+fn legend(data: &Value) -> Option<String> {
+    let keys = first_terse_row(data, 8)?;
+    let parts: Vec<String> = LEGEND
+        .iter()
+        .filter(|(k, _)| keys.contains_key(*k))
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    Some(parts.join(" "))
+}
+
+fn first_terse_row(value: &Value, depth: usize) -> Option<&Map<String, Value>> {
+    if depth == 0 {
+        return None;
+    }
+    match value {
+        Value::Object(map) => {
+            if map.contains_key("s") && map.contains_key("f") {
+                return Some(map);
+            }
+            map.values().find_map(|v| first_terse_row(v, depth - 1))
+        }
+        Value::Array(items) => items.iter().find_map(|v| first_terse_row(v, depth - 1)),
+        _ => None,
+    }
+}
+
+/// One plain line (<= 200 bytes): operation, subject, shown/total per list.
+fn summary(operation: &str, data: &Value) -> String {
+    let subject = data.get("symbol").map_or_else(String::new, |s| match s {
+        Value::String(s) => format!(" {s}"),
+        Value::Object(o) => o
+            .get("qualified")
+            .or_else(|| o.get("name"))
+            .and_then(Value::as_str)
+            .map_or_else(String::new, |s| format!(" {s}")),
+        _ => String::new(),
+    });
+    let mut line = format!("{operation}{subject}:");
+    if let Some(total) = data.get("total").and_then(Value::as_u64) {
+        line.push_str(&format!(" total {total};"));
+    }
+    for (key, value) in data.as_object().into_iter().flatten() {
+        let Some(list) = value.as_array().filter(|l| l.iter().any(Value::is_object)) else {
+            continue;
+        };
+        let total = data
+            .pointer(&format!("/totals/{key}"))
+            .and_then(Value::as_u64)
+            .map_or(list.len() as u64, |t| t);
+        line.push_str(&format!(" {key} {}/{total};", list.len()));
+    }
+    match data.get("truncated") {
+        Some(Value::Number(n)) if n.as_u64() != Some(0) => {
+            line.push_str(&format!(" truncated {n};"))
+        }
+        Some(Value::Bool(true)) => line.push_str(" truncated;"),
+        _ => {}
+    }
+    line.push_str(" see structuredContent");
+    if line.len() > 200 {
+        let cut = line
+            .char_indices()
+            .take_while(|(i, _)| *i < 176)
+            .last()
+            .map_or(0, |(i, _)| i);
+        line = format!("{}… see structuredContent", &line[..cut]);
+    }
+    line
+}
+
+/// Replace every `compiler_index` object with its MCP summary:
+/// `{state, stale_inputs, missing_index_for}`.
+fn slim_compiler_index(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, v) in map.iter_mut() {
+                if key == "compiler_index"
+                    && let Value::Object(index) = v
+                    && index.contains_key("projects")
+                {
+                    let missing: Vec<Value> = index
+                        .get("projects")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter(|p| p.get("freshness").and_then(Value::as_str) != Some("fresh"))
+                        .flat_map(|p| p.get("languages").and_then(Value::as_array).cloned())
+                        .flatten()
+                        .collect();
+                    let mut missing = missing;
+                    missing.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+                    missing.dedup();
+                    *v = json!({
+                        "state": index.get("state").cloned().unwrap_or(Value::Null),
+                        "stale_inputs": index.get("stale_inputs").cloned().unwrap_or(json!(0)),
+                        "missing_index_for": missing,
+                    });
+                } else {
+                    slim_compiler_index(v);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(slim_compiler_index),
+        _ => {}
+    }
 }
 
 /// Shrink `data` until `measure` reports at most `budget.bytes`, applying the
@@ -452,28 +579,25 @@ pub fn complete_tool_schemas(list: &mut Value) {
         if let Some(input) = tool.get_mut("inputSchema").and_then(Value::as_object_mut) {
             input.insert("additionalProperties".to_string(), Value::Bool(false));
             if let Some(props) = input.get_mut("properties").and_then(Value::as_object_mut) {
-                props.insert("budget_bytes".to_string(), json!({
-                    "type": "integer", "minimum": 0, "default": MCP_DEFAULT_BUDGET_BYTES,
-                    "description": "max serialized result bytes (0 = unlimited); text fields are capped, then trailing entries dropped with `truncated`, `totals`, `next_cursor` set",
-                }));
-                props.insert("cursor".to_string(), json!({
-                    "type": "integer", "minimum": 0, "default": 0,
-                    "description": "resume result lists at this offset (from a previous `next_cursor`)",
-                }));
+                props.insert(
+                    "budget_bytes".to_string(),
+                    json!({
+                        "type": "integer", "minimum": 0, "default": MCP_DEFAULT_BUDGET_BYTES,
+                        "description": "max result bytes; 0 = unlimited",
+                    }),
+                );
+                props.insert(
+                    "cursor".to_string(),
+                    json!({
+                        "type": "integer", "minimum": 0, "default": 0,
+                        "description": "resume lists at prior next_cursor",
+                    }),
+                );
             }
         }
         tool["outputSchema"] = output_schema(&name);
-        tool["annotations"] = json!({
-            "readOnlyHint": true,
-            "destructiveHint": false,
-            "idempotentHint": true,
-            "openWorldHint": false,
-        });
+        tool["annotations"] = json!({"readOnlyHint": true});
     }
-}
-
-fn protocol_data(_operation: &str, payload: &Value) -> Value {
-    payload.clone()
 }
 
 fn success(operation: &str, data: Value) -> Value {
@@ -556,203 +680,12 @@ fn is_partial(data: &Value) -> bool {
             .is_some_and(|results| results.iter().any(|result| result.get("error").is_some()))
 }
 
-fn output_schema(operation: &str) -> Value {
-    let data = data_schema(operation);
-    json!({
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$id": format!("https://sinter.dev/schema/agent/v1/{operation}.json"),
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "protocol": {"const": VERSION},
-            "operation": {"const": operation},
-            "outcome": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "status": {"enum": ["complete", "partial", "not_found", "not_proven"]},
-                    "partial": {"type": "boolean"}
-                },
-                "required": ["status", "partial"]
-            },
-            "data": data,
-        },
-        "required": ["protocol", "operation", "outcome", "data"]
-    })
-}
-
-fn data_schema(operation: &str) -> Value {
-    if operation == "ask" {
-        return json!({
-            "type": "object",
-            "properties": {
-                "question": {"type": "string"},
-                "limit": {"type": "integer"},
-                "returned": {"type": "integer"},
-                "truncated": {"type": "integer"},
-                "decision": {"enum": ["answer", "verify", "abstain"]},
-                "verify_required": {"type": "boolean"},
-                "topics": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "topic": {"type": "string"},
-                            "status": {"enum": ["ranked", "abstain"]},
-                            "verify_required": {"type": "boolean"},
-                            "confidence": {
-                                "type": "object",
-                                "properties": {
-                                    "assessment_type": {"const": "ranking_margin_bucket"},
-                                    "ranking_bucket": {"enum": ["high", "medium", "low", "unrated"]},
-                                    "level": {
-                                        "enum": ["high", "medium", "low", "unrated"],
-                                        "description": "sinter.agent.v1 compatibility alias for ranking_bucket"
-                                    },
-                                    "reason": {"type": "string"},
-                                    "calibration": {"type": "object"}
-                                },
-                                "required": ["level", "reason", "calibration"]
-                            },
-                            "ranking_margin": {"type": "object"},
-                            "term_coverage": {"type": "object"},
-                            "advice": {"type": ["string", "null"]},
-                            "hits": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "score_breakdown": {
-                                            "type": "object",
-                                            "description": "present only when explain is true"
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        "required": ["topic", "status", "verify_required", "confidence", "ranking_margin", "term_coverage", "advice", "hits"]
-                    }
-                },
-            },
-            "required": ["question", "limit", "scope", "returned", "truncated", "decision", "verify_required", "topics"]
-        });
-    }
-    if operation == "affected" {
-        return json!({
-            "type": "object",
-            "properties": {
-                "status": {"enum": ["found", "not_proven", "partial"]}
-            },
-            "anyOf": [
-                {"required": ["status", "symbol", "snapshot", "total", "dependents", "coverage"]},
-                {"required": ["status", "external", "snapshot", "sites", "coverage"]},
-                {"required": ["status", "results", "snapshot"]}
-            ]
-        });
-    }
-    if operation == "query" {
-        return json!({
-            "type": "object",
-            "properties": {
-                "snapshot": {"type": "string"},
-                "scope": {"type": "array", "items": {"type": "string"}},
-                "resolution": {"enum": ["exact", "relocated", "suggestions"]},
-                "exact": {"type": "boolean"},
-                "results": {"type": "array"},
-                "result": {"type": "object"}
-            },
-            "anyOf": [
-                {"required": ["snapshot", "scope", "resolution", "exact", "results"]},
-                {"required": ["snapshot", "scope", "result"]}
-            ]
-        });
-    }
-    let required: &[&str] = match operation {
-        "map" => &[
-            "scope",
-            "nodes",
-            "total_nodes",
-            "edges",
-            "modules",
-            "hubs",
-            "docs",
-        ],
-        "show" => &["symbol", "outgoing", "incoming"],
-        "context" => &[
-            "task",
-            "snapshot",
-            "outcome",
-            "candidates",
-            "tests",
-            "tests_total",
-            "gaps",
-            "coverage",
-            "next_actions",
-        ],
-        "deps" => &[
-            "status",
-            "symbol",
-            "snapshot",
-            "total",
-            "dependencies",
-            "coverage",
-        ],
-        "path" => &["status", "snapshot", "found", "steps", "coverage"],
-        "unresolved" => &["total", "unresolved"],
-        "impact" => &[
-            "analysis_status",
-            "changed_files",
-            "changed_symbols",
-            "blast_radius",
-            "affected_tests",
-            "limit",
-            "totals",
-            "truncated",
-        ],
-        "overlap" => &["changes", "pairs"],
-        _ => &[],
-    };
-    let mut properties: Map<String, Value> = required
-        .iter()
-        .map(|name| ((*name).to_string(), json!({})))
-        .collect();
-    if operation == "map" {
-        properties.insert(
-            "orientation".to_string(),
-            json!({
-                "type": "object",
-                "properties": {
-                    "kind": {"const": "repository_inventory"},
-                    "hub_metric": {"const": "non_contains_in_degree"},
-                    "claim_boundary": {"const": "structural_evidence_not_runtime_architecture"},
-                },
-            }),
-        );
-        properties.insert(
-            "health".to_string(),
-            json!({
-                "type": "object",
-                "properties": {
-                    "status": {"enum": ["partial", "complete_for_indexed_snapshot"]},
-                    "snapshot": {"type": "object"},
-                    "compiler_index": {"type": "object"},
-                    "graph": {"type": "object"},
-                    "limitations": {"type": "array", "items": {"type": "string"}},
-                },
-            }),
-        );
-    }
-    if matches!(operation, "deps" | "path") {
-        properties.insert(
-            "status".to_string(),
-            json!({"enum": ["found", "not_proven"]}),
-        );
-    }
-    json!({
-        "type": "object",
-        "properties": properties,
-        "required": required,
-    })
+/// Envelope-only output schema: clients validate `structuredContent`
+/// against it, agents never read it, and per-operation data shapes cost
+/// ~9 KB of every tools/list. `data` is documented by the CLI `--json`
+/// contract and the guide resource.
+fn output_schema(_operation: &str) -> Value {
+    json!({"type": "object", "required": ["protocol", "operation", "outcome", "data"]})
 }
 
 #[cfg(test)]
@@ -777,13 +710,50 @@ mod tests {
         let result = mcp_success("query", &cli).unwrap();
         assert_eq!(result["structuredContent"]["protocol"], VERSION);
         assert_eq!(result["structuredContent"]["data"], cli);
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.len() <= 200, "{text}");
+        assert_eq!(text, "query: results 1/1; see structuredContent");
+        assert!(result["structuredContent"]["data"].get("legend").is_none());
+    }
+
+    #[test]
+    fn terse_rows_get_a_legend_and_a_summary_line() {
+        let payload = json!({
+            "symbol": "Store::in_edges",
+            "total": 71,
+            "dependents": [{"s": "a", "k": "fn", "f": "a.rs", "e": "calls", "c": "certain", "d": 1}],
+            "coverage": {"compiler_index": {
+                "state": "stale", "stale_inputs": 9, "indexable_languages": ["go", "rust"],
+                "projects": [
+                    {"freshness": "stale", "languages": ["rust"], "indexer": "rust-analyzer"},
+                    {"freshness": "fresh", "languages": ["go"]}
+                ]
+            }}
+        });
+        let first = mcp_success("affected", &payload).unwrap();
+        let data = &first["structuredContent"]["data"];
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(
-                result["content"][0]["text"].as_str().unwrap()
-            )
-            .unwrap(),
-            cli
+            data["legend"],
+            "s=symbol k=kind f=file e=evidence c=certainty d=depth"
         );
+        assert_eq!(
+            data["coverage"]["compiler_index"],
+            json!({"state": "stale", "stale_inputs": 9, "missing_index_for": ["rust"]})
+        );
+        assert_eq!(
+            first["content"][0]["text"],
+            "affected Store::in_edges: total 71; dependents 1/1; see structuredContent"
+        );
+        let paged = super::mcp_success(
+            "affected",
+            &payload,
+            Budget {
+                bytes: None,
+                cursor: 1,
+            },
+        )
+        .unwrap();
+        assert!(paged["structuredContent"]["data"].get("legend").is_none());
     }
 
     #[test]
@@ -826,50 +796,12 @@ mod tests {
         complete_tool_schemas(&mut list);
         let tool = &list["tools"][0];
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
-        assert_eq!(
-            tool["outputSchema"]["properties"]["protocol"]["const"],
-            VERSION
-        );
-        assert_eq!(tool["outputSchema"]["additionalProperties"], false);
+        assert_eq!(tool["outputSchema"]["required"][0], "protocol");
+        assert_eq!(tool["outputSchema"]["required"][3], "data");
     }
 
     #[test]
-    fn ask_schema_names_the_ranking_bucket_without_breaking_v1_level() {
-        let mut list = json!({"tools": [{
-            "name": "ask",
-            "inputSchema": {"type": "object", "properties": {"question": {"type": "string"}}}
-        }]});
-        complete_tool_schemas(&mut list);
-        let confidence = &list["tools"][0]["outputSchema"]["properties"]["data"]["properties"]["topics"]
-            ["items"]["properties"]["confidence"];
-        assert_eq!(
-            confidence["properties"]["assessment_type"]["const"],
-            "ranking_margin_bucket"
-        );
-        assert!(confidence["properties"]["ranking_bucket"].is_object());
-        assert!(confidence["properties"]["level"].is_object());
-    }
-
-    #[test]
-    fn map_schema_advertises_additive_orientation_and_health() {
-        let mut list = json!({"tools": [{
-            "name": "map",
-            "inputSchema": {"type": "object", "properties": {}}
-        }]});
-        complete_tool_schemas(&mut list);
-        let data = &list["tools"][0]["outputSchema"]["properties"]["data"];
-        let required = data["required"].as_array().unwrap();
-        assert!(!required.iter().any(|field| field == "orientation"));
-        assert!(!required.iter().any(|field| field == "health"));
-        assert_eq!(
-            data["properties"]["orientation"]["properties"]["kind"]["const"],
-            "repository_inventory"
-        );
-        assert_eq!(
-            data["properties"]["health"]["properties"]["status"]["enum"][0],
-            "partial"
-        );
-
+    fn partial_health_is_a_partial_outcome() {
         let result = mcp_success(
             "map",
             &json!({

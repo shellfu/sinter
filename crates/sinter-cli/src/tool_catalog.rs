@@ -6,35 +6,88 @@
 
 use serde_json::{Value, json};
 
+/// URI of the one long-form guidance resource; tool descriptions stay terse
+/// and point here once via the server `instructions`.
+pub(crate) const GUIDE_URI: &str = "sinter://guide";
+
+/// Long-form guidance served through `resources/read`. Everything that used
+/// to be repeated per tool description lives here once.
+pub(crate) const GUIDE: &str = "\
+# sinter MCP guide
+
+## Reading results
+Every tools/call result carries `structuredContent` = {protocol, operation, outcome, data};
+`content[0].text` is a one-line summary only. `data` is byte-identical to the CLI `--json`
+payload. Check `outcome.status` before acting: `complete`, `partial` (coverage gaps, see
+`data.coverage`), `not_found`, or `not_proven` (graph is blind here; never a negative proof).
+Errors arrive as JSON-RPC `error.data` with `error.code` (no_match, ambiguous_symbol,
+stale_snapshot [retryable], invalid_arguments, ...) and `error.candidates`.
+
+## Symbol addressing
+`symbol` accepts a stable `symbol_key` (preferred, from any prior result), a bare name, a
+qualified suffix (`Store::in_edges`), `name@file-suffix`, or a snapshot-local node id.
+Workspace scope adds `member:Symbol`. Ambiguous names fail with candidates; pick one.
+
+## Terse row keys (affected/deps dependents)
+s=qualified symbol  k=kind  f=file  e=relation/evidence  c=certain|possible
+d=depth (repo)  p=parent (workspace)  site=file:line of the referencing site.
+List-bearing responses carry a `legend` field on the first page and when truncated.
+Pass `detail:true` for full node objects.
+
+## Coverage semantics
+`coverage.status` found|not_proven; `coverage.completeness` complete|partial;
+`coverage.conclusive` is always false: a static graph is never runtime-exhaustive.
+`coverage.compiler_index` is {state: fresh|stale|missing, stale_inputs, missing_index_for:
+[languages]}; run `sinter scip` to refresh. Full per-project detail: CLI `--json` or `doctor`.
+`unresolved` lists references the graph could not bind; check it before reading an empty
+affected/deps/path result as absence.
+
+## Budget and paging
+`limit` caps list entries per call (default 50; `impact` 20 per collection, 0 = all).
+Results are bounded to `budget_bytes` (default 8000, 0 = unlimited): text fields are
+capped first, then diagnostics collapsed, then trailing list entries dropped with
+`truncated`, `totals`, and `next_cursor` set. Resume with `cursor: next_cursor`.
+
+## Batching
+Repository `affected` accepts `symbols: [...]` and returns `{results: [...]}` with
+per-symbol errors inline. `impact` takes a git rev range (`HEAD`, `HEAD~1..HEAD`,
+`main...branch`); `overlap` takes two or more, optionally `label=range`.
+
+## Filters
+`evidence` (structural, scope, import, scip, declared, dynamic), `min_confidence`
+(`certain` = compiler-grade edges only), `relations` (calls, uses, imports, implements,
+extends; `calls,uses` drops file-level import noise), `scope` (corpus roles: production, test,
+fixture, example, generated, vendor, docs; `all` must be used alone).
+`if_snapshot`: pass a prior `snapshot` token to fail instead of answering from a changed graph.
+";
+
 fn traversal_filters() -> Value {
     json!({
-        "evidence": {"type": "array", "items": {"type": "string",
-            "enum": ["structural", "scope", "import", "scip", "declared", "dynamic"]},
-            "description": "restrict to these evidence kinds"},
-        "min_confidence": {"type": "string", "enum": ["certain", "inferred"],
-            "description": "certain = compiler-grade edges only"},
+        "evidence": {"type": "array", "items": {"type": "string"}},
+        "min_confidence": {"type": "string", "enum": ["certain", "inferred"]},
         "relations": {"type": "array", "items": {"type": "string",
-            "enum": ["calls", "uses", "imports", "implements", "extends"]},
-            "description": "follow only these relations (e.g. drop file-level imports)"},
+            "enum": ["calls", "uses", "imports", "implements", "extends"]}},
     })
 }
 
 fn snapshot_precondition() -> Value {
-    json!({
-        "type": "string",
-        "description": "optional graph snapshot token from a prior response; stale tokens fail instead of resolving against changed graph state"
-    })
+    json!({"type": "string"})
+}
+
+fn symbol() -> Value {
+    json!({"type": "string", "description": "symbol_key, name, or name@file-suffix"})
 }
 
 fn scope_filter(default: &[&str]) -> Value {
     json!({
         "type": "array",
-        "items": {"type": "string", "enum": [
-            "production", "test", "fixture", "example", "generated", "vendor", "docs", "all"
-        ]},
+        "items": {"type": "string"},
         "default": default,
-        "description": "corpus roles to return or traverse; `all` must be used alone"
     })
+}
+
+fn limit() -> Value {
+    json!({"type": "integer"})
 }
 
 pub(crate) fn repository() -> Value {
@@ -42,57 +95,55 @@ pub(crate) fn repository() -> Value {
     let mut list = json!({"tools": [
         {
             "name": "map",
-            "description": "Bounded structural inventory for an unfamiliar repository: node/edge totals, module node/file counts, dependency hubs ranked by non-containment in-degree, doc entry points, and graph-health limitations. Hubs are not runtime entry points or domain-ownership proof.",
+            "description": "Repo inventory: totals, modules, dependency hubs, doc entry points. Start here in an unfamiliar repo. e.g. {}",
             "inputSchema": {"type": "object", "properties": {
                 "scope": scope_filter(&["production", "docs"]),
             }},
         },
         {
             "name": "ask",
-            "description": "Answer a vague or conceptual codebase question with explicit per-topic ranked hits and agent-safety metadata. `ranking_margin` is only a score gap; `confidence.calibration` reports the named holdout sample and measured precision. Obey each topic's `status`, `verify_required`, and `advice`: abstain means refine the query, verify means inspect evidence before acting. `limit` is a strict global hit budget across topics. Set `explain:true` only when per-hit scoring diagnostics are needed.",
+            "description": "Concept search: ranked hits per topic with status/advice (abstain = refine). e.g. {question:\"where is retry backoff\"}",
             "inputSchema": {"type": "object", "properties": {
                 "question": {"type": "string"},
-                "limit": {"type": "integer"},
+                "limit": limit(),
                 "scope": scope_filter(&["production", "docs"]),
-                "explain": {"type": "boolean", "default": false,
-                    "description": "include per-hit score_breakdown diagnostics"},
+                "explain": {"type": "boolean", "default": false},
             }, "required": ["question"]},
         },
         {
             "name": "context",
-            "description": "Start here for a coding task: the smallest evidence packet before editing. Runs ask on the task text, expands the top contenders (show card, excerpt, direct deps, direct callers vs importers), selects relevant tests the way impact does, reports gaps (coverage, unresolved refs, ask abstain reason), and lists concrete next commands with stable handles. `outcome: abstain` means the task text did not rank a target; follow `next_actions`. Budgeted to 8000 bytes by default.",
+            "description": "Evidence packet for a coding task: top symbols, deps, callers, tests, gaps, next commands. e.g. {task:\"add a retry to the fetcher\"}",
             "inputSchema": {"type": "object", "properties": {
-                "task": {"type": "string", "description": "task description in plain words"},
+                "task": {"type": "string"},
             }, "required": ["task"]},
         },
         {
             "name": "show",
-            "description": "Orient on one symbol: signature, doc, file, plus every incoming and outgoing edge with relation, evidence, and call site (`site`: file:line of the reference).",
+            "description": "One symbol: signature, doc, file, every incoming/outgoing edge with site. e.g. {symbol:\"Store::in_edges\"}",
             "inputSchema": {"type": "object", "properties": {
-                "symbol": {"type": "string", "description": "stable symbol_key (preferred), name, qualified suffix, name@file-suffix, or snapshot-local node id"},
+                "symbol": symbol(),
                 "if_snapshot": snapshot_precondition(),
             }, "required": ["symbol"]},
         },
         {
             "name": "query",
-            "description": "Find symbols by exact name, qualified name, or fuzzy match. Results carry signature, doc comment, file, and byte span.",
+            "description": "Find symbols by exact, qualified, or fuzzy name; returns signature, file, span. e.g. {symbol:\"in_edges\"}",
             "inputSchema": {"type": "object", "properties": {
-                "symbol": {"type": "string", "description": "stable symbol_key (preferred), name, qualified suffix, name@file-suffix, or snapshot-local node id"},
-                "limit": {"type": "integer"},
+                "symbol": symbol(),
+                "limit": limit(),
                 "scope": scope_filter(&["all"]),
                 "if_snapshot": snapshot_precondition(),
             }, "required": ["symbol"]},
         },
         {
             "name": "affected",
-            "description": "Reverse blast radius: everything transitively depending on a symbol, cross-file. Summary-first: total, by_file (top files by dependent count), then dependents capped at `limit` (default 50; `truncated` reports how many were omitted). Terse dependent keys: s=qualified symbol, k=kind, f=file, e=relation/evidence, c=certain/possible, d=depth, site=file:line of the referencing site when known. Pass detail:true for full nodes within the limit. Pass `symbols` (array) to batch many symbols in one call — response is {results:[...]}, per-symbol errors inline. Every result carries snapshot plus coverage completeness, active filters, evidence availability, certain/possible counts, and unresolved gaps. Even a non-empty result is not runtime-exhaustive.",
+            "description": "What breaks if a symbol changes: transitive dependents, by file. Batch via symbols:[]. e.g. {symbol:\"Store::in_edges\"}",
             "inputSchema": {"type": "object", "properties": {
-                "symbol": {"type": "string", "description": "stable symbol_key (preferred), name, qualified suffix, name@file-suffix, or snapshot-local node id"},
-                "symbols": {"type": "array", "items": {"type": "string"},
-                    "description": "batch: blast radius for each; overrides `symbol`"},
+                "symbol": symbol(),
+                "symbols": {"type": "array", "items": {"type": "string"}},
                 "max_depth": {"type": "integer"},
-                "limit": {"type": "integer", "description": "max dependents returned (default 50)"},
-                "detail": {"type": "boolean", "description": "full node objects instead of terse entries"},
+                "limit": limit(),
+                "detail": {"type": "boolean"},
                 "evidence": filters["evidence"],
                 "min_confidence": filters["min_confidence"],
                 "relations": filters["relations"],
@@ -102,11 +153,11 @@ pub(crate) fn repository() -> Value {
         },
         {
             "name": "deps",
-            "description": "Forward blast radius: everything a symbol transitively depends on (calls, uses, imports), cross-file. Summary-first: total, by_file, then dependencies capped at `limit` (default 50; `truncated` reports how many were omitted). Terse keys: s=qualified symbol, k=kind, f=file, e=relation/evidence, c=certain/possible, d=depth, site=file:line of the referencing site when known. Every result carries snapshot plus coverage completeness, active filters, evidence availability, certain/possible counts, and unresolved gaps. Even a non-empty result is not runtime-exhaustive.",
+            "description": "What a symbol transitively calls/uses/imports, by file. e.g. {symbol:\"serve::run\",relations:[\"calls\"]}",
             "inputSchema": {"type": "object", "properties": {
-                "symbol": {"type": "string", "description": "stable symbol_key (preferred), name, qualified suffix, name@file-suffix, or snapshot-local node id"},
+                "symbol": symbol(),
                 "max_depth": {"type": "integer"},
-                "limit": {"type": "integer", "description": "max dependencies returned (default 50)"},
+                "limit": limit(),
                 "evidence": filters["evidence"],
                 "min_confidence": filters["min_confidence"],
                 "relations": filters["relations"],
@@ -116,7 +167,7 @@ pub(crate) fn repository() -> Value {
         },
         {
             "name": "path",
-            "description": "Shortest dependency path from one symbol to another, with relation, evidence, confidence (certain/possible), and call site (`site`: file:line) for every step. Hits and misses both carry snapshot plus coverage completeness, active filters, evidence availability, and unresolved gaps. A static path is not proof of runtime reachability; `found:false` is never absence proof.",
+            "description": "Shortest dependency path between two symbols, with evidence per step; found:false is not absence. e.g. {from:\"main\",to:\"Store::open\"}",
             "inputSchema": {"type": "object", "properties": {
                 "from": {"type": "string"},
                 "to": {"type": "string"},
@@ -129,27 +180,27 @@ pub(crate) fn repository() -> Value {
         },
         {
             "name": "unresolved",
-            "description": "Where the graph is blind: references extraction saw but resolution never bound, each with file:line, enclosing symbol, and reason. Check this before treating an empty affected/deps/path result as a negative proof. Filter by `file` (repo-relative path) and/or `name` (referenced identifier).",
+            "description": "Where the graph is blind: unbound references with file:line and reason. Check before trusting an empty result. e.g. {name:\"open\"}",
             "inputSchema": {"type": "object", "properties": {
                 "file": {"type": "string"},
                 "name": {"type": "string"},
-                "limit": {"type": "integer", "description": "max references returned (default 50)"},
+                "limit": limit(),
             }},
         },
         {
             "name": "impact",
-            "description": "Changed symbols, blast radius, and affected tests for a git rev range (e.g. HEAD~1..HEAD, main...branch). Each symbol collection returns at most 20 entries by default while authoritative totals and truncation counts remain available; set limit to 0 for all entries. A single rev (`HEAD`) covers uncommitted edits to tracked files in the working tree; untracked files are not included.",
+            "description": "Changed symbols, blast radius, affected tests for a git range; HEAD = working tree. e.g. {rev_range:\"HEAD~1..HEAD\"}",
             "inputSchema": {"type": "object", "properties": {
                 "rev_range": {"type": "string"},
-                "limit": {"type": "integer", "minimum": 0, "default": 20, "description": "maximum entries returned independently for changed symbols, blast radius, and affected tests; 0 returns all entries"},
+                "limit": {"type": "integer", "minimum": 0, "default": 20,
+                    "description": "per collection; 0 = all"},
             }, "required": ["rev_range"]},
         },
         {
             "name": "overlap",
-            "description": "Rank pairwise merge risk between several in-flight changes (git rev ranges, e.g. open PRs). Tiers: direct = both touch the same symbol (textual or semantic collision); radius = one touches a symbol the other's touched code depends on (merges clean, breaks semantically); file = same file, disjoint symbols. Ranges accept `label=range` (e.g. pr-12=main...branch).",
+            "description": "Pairwise merge risk between in-flight changes (direct/radius/file tiers). e.g. {ranges:[\"pr-1=main...a\",\"pr-2=main...b\"]}",
             "inputSchema": {"type": "object", "properties": {
-                "ranges": {"type": "array", "items": {"type": "string"}, "minItems": 2,
-                    "description": "two or more rev-ranges, optionally labeled `label=range`"},
+                "ranges": {"type": "array", "items": {"type": "string"}, "minItems": 2},
             }, "required": ["ranges"]},
         },
     ]});
@@ -159,44 +210,42 @@ pub(crate) fn repository() -> Value {
 
 pub(crate) fn workspace() -> Value {
     let filters = traversal_filters();
-    let addressing = "Symbols accept `member:Symbol` (member from the workspace manifest) or any bare name that resolves uniquely across members.";
     let mut list = json!({"tools": [
         {
             "name": "ask",
-            "description": "Answer a vague or conceptual question across every workspace member with the same calibrated per-topic contract as repository ask. Hits are merge-ranked and tagged with member before confidence is assessed. Obey each topic's `status`, `verify_required`, and `advice`; `limit` is a strict global hit budget. Set `explain:true` only when per-hit scoring diagnostics are needed.",
+            "description": "Concept search across all members: ranked hits per topic with status/advice. e.g. {question:\"retry backoff\"}",
             "inputSchema": {"type": "object", "properties": {
                 "question": {"type": "string"},
-                "limit": {"type": "integer"},
+                "limit": limit(),
                 "scope": scope_filter(&["production", "docs"]),
-                "explain": {"type": "boolean", "default": false,
-                    "description": "include per-hit score_breakdown diagnostics"},
+                "explain": {"type": "boolean", "default": false},
             }, "required": ["question"]},
         },
         {
             "name": "show",
-            "description": format!("Orient on one symbol: signature, doc, file, every incoming and outgoing edge inside its member (with relation, evidence, and call site), plus boundary links into and out of the other members. {addressing}"),
+            "description": "One symbol: signature, doc, edges in its member, boundary links to other members. e.g. {symbol:\"common:Backoff\"}",
             "inputSchema": {"type": "object", "properties": {
-                "symbol": {"type": "string", "description": "member-qualified stable symbol_key (preferred), name, qualified suffix, name@file-suffix, or snapshot-local node id"},
+                "symbol": symbol(),
                 "if_snapshot": snapshot_precondition(),
             }, "required": ["symbol"]},
         },
         {
             "name": "query",
-            "description": format!("Resolve a symbol across every workspace member. {addressing}"),
+            "description": "Resolve a symbol across every member. e.g. {symbol:\"common:Backoff\"}",
             "inputSchema": {"type": "object", "properties": {
-                "symbol": {"type": "string", "description": "member-qualified stable symbol_key (preferred), name, qualified suffix, name@file-suffix, or snapshot-local node id"},
+                "symbol": symbol(),
                 "scope": scope_filter(&["all"]),
                 "if_snapshot": snapshot_precondition(),
             }, "required": ["symbol"]},
         },
         {
             "name": "affected",
-            "description": format!("Cross-repository blast radius: everything transitively depending on a symbol across all workspace members, boundary links included. Summary-first: total, by_file, then dependents capped at `limit` (default 50; `truncated` reports omissions). Terse dependent keys: s=member:qualified symbol, k=kind, f=file, e=relation/evidence, c=certain/possible, p=parent. Pass detail:true for full nodes within the limit. Every result carries a workspace snapshot and member-attributed coverage gaps; unresolved_refs_matching_name > 0 means the list may be incomplete. {addressing}"),
+            "description": "What breaks across all members if a symbol changes: transitive dependents, by file. e.g. {symbol:\"common:Backoff\"}",
             "inputSchema": {"type": "object", "properties": {
-                "symbol": {"type": "string", "description": "member-qualified stable symbol_key (preferred), name, qualified suffix, name@file-suffix, or snapshot-local node id"},
+                "symbol": symbol(),
                 "max_depth": {"type": "integer"},
-                "limit": {"type": "integer", "description": "max dependents returned (default 50)"},
-                "detail": {"type": "boolean", "description": "full node objects instead of terse entries"},
+                "limit": limit(),
+                "detail": {"type": "boolean"},
                 "evidence": filters["evidence"],
                 "min_confidence": filters["min_confidence"],
                 "relations": filters["relations"],
@@ -206,7 +255,7 @@ pub(crate) fn workspace() -> Value {
         },
         {
             "name": "path",
-            "description": format!("Shortest dependency path between two symbols, crossing repository boundaries through import and declared links. Every step states certain/possible confidence, and hits and misses both carry a workspace snapshot plus member-attributed coverage gaps. {addressing}"),
+            "description": "Shortest dependency path between two symbols across member boundaries. e.g. {from:\"auth:login\",to:\"common:Backoff\"}",
             "inputSchema": {"type": "object", "properties": {
                 "from": {"type": "string"},
                 "to": {"type": "string"},
@@ -219,21 +268,22 @@ pub(crate) fn workspace() -> Value {
         },
         {
             "name": "unresolved",
-            "description": "Where the graph is blind across the workspace: references extraction saw but resolution never bound, each tagged with its member (`member`, file as `member:path`). Check before treating an empty affected/deps/path result as a negative proof. Filter by `member`, `file` (member-relative path), and/or `name`.",
+            "description": "Where the graph is blind across members: unbound references tagged member:path. e.g. {member:\"auth\"}",
             "inputSchema": {"type": "object", "properties": {
                 "member": {"type": "string"},
                 "file": {"type": "string"},
                 "name": {"type": "string"},
-                "limit": {"type": "integer", "description": "max references returned (default 50)"},
+                "limit": limit(),
             }},
         },
         {
             "name": "impact",
-            "description": "Changed symbols, blast radius, and affected tests for a git rev range (e.g. HEAD~1..HEAD) in one member, with the radius continued across boundary links into the other members (cross-member entries carry a `member:` file prefix). Each symbol collection returns at most 20 entries by default while authoritative totals and truncation counts remain available; set limit to 0 for all entries.",
+            "description": "Changed symbols, blast radius, affected tests for a git range in one member, continued across members. e.g. {member:\"common\",rev_range:\"HEAD\"}",
             "inputSchema": {"type": "object", "properties": {
-                "member": {"type": "string", "description": "workspace member the rev range applies to"},
+                "member": {"type": "string"},
                 "rev_range": {"type": "string"},
-                "limit": {"type": "integer", "minimum": 0, "default": 20, "description": "maximum entries returned independently for changed symbols, blast radius, and affected tests; 0 returns all entries"},
+                "limit": {"type": "integer", "minimum": 0, "default": 20,
+                    "description": "per collection; 0 = all"},
             }, "required": ["member", "rev_range"]},
         },
     ]});
@@ -252,6 +302,24 @@ mod tests {
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
             .collect()
+    }
+
+    #[test]
+    fn catalog_stays_within_the_context_tax_budget() {
+        for catalog in [repository(), workspace()] {
+            assert!(serde_json::to_string(&catalog).unwrap().len() <= 9000);
+            for tool in catalog["tools"].as_array().unwrap() {
+                let description = tool["description"].as_str().unwrap();
+                assert!(description.len() <= 160, "{}: {description}", tool["name"]);
+                assert!(description.contains("e.g. {"), "{}", tool["name"]);
+                for (key, prop) in tool["inputSchema"]["properties"].as_object().unwrap() {
+                    if let Some(d) = prop["description"].as_str() {
+                        assert!(d.len() <= 40, "{}.{key}: {d}", tool["name"]);
+                    }
+                }
+            }
+        }
+        assert!(super::GUIDE.contains("s=qualified symbol"));
     }
 
     #[test]

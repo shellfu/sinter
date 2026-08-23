@@ -283,6 +283,17 @@ fn repository_coverage(repo: &Path, store: &Store) -> Result<serde_json::Value> 
         .iter()
         .filter(|item| classifier.classify(item).is_actionable())
         .count();
+    // Refs a compiler index would settle. Not actionable by hand, but
+    // the headline must not let `actionable` read as "nearly complete".
+    let waiting_on_scip = categories
+        .get(UnresolvedCategory::MissingCompilerIndex.as_str())
+        .copied()
+        .unwrap_or(0);
+    let waiting_suffix = if waiting_on_scip > 0 {
+        format!(" · {waiting_on_scip} refs waiting on `sinter scip`")
+    } else {
+        String::new()
+    };
 
     let mut limitations = vec![
         "a missing graph edge is not proof that no runtime path exists".to_string(),
@@ -291,7 +302,7 @@ fn repository_coverage(repo: &Path, store: &Store) -> Result<serde_json::Value> 
     ];
     if scip_state == "missing" && runnable_indexing {
         limitations.push(format!(
-            "compiler index missing for configured {} project(s); run `sinter scip`",
+            "compiler index missing for configured {} project(s); run `sinter scip`{waiting_suffix}",
             indexable_languages
                 .iter()
                 .copied()
@@ -310,7 +321,7 @@ fn repository_coverage(repo: &Path, store: &Store) -> Result<serde_json::Value> 
         ));
     } else if scip_state == "stale" && runnable_indexing {
         limitations.push(format!(
-            "compiler index is stale ({stale_inputs} newer source/config inputs); run `sinter scip`"
+            "compiler index is stale ({stale_inputs} newer source/config inputs); run `sinter scip`{waiting_suffix}"
         ));
     } else if scip_state == "stale" && unavailable_indexing {
         limitations.push(format!(
@@ -389,6 +400,7 @@ fn repository_coverage(repo: &Path, store: &Store) -> Result<serde_json::Value> 
             "unresolved_by_reason": reasons,
             "unresolved_by_category": categories,
             "actionable_unresolved": actionable,
+            "missing_compiler_index": waiting_on_scip,
             "syntax_error_files": health.syntax_error_files,
             "unindexed_files": health.failed_files.keys().collect::<Vec<_>>(),
             "excluded_derived_roots": crate::corpus::DERIVED_ROOTS,
@@ -416,6 +428,7 @@ pub(crate) fn orientation_health_json(repo: &Path, store: &Store) -> Result<serd
         "graph": {
             "unresolved_references": graph["unresolved_references"].clone(),
             "actionable_unresolved": graph["actionable_unresolved"].clone(),
+            "missing_compiler_index": graph["missing_compiler_index"].clone(),
             "syntax_error_files": count("syntax_error_files"),
             "unindexed_files": count("unindexed_files"),
         },
@@ -522,6 +535,7 @@ pub fn traversal_json(
             "matching_query": evidence.unresolved,
             "repository_total": coverage["graph"]["unresolved_references"],
             "actionable": coverage["graph"]["actionable_unresolved"],
+            "missing_compiler_index": coverage["graph"]["missing_compiler_index"],
         },
     });
     Ok(coverage)

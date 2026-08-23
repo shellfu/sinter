@@ -120,16 +120,24 @@ fn mcp_context_matches_cli_json() {
     let repo = build_repo(dir.path());
     let task = "change the Base root of the blast radius";
     // Unbudgeted on both sides: the MCP budget measures the whole tool
-    // result (legacy text body duplicates `data`), so default-budget
-    // outputs legitimately differ in what they collapse.
+    // result (envelope included), so default-budget outputs legitimately
+    // differ in what they collapse.
     let (_, packet) = cli(&repo, task, &["--budget-bytes", "0"]);
     let response = mcp(&repo, task, Some(0));
     let structured = &response["result"]["structuredContent"];
     assert_eq!(structured["operation"], "context");
-    assert_eq!(structured["data"], packet);
-    let text: serde_json::Value =
-        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(text, packet);
+    // MCP adds a terse-key `legend` and slims `coverage.compiler_index`;
+    // everything else is the CLI packet byte for byte.
+    let mut data = structured["data"].clone();
+    let mut packet = packet;
+    assert!(data["legend"].is_string(), "{data}");
+    data.as_object_mut().unwrap().remove("legend");
+    for side in [&mut data, &mut packet] {
+        side["coverage"]["compiler_index"] = serde_json::Value::Null;
+    }
+    assert_eq!(data, packet);
+    let text = response["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.starts_with("context:") && text.len() <= 200, "{text}");
     // Default MCP budget applies to `context` like every other tool.
     let bounded = mcp(&repo, task, None);
     let wire = serde_json::to_string(&bounded["result"]).unwrap();

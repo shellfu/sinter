@@ -26,6 +26,8 @@ const EDGE_ROWS: usize = 8;
 /// Test rows kept; `impact` uses the same per-collection budget.
 const TEST_ROWS: usize = crate::impact::DEFAULT_LIMIT;
 const EXCERPT_LINES: usize = 12;
+/// Content terms (already stop-filtered by the `ask` parser) offered to `rg`.
+const RG_TERMS: usize = 4;
 
 /// Runner-up within the `ask` high-margin band of the top score is still a
 /// plausible edit target and gets expanded too.
@@ -203,6 +205,7 @@ pub(crate) fn response(repo: &Path, store: &Store, task: &str) -> Result<Value> 
             .flat_map(|t| t["query_terms"].as_array().into_iter().flatten())
             .filter_map(Value::as_str)
             .filter(|term| term.len() > 2)
+            .take(RG_TERMS)
             .collect::<Vec<_>>()
             .join("|");
         next_actions.push(format!("rg -n \"{terms}\""));
