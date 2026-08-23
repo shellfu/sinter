@@ -64,6 +64,9 @@ impl CorpusScope {
     /// top-level component: a crate or module literally named `eval` under
     /// `crates/` or `src/` stays production. Nested `fixtures`, `golden`,
     /// `testdata`, `examples`, and `tests` components still match anywhere.
+    ///
+    /// Rust convention: `tests.rs`, `*_tests.rs`, and `test_*.rs` basenames
+    /// are test files wherever they sit under `src/`.
     pub fn classify_path(file: &str) -> Self {
         if file.starts_with("dep:") {
             return Self::Vendor;
@@ -133,6 +136,8 @@ impl CorpusScope {
                 )
             })
             || basename.starts_with("test_")
+            || basename == "tests.rs"
+            || basename.ends_with("_tests.rs")
             || basename.contains("_test.")
             || basename.contains(".test.")
             || basename.contains("_spec.")
@@ -434,6 +439,12 @@ mod tests {
             ("crates/sinter-cli/tests/cli.rs", CorpusScope::Test),
             ("crates/eval/src/lib.rs", CorpusScope::Production),
             ("src/eval/mod.rs", CorpusScope::Production),
+            ("src/tests.rs", CorpusScope::Test),
+            ("crates/foo/src/bar/tests.rs", CorpusScope::Test),
+            ("src/bar_tests.rs", CorpusScope::Test),
+            ("src/test_bar.rs", CorpusScope::Test),
+            ("crates/foo/src/bar/tests/cases.rs", CorpusScope::Test),
+            ("src/contests.rs", CorpusScope::Production),
         ];
         for (path, expected) in cases {
             assert_eq!(CorpusScope::classify_path(path), expected, "{path}");

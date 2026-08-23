@@ -1,0 +1,18 @@
+{
+  "nodes": [
+    ["file", "docs/arch.md", "docs/arch.md"],
+    ["section", "Architecture", "docs/arch.md", ""],
+    ["section", "Architecture::Components", "docs/arch.md", "- extractor: parses files"],
+    ["section", "Architecture::Options", "docs/arch.md", "| Flag | Meaning |"],
+    ["section", "Architecture::Notes", "docs/arch.md", "Plain paragraph body."]
+  ],
+  "contains": [
+    ["docs/arch.md", "Architecture"],
+    ["Architecture", "Architecture::Components"],
+    ["Architecture", "Architecture::Options"],
+    ["Architecture", "Architecture::Notes"]
+  ],
+  "references": [],
+  "resolved": [],
+  "unresolved_count": 0
+}

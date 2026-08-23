@@ -469,6 +469,13 @@ fn golden_proto_basic() {
     check("proto-basic");
 }
 
+/// tonic convention: proto rpc binds to the hand-written `impl S for T`
+/// method by `declared` evidence, in both directions.
+#[test]
+fn golden_proto_tonic_service() {
+    check("proto-tonic-service");
+}
+
 /// Mined from a real proto corpus: imports are include-root-relative
 /// ("acme/v1/money.proto" under schema/proto/), and sibling files of one
 /// package reference each other's messages bare, via oneof branches and
@@ -609,6 +616,12 @@ fn golden_csharp_inheritance() {
 #[test]
 fn golden_markdown_headings() {
     check("markdown-headings");
+}
+
+/// A list or table directly under a heading is the section body.
+#[test]
+fn golden_markdown_table_list() {
+    check("markdown-table-list");
 }
 
 /// Inline links (secondary inline grammar): destinations become `uses`

@@ -1234,11 +1234,14 @@ fn slugify(name: &str) -> String {
 /// Pairing rule: the impl block names the trait (same file/module, or a
 /// named import) and the method names match.
 pub fn dynamic_edges(index: &Index<'_>, nodes: &[Node], trait_impls: &[TraitImpl]) -> Vec<Edge> {
+    // Proto service conventions ride the same post-resolution slot: they
+    // need nodes and impl blocks, nothing from reference resolution.
+    let mut edges = crate::proto_service_bindings::proto_service_edges(nodes, trait_impls);
     let implicit = nodes
         .iter()
         .any(|n| spec_for_path(&n.file).is_some_and(|s| s.implicit_interfaces));
     if trait_impls.is_empty() && !implicit {
-        return Vec::new();
+        return edges;
     }
     let roots = &index.roots;
     let mut by_file: HashMap<&str, Vec<&Node>> = HashMap::new();
@@ -1260,7 +1263,6 @@ pub fn dynamic_edges(index: &Index<'_>, nodes: &[Node], trait_impls: &[TraitImpl
             SymbolKind::Trait | SymbolKind::Interface | SymbolKind::Class
         )
     };
-    let mut edges = Vec::new();
     for ti in trait_impls {
         let Some(spec) = spec_for_path(&ti.file) else {
             continue;

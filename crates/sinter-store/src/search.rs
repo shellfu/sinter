@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use redb::ReadableDatabase;
+use redb::{ReadableDatabase, ReadableTable};
 use sinter_core::Node;
 
 use crate::error::StoreError;
@@ -197,6 +197,45 @@ impl Store {
         for id in ids {
             if let Some(guard) = table.get(id.as_str())? {
                 nodes.push(postcard::from_bytes(guard.value())?);
+            }
+        }
+        Ok(nodes)
+    }
+
+    /// Nodes matching the glob `{head}*{tail}` over the qualified name
+    /// (the `Type::method` part of the id). `Type::*` lists members,
+    /// `*::m` finds every `m` across types; without `::` the bare name is
+    /// matched (`pre*`, `*fix`). `*::m` uses the exact-name index; the
+    /// other shapes walk NODES once (no qualified-name index exists; ids
+    /// are file-ordered).
+    pub fn nodes_glob(&self, head: &str, tail: &str) -> Result<Vec<Node>, StoreError> {
+        let qualified = |id: &str| -> String {
+            match id.split_once('#') {
+                Some((_, rest)) => rest.rsplit_once('@').map_or(rest, |(q, _)| q).to_string(),
+                None => id.to_string(),
+            }
+        };
+        if let Some(name) = tail.strip_prefix("::").filter(|_| head.is_empty()) {
+            let mut nodes = self.nodes_named(name)?;
+            nodes.retain(|n| qualified(n.id.as_str()).ends_with(tail));
+            return Ok(nodes);
+        }
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(NODES)?;
+        let mut nodes = Vec::new();
+        for entry in table.iter()? {
+            let (id, bytes) = entry?;
+            let q = qualified(id.value());
+            let target = if head.contains("::") || tail.contains("::") {
+                q.as_str()
+            } else {
+                q.rsplit("::").next().unwrap_or(&q)
+            };
+            if target.len() >= head.len() + tail.len()
+                && target.starts_with(head)
+                && target.ends_with(tail)
+            {
+                nodes.push(postcard::from_bytes(bytes.value())?);
             }
         }
         Ok(nodes)

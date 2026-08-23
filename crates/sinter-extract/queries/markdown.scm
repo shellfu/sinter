@@ -15,3 +15,8 @@
 
 ; First paragraph immediately after the heading is the section doc.
 (section (atx_heading) . (paragraph (inline) @doc))
+; A list or table directly under the heading is the body too: without
+; this, reference-style sections (tables of options, bullet lists of
+; components) index as a bare heading.
+(section (atx_heading) . (list) @doc)
+(section (atx_heading) . (pipe_table) @doc)

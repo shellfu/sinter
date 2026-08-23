@@ -4,7 +4,7 @@
     ["section", "Guide", "docs/guide.md", "Everything you need to operate the widget."],
     ["section", "Guide::Setup", "docs/guide.md", "Install the toolchain before anything else."],
     ["section", "Guide::Setup::Requirements", "docs/guide.md", "A compiler and ten minutes."],
-    ["section", "Guide::Usage", "docs/guide.md", ""],
+    ["section", "Guide::Usage", "docs/guide.md", "- run it"],
     ["section", "Guide::FAQ", "docs/guide.md", ""],
     ["file", "README.md", "README.md"],
     ["section", "Widget", "README.md", "The widget project."]

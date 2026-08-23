@@ -1,0 +1,60 @@
+{
+  "nodes": [
+    ["file", "proto/harness.proto", "proto/harness.proto"],
+    ["interface", "HarnessService", "proto/harness.proto", "HarnessService adjudicates verdicts."],
+    ["method", "HarnessService::Adjudicates", "proto/harness.proto"],
+    ["method", "HarnessService::GetVerdictByID", "proto/harness.proto"],
+    ["struct", "AdjudicateRequest", "proto/harness.proto"],
+    ["struct", "VerdictId", "proto/harness.proto"],
+    ["struct", "AdjudicateReply", "proto/harness.proto"],
+    ["file", "src/lib.rs", "src/lib.rs"],
+    ["module", "grpc", "src/lib.rs"],
+    ["file", "src/grpc.rs", "src/grpc.rs"],
+    ["struct", "HarnessGrpcService", "src/grpc.rs"],
+    ["function", "HarnessGrpcService::adjudicates", "src/grpc.rs", "", "118", "172"],
+    ["function", "HarnessGrpcService::adjudicates", "src/grpc.rs", "", "225", "346"],
+    ["function", "HarnessGrpcService::get_verdict_by_id", "src/grpc.rs"]
+  ],
+  "contains": [
+    ["proto/harness.proto", "HarnessService"],
+    ["HarnessService", "HarnessService::Adjudicates"],
+    ["HarnessService", "HarnessService::GetVerdictByID"],
+    ["proto/harness.proto", "AdjudicateRequest"],
+    ["proto/harness.proto", "VerdictId"],
+    ["proto/harness.proto", "AdjudicateReply"],
+    ["src/lib.rs", "grpc"],
+    ["src/grpc.rs", "HarnessGrpcService"],
+    ["src/grpc.rs", "HarnessGrpcService::adjudicates"],
+    ["src/grpc.rs", "HarnessGrpcService::adjudicates"],
+    ["src/grpc.rs", "HarnessGrpcService::get_verdict_by_id"]
+  ],
+  "references": [
+    ["imports", "crate::pb::harness_service_server::HarnessService"],
+    ["uses", "AdjudicateRequest", "proto/harness.proto", "HarnessService::Adjudicates"],
+    ["uses", "AdjudicateReply", "proto/harness.proto", "HarnessService::Adjudicates"],
+    ["uses", "VerdictId", "proto/harness.proto", "HarnessService::GetVerdictByID"],
+    ["uses", "AdjudicateReply", "proto/harness.proto", "HarnessService::GetVerdictByID"],
+    ["uses", "HarnessGrpcService", "src/grpc.rs", ""],
+    ["uses", "HarnessGrpcService", "src/grpc.rs", ""],
+    ["uses", "HarnessService", "src/grpc.rs", ""],
+    ["uses", "AdjudicateRequest", "src/grpc.rs", "HarnessGrpcService::adjudicates"],
+    ["uses", "AdjudicateReply", "src/grpc.rs", "HarnessGrpcService::adjudicates"],
+    ["uses", "AdjudicateReply", "src/grpc.rs", "HarnessGrpcService::adjudicates"],
+    ["uses", "VerdictId", "src/grpc.rs", "HarnessGrpcService::get_verdict_by_id"],
+    ["uses", "AdjudicateReply", "src/grpc.rs", "HarnessGrpcService::get_verdict_by_id"],
+    ["uses", "AdjudicateReply", "src/grpc.rs", "HarnessGrpcService::get_verdict_by_id"]
+  ],
+  "resolved": [
+    ["declared", "calls", "HarnessService::Adjudicates", "HarnessGrpcService::adjudicates", "proto/harness.proto", "src/grpc.rs"],
+    ["declared", "implements", "HarnessGrpcService::adjudicates", "HarnessService::Adjudicates", "src/grpc.rs", "proto/harness.proto"],
+    ["declared", "calls", "HarnessService::GetVerdictByID", "HarnessGrpcService::get_verdict_by_id", "proto/harness.proto", "src/grpc.rs"],
+    ["declared", "implements", "HarnessGrpcService::get_verdict_by_id", "HarnessService::GetVerdictByID", "src/grpc.rs", "proto/harness.proto"],
+    ["scope", "uses", "HarnessService::Adjudicates", "AdjudicateRequest"],
+    ["scope", "uses", "HarnessService::Adjudicates", "AdjudicateReply"],
+    ["scope", "uses", "HarnessService::GetVerdictByID", "VerdictId"],
+    ["scope", "uses", "HarnessService::GetVerdictByID", "AdjudicateReply"],
+    ["scope", "uses", "src/grpc.rs", "HarnessGrpcService"],
+    ["scope", "uses", "src/grpc.rs", "HarnessGrpcService"]
+  ],
+  "unresolved_count": 8
+}

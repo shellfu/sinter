@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package harness.v1;
+
+// HarnessService adjudicates verdicts.
+service HarnessService {
+  rpc Adjudicates(AdjudicateRequest) returns (AdjudicateReply);
+  rpc GetVerdictByID(VerdictId) returns (AdjudicateReply);
+}
+
+message AdjudicateRequest {
+  string case_id = 1;
+}
+
+message VerdictId {
+  string id = 1;
+}
+
+message AdjudicateReply {
+  bool accepted = 1;
+}

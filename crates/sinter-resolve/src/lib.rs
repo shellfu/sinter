@@ -1,6 +1,8 @@
+mod proto_service_bindings;
 mod resolver;
 mod scip;
 
+pub use proto_service_bindings::proto_service_edges;
 pub use resolver::{
     Binding, Index, ResolutionStats, dynamic_edges, qualified_of, resolve, resolve_boundary,
 };

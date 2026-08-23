@@ -44,6 +44,17 @@ pub fn node_scopes(language: &str, source: &str, nodes: &[Node]) -> Vec<(NodeId,
             out.push((node.id.clone(), scope));
         }
     }
+    // A file whose every item is test-scoped (e.g. only `#[cfg(test)] mod
+    // tests`) is a test file: mark the file node so file-level scope follows.
+    let items = nodes.iter().filter(|n| n.kind != SymbolKind::File).count();
+    if items > 0 && out.len() == items && out.iter().all(|(_, s)| *s == CorpusScope::Test) {
+        out.extend(
+            nodes
+                .iter()
+                .filter(|n| n.kind == SymbolKind::File)
+                .map(|n| (n.id.clone(), CorpusScope::Test)),
+        );
+    }
     out
 }
 
@@ -129,6 +140,21 @@ mod tests {
                 ("tests::it_runs".into(), CorpusScope::Test),
             ]
         );
+    }
+
+    #[test]
+    fn file_with_only_test_items_marks_file_node_test() {
+        let src =
+            "use super::*;\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn it_runs() {}\n}\n";
+        let got = scopes_of("src/lib/tests_only.rs", src);
+        assert!(got.iter().all(|(_, s)| *s == CorpusScope::Test));
+        assert!(got.iter().any(|(q, _)| q == "src/lib/tests_only.rs"));
+        // a production item keeps the file production
+        let got = scopes_of(
+            "src/lib.rs",
+            "pub fn run() {}\n#[cfg(test)]\nmod tests {}\n",
+        );
+        assert!(!got.iter().any(|(q, _)| q == "src/lib.rs"));
     }
 
     #[test]

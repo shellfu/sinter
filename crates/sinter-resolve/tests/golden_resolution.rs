@@ -494,6 +494,13 @@ fn resolution_proto_basic() {
     check("proto-basic");
 }
 
+/// tonic convention: proto rpc binds to the hand-written `impl S for T`
+/// method by `declared` evidence, in both directions.
+#[test]
+fn resolution_proto_tonic_service() {
+    check("proto-tonic-service");
+}
+
 /// Mined from a real proto corpus: imports are include-root-relative
 /// ("acme/v1/money.proto" under schema/proto/), and sibling files of one
 /// package reference each other's messages bare, via oneof branches and
@@ -635,6 +642,11 @@ fn resolution_csharp_inheritance() {
 #[test]
 fn resolution_markdown_headings() {
     check("markdown-headings");
+}
+
+#[test]
+fn resolution_markdown_table_list() {
+    check("markdown-table-list");
 }
 
 /// Link edges: section -> file (sibling, subdir, extensionless),
