@@ -166,7 +166,7 @@ fn summary(operation: &str, data: &Value) -> String {
         let total = data
             .pointer(&format!("/totals/{key}"))
             .and_then(Value::as_u64)
-            .map_or(list.len() as u64, |t| t);
+            .unwrap_or(list.len() as u64);
         line.push_str(&format!(" {key} {}/{total};", list.len()));
     }
     match data.get("truncated") {
