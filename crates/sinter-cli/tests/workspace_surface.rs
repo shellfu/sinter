@@ -424,7 +424,9 @@ fn serve_workspace_answers_across_members() {
         writeln!(stdin, r#"{{"jsonrpc":"2.0","id":1,"method":"tools/list"}}"#).unwrap();
         writeln!(
             stdin,
-            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"affected","arguments":{{"symbol":"common:Backoff"}}}}}}"#
+            // Workspace coverage alone exceeds MCP's default 8000-byte budget;
+            // lift it so the full coverage shape is asserted below.
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"affected","arguments":{{"symbol":"common:Backoff","budget_bytes":0}}}}}}"#
         )
         .unwrap();
         writeln!(

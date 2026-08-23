@@ -42,7 +42,7 @@ pub(crate) fn repository() -> Value {
     let mut list = json!({"tools": [
         {
             "name": "map",
-            "description": "One-screen orientation card for the repository: node/edge totals, the module tree with per-directory symbol counts, the most depended-on hub symbols, and doc entry points. Call this first in an unfamiliar repo.",
+            "description": "Bounded structural inventory for an unfamiliar repository: node/edge totals, module node/file counts, dependency hubs ranked by non-containment in-degree, doc entry points, and graph-health limitations. Hubs are not runtime entry points or domain-ownership proof.",
             "inputSchema": {"type": "object", "properties": {
                 "scope": scope_filter(&["production", "docs"]),
             }},
@@ -57,6 +57,13 @@ pub(crate) fn repository() -> Value {
                 "explain": {"type": "boolean", "default": false,
                     "description": "include per-hit score_breakdown diagnostics"},
             }, "required": ["question"]},
+        },
+        {
+            "name": "context",
+            "description": "Start here for a coding task: the smallest evidence packet before editing. Runs ask on the task text, expands the top contenders (show card, excerpt, direct deps, direct callers vs importers), selects relevant tests the way impact does, reports gaps (coverage, unresolved refs, ask abstain reason), and lists concrete next commands with stable handles. `outcome: abstain` means the task text did not rank a target; follow `next_actions`. Budgeted to 8000 bytes by default.",
+            "inputSchema": {"type": "object", "properties": {
+                "task": {"type": "string", "description": "task description in plain words"},
+            }, "required": ["task"]},
         },
         {
             "name": "show",

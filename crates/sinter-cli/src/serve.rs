@@ -109,10 +109,11 @@ fn handle(scope: &Scope, method: &str, params: &Value) -> Result<Value> {
 
 fn call_tool(scope: &Scope, params: &Value) -> Result<Value> {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-    let args = params
+    let mut args = params
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| json!({}));
+    let budget = crate::agent_protocol::take_budget(&mut args)?;
     crate::agent_protocol::validate_arguments(name, &args, matches!(scope, Scope::Workspace(_)))?;
 
     // A session-lived store would hold redb's exclusive lock across calls,
@@ -124,5 +125,5 @@ fn call_tool(scope: &Scope, params: &Value) -> Result<Value> {
         }
         Scope::Workspace(manifest) => crate::workspace_tools::call(manifest, name, &args)?,
     };
-    crate::agent_protocol::mcp_success(name, &result)
+    crate::agent_protocol::mcp_success(name, &result, budget)
 }

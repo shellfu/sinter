@@ -232,7 +232,7 @@ fn affected_is_terse_capped_and_batchable() {
     assert_eq!(v["coverage"]["compiler_index"]["state"], "missing", "{v}");
 }
 
-/// The repo surface lists map and overlap; map is a real orientation card;
+/// The repo surface lists map and overlap; map is a real inventory card;
 /// unknown-symbol errors carry a recovery hint; overlap validates arity.
 #[test]
 fn map_tool_and_error_hints() {
@@ -279,9 +279,12 @@ fn map_tool_and_error_hints() {
         "{map_schema}"
     );
 
-    // map: totals, modules, and hubs (Base has four dependents).
+    // map: explicit inventory semantics, health, modules, and dependency
+    // hubs (Base has four dependents).
     let v: serde_json::Value = serde_json::from_str(body(&responses[1])).unwrap();
     assert_eq!(v["scope"], serde_json::json!(["production", "docs"]));
+    assert_eq!(v["orientation"]["kind"], "repository_inventory");
+    assert_eq!(v["health"]["status"], "partial");
     assert!(v["nodes"].as_u64().unwrap() > 0, "{v}");
     assert!(!v["modules"].as_array().unwrap().is_empty(), "{v}");
     assert!(
@@ -291,6 +294,10 @@ fn map_tool_and_error_hints() {
             .iter()
             .any(|h| h["name"].as_str().unwrap().contains("Base")),
         "{v}"
+    );
+    assert_eq!(
+        responses[1]["result"]["structuredContent"]["outcome"]["status"],
+        "partial"
     );
 
     // Unknown symbol with no close names: point at concept search —
