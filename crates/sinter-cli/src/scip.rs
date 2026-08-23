@@ -103,6 +103,9 @@ pub fn staleness(repo: &Path) -> Staleness {
     let Ok(index_mtime) = std::fs::metadata(&index).and_then(|m| m.modified()) else {
         return Staleness::Missing;
     };
+    // Only files a compiler indexer covers can make the index stale; a
+    // markdown or shell edit (AGENTS.md written by init, say) cannot.
+    let indexable = indexable_languages(repo);
     let mut newer = 0;
     let mut walker = ignore::WalkBuilder::new(repo);
     walker.add_custom_ignore_filename(".sinterignore");
@@ -111,10 +114,11 @@ pub fn staleness(repo: &Path) -> Staleness {
             continue;
         }
         let rel = sinter_core::rel_display(entry.path().strip_prefix(repo).unwrap_or(entry.path()));
+        let indexable_source = sinter_extract::spec_for_path(&rel)
+            .is_some_and(|spec| indexable.iter().any(|language| language == spec.name));
         if rel.starts_with(".sinter/")
             || crate::corpus::excluded(&rel)
-            || (sinter_extract::spec_for_path(&rel).is_none()
-                && !is_project_marker(file_name(&rel)))
+            || (!indexable_source && !is_project_marker(file_name(&rel)))
         {
             continue;
         }

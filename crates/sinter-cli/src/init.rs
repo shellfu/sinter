@@ -125,7 +125,13 @@ fn plan(repo: &Path, cursor: bool, global: bool, scip: bool) {
         println!("    ~/.claude/settings.json      enforcement hooks, every repo");
     } else {
         println!("\n  your machine");
-        println!("    untouched — pass --global to install the skill card and machine-wide hooks");
+        if install::default_dir().is_some_and(|dir| dir.join("SKILL.md").exists()) {
+            println!("    ~/.claude/skills/sinter/     existing skill card refreshed");
+        } else {
+            println!(
+                "    untouched — pass --global to install the skill card and machine-wide hooks"
+            );
+        }
     }
 
     println!("\n  compiler indexers (SCIP)");
@@ -224,6 +230,10 @@ pub fn run(
     if global {
         install::run(None)?;
         install::enforce(None, false)?;
+    } else if install::default_dir().is_some_and(|dir| dir.join("SKILL.md").exists()) {
+        // A machine-wide card already exists, so it is already ours to
+        // keep current; leaving it stale makes doctor flag it right away.
+        install::run(None)?;
     }
 
     // Agent integration writes indexable files into the repo (AGENTS.md is
@@ -233,7 +243,9 @@ pub fn run(
 
     println!("\ntip: `sinter completion <shell>` prints shell completions (bash/zsh/fish)");
     if !global {
-        println!("tip: `sinter init --global` installs the skill card for every repo");
+        println!(
+            "tip: `sinter install` puts the skill card on this machine for every repo (`sinter init --global` also adds machine-wide hooks)"
+        );
     }
 
     println!("\n== doctor ==");

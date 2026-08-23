@@ -87,6 +87,21 @@ fn check_reports_freshness_without_indexing() {
     );
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("1 source/config input"), "{err}");
+
+    // A file no compiler indexer covers (init writes AGENTS.md after
+    // indexing) must not make the index stale.
+    set_mtime(&repo.join("Cargo.toml"), past);
+    std::fs::write(repo.join("AGENTS.md"), "# agents\n").unwrap();
+    set_mtime(
+        &repo.join("AGENTS.md"),
+        SystemTime::now() + Duration::from_secs(60),
+    );
+    let out = sinter(repo, &["scip", "check"]);
+    assert!(
+        out.status.success(),
+        "non-indexable file must not stale the index: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// A negative path answer is an explicit coverage verdict. It identifies
