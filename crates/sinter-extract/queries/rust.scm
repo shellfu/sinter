@@ -50,3 +50,10 @@
 
 ; declared field types feed `self.field.method()` resolution
 (field_declaration name: (field_identifier) @field.name type: (_) @field.type)
+
+; type references from signatures, bodies, fields, struct literals and
+; `Type::assoc` paths: a function that mentions a type depends on it.
+; Single-letter names (generics) and `Self` carry no resolvable target.
+(scoped_type_identifier name: (type_identifier) @ref.use) @refpath
+((type_identifier) @ref.use (#not-match? @ref.use "^(Self|[A-Z])$"))
+((scoped_identifier path: (identifier) @ref.use) (#match? @ref.use "^[A-Z]"))

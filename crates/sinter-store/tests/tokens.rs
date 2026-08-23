@@ -28,6 +28,8 @@ fn facts(file: &str, hash: &str, nodes: Vec<Node>) -> FileFacts {
         fields: Vec::new(),
         embeds: Vec::new(),
         trait_impls: Vec::new(),
+        scopes: Vec::new(),
+        body_terms: Vec::new(),
     }
 }
 
@@ -125,4 +127,27 @@ fn candidates_dedup_and_deterministic_order() {
     let rev = vec!["climb".to_string(), "climbs".to_string()];
     let hits2 = store.candidates_for_terms(&rev).unwrap();
     assert_eq!(hits2.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(), ids);
+}
+
+#[test]
+fn body_terms_index_is_replaced_per_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::create(dir.path().join("g.redb")).unwrap();
+    let n = node("src/a.rs", "scan", "fn scan()", None);
+    let mut f = facts("src/a.rs", "h1", vec![n.clone()]);
+    f.body_terms = vec![(n.id.clone(), vec!["stat".into(), "walk".into()])];
+    store.update_files(&[f], &[]).unwrap();
+    assert_eq!(store.body_term_df("stat").unwrap(), 1);
+    let hits = store.nodes_with_body_term("stat", 10).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, n.id);
+
+    // Re-extracted without the word: the old row goes away.
+    let mut f = facts("src/a.rs", "h2", vec![n.clone()]);
+    f.body_terms = vec![(n.id.clone(), vec!["walk".into()])];
+    store.update_files(&[f], &[]).unwrap();
+    assert_eq!(store.body_term_df("stat").unwrap(), 0);
+    assert_eq!(store.body_term_df("walk").unwrap(), 1);
+    store.update_files(&[], &["src/a.rs".to_string()]).unwrap();
+    assert_eq!(store.body_term_df("walk").unwrap(), 0);
 }

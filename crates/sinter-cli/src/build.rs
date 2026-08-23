@@ -6,7 +6,13 @@ use crate::pipeline;
 
 /// `sinter build`: one incremental pass over the whole corpus.
 pub fn run(repo: &Path) -> Result<()> {
-    let report = pipeline::build(repo, None)?;
+    // Phases go to stderr, the report to stdout: a redirected build log
+    // keeps the numbers and drops the spinner.
+    let progress = crate::progress::Progress::stderr();
+    let report = pipeline::build_with(repo, None, &mut |phase| {
+        crate::progress::render(&progress, phase)
+    })?;
+    drop(progress);
     pipeline::print_report(&report);
     let repo = repo.canonicalize()?;
     if report.scanned == 0 {

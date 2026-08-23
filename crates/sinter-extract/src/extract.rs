@@ -76,6 +76,9 @@ struct Collected {
     /// Import-alias name spans: identical local captures are the import
     /// binding itself, not a shadow.
     alias_spans: Vec<(usize, usize)>,
+    /// Definition name spans: a blanket type-reference capture also lands
+    /// on `struct Foo`'s own name, which is a definition, not a use.
+    def_name_spans: Vec<(usize, usize)>,
     /// Explicit doc captures (`@doc`, e.g. Python docstrings): (span, text).
     /// Attached to the smallest containing definition, overriding any
     /// sibling-comment doc.
@@ -269,8 +272,13 @@ impl Extractor {
             stack.push((entry.end, scope_segment, id));
         }
 
-        let references = collected
-            .refs
+        // One span may be captured twice (a scoped type's name both with
+        // its path and bare): keep the path-bearing one, never both.
+        let mut refs = collected.refs;
+        refs.retain(|r| !collected.def_name_spans.contains(&(r.start, r.end)));
+        refs.sort_by_key(|r| (r.start, r.end, r.path.is_none()));
+        refs.dedup_by_key(|r| (r.start, r.end));
+        let references = refs
             .into_iter()
             .map(|r| {
                 let enclosing = def_spans
@@ -381,6 +389,8 @@ impl Extractor {
                 },
             })
             .collect();
+        let scopes = crate::scope::node_scopes(self.spec.name, source, &nodes);
+        let body_terms = crate::body_terms::body_terms(source, &nodes, &scopes);
         Ok(FileFacts {
             file: file.to_string(),
             content_hash: blake3::hash(source.as_bytes()).to_hex().to_string(),
@@ -392,6 +402,8 @@ impl Extractor {
             fields,
             embeds,
             trait_impls,
+            scopes,
+            body_terms,
         })
     }
 }
@@ -567,6 +579,10 @@ fn collect(
             }
             let container = def.map(|(n, _)| n).or(scope);
             if let (Some(container), Some(name_node)) = (container, name) {
+                if def.is_some() {
+                    out.def_name_spans
+                        .push((name_node.start_byte(), name_node.end_byte()));
+                }
                 entries.push(RawEntry {
                     start: container.start_byte(),
                     end: container.end_byte(),

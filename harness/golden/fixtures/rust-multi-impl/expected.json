@@ -13,10 +13,22 @@
     ["src/lib.rs", "make"]
   ],
   "references": [
-    ["calls", "new"]
+    ["calls", "new"],
+    ["uses", "Counter", "src/lib.rs", ""],
+    ["uses", "Counter", "src/lib.rs", ""],
+    ["uses", "Counter", "src/lib.rs", "Counter::new"],
+    ["uses", "Counter", "src/lib.rs", "Counter::new"],
+    ["uses", "Counter", "src/lib.rs", "make"],
+    ["uses", "Counter", "src/lib.rs", "make"]
   ],
   "resolved": [
-    ["scope", "calls", "make", "Counter::new"]
+    ["scope", "calls", "make", "Counter::new"],
+    ["scope", "uses", "Counter::new", "Counter"],
+    ["scope", "uses", "Counter::new", "Counter"],
+    ["scope", "uses", "make", "Counter"],
+    ["scope", "uses", "make", "Counter"],
+    ["scope", "uses", "src/lib.rs", "Counter"],
+    ["scope", "uses", "src/lib.rs", "Counter"]
   ],
   "unresolved_count": 0
 }

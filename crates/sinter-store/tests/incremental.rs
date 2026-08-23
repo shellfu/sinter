@@ -79,6 +79,8 @@ fn facts(file: &str, hash: &str, defs: &[&str], ref_names: &[&str]) -> FileFacts
         fields: Vec::new(),
         embeds: Vec::new(),
         trait_impls: Vec::new(),
+        scopes: Vec::new(),
+        body_terms: Vec::new(),
     }
 }
 

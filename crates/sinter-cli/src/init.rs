@@ -99,45 +99,109 @@ name = "{name}"
     Ok(true)
 }
 
-pub fn run(repo: &Path, cursor: bool, scip: Option<bool>, global: bool) -> Result<bool> {
+/// Everything `init` is about to write, grouped by the authority it
+/// needs. Printed before anything happens: the repo half is committable
+/// and reversible with `sinter uninit`; the machine half is opt-in.
+fn plan(repo: &Path, cursor: bool, global: bool, scip: bool) {
+    println!("sinter init — {}", repo.display());
+    println!("\n  this repo");
+    println!("    .sinter/                     code graph (derived state, gitignored)");
+    if repo.join(".git").exists() {
+        println!("    .git/hooks/post-*            refresh the graph after commit/checkout/merge");
+    } else {
+        println!("    (no .git — git hooks skipped)");
+    }
+    println!("    AGENTS.md                    managed sinter block");
+    println!("    .mcp.json, .cursor/mcp.json  MCP server registration");
+    println!("    .codex/config.toml           managed MCP block");
+    println!("    .claude/                     sinter-first hooks, this repo only");
+    if cursor {
+        println!("    .cursor/rules/sinter.mdc     Cursor rule");
+    }
+
+    if global {
+        println!("\n  your machine (--global)");
+        println!("    ~/.claude/skills/sinter/     skill card, every repo on this machine");
+        println!("    ~/.claude/settings.json      enforcement hooks, every repo");
+    } else {
+        println!("\n  your machine");
+        println!("    untouched — pass --global to install the skill card and machine-wide hooks");
+    }
+
+    println!("\n  compiler indexers (SCIP)");
+    if scip {
+        println!("    will run — they build the project and can execute repository build scripts");
+    } else {
+        println!("    not run — pass --scip to enable (they execute repository build scripts)");
+    }
+}
+
+/// Ask once, default yes. Non-interactive callers never reach here.
+fn confirm() -> bool {
+    use std::io::Write;
+    print!("\nproceed? [Y/n] ");
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return false;
+    }
+    matches!(answer.trim(), "" | "y" | "Y" | "yes")
+}
+
+pub fn run(
+    repo: &Path,
+    cursor: bool,
+    scip: Option<bool>,
+    global: bool,
+    assume_yes: bool,
+) -> Result<bool> {
+    use std::io::IsTerminal;
     let repo = repo.canonicalize()?;
     // Cursor is auto-configured when the repo already carries Cursor state;
     // --cursor still forces it on a fresh checkout.
     let cursor = cursor || repo.join(".cursor").exists();
-
-    println!("== build ==");
-    let report = pipeline::build(&repo, None)?;
-    pipeline::print_report(&report);
+    let interactive = std::io::stdin().is_terminal() && !assume_yes;
 
     // Compiler evidence needs consent: indexers are language toolchains
     // that can execute repository build scripts (build.rs, procmacros), so
     // init must never launch them on an untrusted repo without being told.
-    // TTY: ask once. Non-interactive: skip unless --scip was passed.
-    println!("\n== scip (compiler evidence) ==");
-    let consent = scip.unwrap_or_else(|| {
-        use std::io::IsTerminal;
-        if std::io::stdin().is_terminal() {
+    // Asked before the plan so the plan states the answer; non-interactive
+    // runs skip them unless --scip was passed.
+    let scip = match scip {
+        Some(explicit) => explicit,
+        None if interactive => {
+            use std::io::Write;
             print!(
                 "run compiler indexers? They build the project and can execute \
                  repository build scripts [y/N] "
             );
-            use std::io::Write;
             let _ = std::io::stdout().flush();
             let mut answer = String::new();
             let _ = std::io::stdin().read_line(&mut answer);
             matches!(answer.trim(), "y" | "Y" | "yes")
-        } else {
-            println!("skipped: non-interactive and no --scip (indexers execute build scripts)");
-            false
         }
-    });
-    if consent {
+        None => false,
+    };
+
+    plan(&repo, cursor, global, scip);
+    if interactive && !confirm() {
+        println!("aborted — nothing written");
+        return Ok(false);
+    }
+    println!();
+
+    let progress = crate::progress::Progress::stderr();
+    let report = pipeline::build_with(&repo, None, &mut |phase| {
+        crate::progress::render(&progress, phase)
+    })?;
+    pipeline::print_summary(&repo, &report);
+
+    if scip {
+        println!("\n== compiler evidence ==");
         if let Err(e) = crate::scip::run(&repo) {
             println!("skipped: {e:#}");
             println!("(optional — rerun `sinter scip` once an indexer is installed)");
         }
-    } else {
-        println!("(optional — run `sinter scip` when you trust this repository)");
     }
 
     println!("\n== git hooks ==");
@@ -148,29 +212,29 @@ pub fn run(repo: &Path, cursor: bool, scip: Option<bool>, global: bool) -> Resul
     }
 
     println!("\n== agent integration ==");
-    // claude is global and idempotent — including it makes init complete
-    // on a fresh machine instead of ending with a doctor FIX.
-    let mut targets = vec![
-        "claude".to_string(),
-        "agents".to_string(),
-        "enforce".to_string(),
-    ];
+    // Project scope by default: everything here is committable, so
+    // teammates and every checkout inherit it.
+    let mut targets = vec!["agents".to_string(), "enforce".to_string()];
     if cursor {
         targets.push("cursor".to_string());
     }
-    // Enforcement is per-repo by default (committable, teammates inherit
-    // it); --global additionally wires ~/.claude so every repo on this
-    // machine gets the hooks.
     install::run_targets(&targets, None, true, &repo, false, false)?;
+    // --global reaches past the repo: the skill card and the enforcement
+    // hooks that every repo on this machine then inherits.
     if global {
+        install::run(None)?;
         install::enforce(None, false)?;
     }
 
     // Agent integration writes indexable files into the repo (AGENTS.md is
     // markdown); refresh incrementally so doctor verifies a current graph.
+    // Silent: the phases above already reported the build that matters.
     pipeline::build(&repo, None)?;
 
     println!("\ntip: `sinter completion <shell>` prints shell completions (bash/zsh/fish)");
+    if !global {
+        println!("tip: `sinter init --global` installs the skill card for every repo");
+    }
 
     println!("\n== doctor ==");
     doctor::run(&repo, false)

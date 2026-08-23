@@ -7,7 +7,31 @@ use redb::ReadableDatabase;
 use sinter_core::{Confidence, CorpusScope, Edge, Evidence, Node, NodeId, Relation};
 
 use crate::error::StoreError;
-use crate::store::{FILE_SCOPE, IN_EDGES, NODES, OUT_EDGES, Store};
+use crate::store::{FILE_SCOPE, IN_EDGES, NODE_SCOPE, NODES, OUT_EDGES, Store};
+
+/// Per-node scope through the single resolution rule in `scope::resolve`.
+fn scope_of(
+    node_scopes: &impl redb::ReadableTable<&'static str, &'static str>,
+    file_scopes: &impl redb::ReadableTable<&'static str, &'static str>,
+    id: &str,
+) -> Result<CorpusScope, StoreError> {
+    let file = id.split_once('#').map_or(id, |(file, _)| file);
+    let file_scope = file_scopes
+        .get(file)?
+        .and_then(|guard| CorpusScope::from_str_opt(guard.value()));
+    Ok(crate::scope::resolve(
+        |key| {
+            node_scopes
+                .get(key)
+                .ok()
+                .flatten()
+                .and_then(|guard| CorpusScope::from_str_opt(guard.value()))
+        },
+        file_scope,
+        id,
+        file,
+    ))
+}
 
 /// Which edges a traversal may walk. Containment is structure, not
 /// dependency, so it never participates.
@@ -54,12 +78,6 @@ impl EdgeFilter {
     }
 }
 
-fn file_of(id: &NodeId) -> &str {
-    id.as_str()
-        .split_once('#')
-        .map_or(id.as_str(), |(file, _)| file)
-}
-
 /// One step of a traversal result: the node reached, how deep, and the edge
 /// that reached it.
 pub struct Reached {
@@ -72,7 +90,11 @@ pub struct Reached {
 /// actually calls this" number, distinct from the transitive total that
 /// otherwise reads as a caller count.
 pub fn direct_summary(reached: &[Reached]) -> (usize, usize) {
-    let direct: Vec<&Reached> = reached.iter().filter(|r| r.depth == 1).collect();
+    // File `use` lines are dependents, not callers: keep them out of "direct".
+    let direct: Vec<&Reached> = reached
+        .iter()
+        .filter(|r| r.depth == 1 && r.via.relation != Relation::Imports)
+        .collect();
     let files: std::collections::HashSet<&str> =
         direct.iter().map(|r| r.node.file.as_str()).collect();
     (direct.len(), files.len())
@@ -90,6 +112,7 @@ impl Store {
         let txn = self.db.begin_read()?;
         let nodes = txn.open_table(NODES)?;
         let scopes = txn.open_table(FILE_SCOPE)?;
+        let node_scopes = txn.open_table(NODE_SCOPE)?;
         let incoming = txn.open_multimap_table(IN_EDGES)?;
         let mut seen: HashSet<NodeId> = HashSet::from([id.clone()]);
         let mut queue: VecDeque<(NodeId, usize)> = VecDeque::from([(id.clone(), 0)]);
@@ -100,11 +123,7 @@ impl Store {
             }
             for guard in incoming.get(current.as_str())? {
                 let edge: Edge = postcard::from_bytes(guard?.value())?;
-                let file = file_of(&edge.src);
-                let scope = scopes
-                    .get(file)?
-                    .and_then(|guard| CorpusScope::from_str_opt(guard.value()))
-                    .unwrap_or_else(|| CorpusScope::classify_path(file));
+                let scope = scope_of(&node_scopes, &scopes, edge.src.as_str())?;
                 if !filter.admits(&edge)
                     || !filter.admits_scope(scope)
                     || !seen.insert(edge.src.clone())
@@ -138,6 +157,7 @@ impl Store {
         let txn = self.db.begin_read()?;
         let nodes = txn.open_table(NODES)?;
         let scopes = txn.open_table(FILE_SCOPE)?;
+        let node_scopes = txn.open_table(NODE_SCOPE)?;
         let outgoing = txn.open_multimap_table(OUT_EDGES)?;
         let mut seen: HashSet<NodeId> = HashSet::from([id.clone()]);
         let mut queue: VecDeque<(NodeId, usize)> = VecDeque::from([(id.clone(), 0)]);
@@ -161,11 +181,7 @@ impl Store {
             }
             for guard in outgoing.get(current.as_str())? {
                 let edge: Edge = postcard::from_bytes(guard?.value())?;
-                let file = file_of(&edge.dst);
-                let scope = scopes
-                    .get(file)?
-                    .and_then(|guard| CorpusScope::from_str_opt(guard.value()))
-                    .unwrap_or_else(|| CorpusScope::classify_path(file));
+                let scope = scope_of(&node_scopes, &scopes, edge.dst.as_str())?;
                 if !filter.admits(&edge)
                     || !filter.admits_scope(scope)
                     || !seen.insert(edge.dst.clone())
@@ -196,6 +212,7 @@ impl Store {
         let txn = self.db.begin_read()?;
         let nodes = txn.open_table(NODES)?;
         let scopes = txn.open_table(FILE_SCOPE)?;
+        let node_scopes = txn.open_table(NODE_SCOPE)?;
         let outgoing = txn.open_multimap_table(OUT_EDGES)?;
         let mut prev: HashMap<NodeId, Edge> = HashMap::new();
         let mut seen: HashSet<NodeId> = HashSet::from([from.clone()]);
@@ -231,11 +248,7 @@ impl Store {
             }
             for guard in outgoing.get(current.as_str())? {
                 let edge: Edge = postcard::from_bytes(guard?.value())?;
-                let file = file_of(&edge.dst);
-                let scope = scopes
-                    .get(file)?
-                    .and_then(|guard| CorpusScope::from_str_opt(guard.value()))
-                    .unwrap_or_else(|| CorpusScope::classify_path(file));
+                let scope = scope_of(&node_scopes, &scopes, edge.dst.as_str())?;
                 if !filter.admits(&edge)
                     || !filter.admits_scope(scope)
                     || !seen.insert(edge.dst.clone())

@@ -411,8 +411,14 @@ pub fn run(repo: &Path) -> Result<()> {
     }
 
     // The build notices the index fingerprint changed and re-resolves the
-    // corpus without re-extracting; no db reset needed.
-    let report = pipeline::build(&repo, None)?;
+    // corpus without re-extracting; no db reset needed. That re-resolve
+    // covers the whole corpus, so it reports its phases — indexing is
+    // already the slowest thing a user runs.
+    let progress = crate::progress::Progress::stderr();
+    let report = pipeline::build_with(&repo, None, &mut |phase| {
+        crate::progress::render(&progress, phase)
+    })?;
+    drop(progress);
     pipeline::print_report(&report);
     Ok(())
 }

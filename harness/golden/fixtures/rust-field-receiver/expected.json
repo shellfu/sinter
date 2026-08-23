@@ -18,12 +18,24 @@
     ["src/lib.rs", "HarnessGrpcService"],
     ["src/lib.rs", "HarnessGrpcService::handle"]
   ],
-  "references": [["uses", "Harness"], ["calls", "check"]],
+  "references": [
+    ["uses", "Harness"],
+    ["calls", "check"],
+    ["uses", "Arc", "src/lib.rs", "HarnessGrpcService"],
+    ["uses", "CedarPolicyHarness", "src/lib.rs", ""],
+    ["uses", "Harness", "src/lib.rs", "HarnessGrpcService"],
+    ["uses", "HarnessGrpcService", "src/lib.rs", ""],
+    ["uses", "Sized", "src/lib.rs", "Arc"]
+  ],
   "resolved": [
     ["scope", "uses", "src/lib.rs", "Harness"],
     ["scope", "calls", "HarnessGrpcService::handle", "Harness::check"],
     ["dynamic", "calls", "Harness::check", "CedarPolicyHarness::check"],
-    ["scope", "implements", "CedarPolicyHarness", "Harness"]
+    ["scope", "implements", "CedarPolicyHarness", "Harness"],
+    ["scope", "uses", "HarnessGrpcService", "Arc"],
+    ["scope", "uses", "HarnessGrpcService", "Harness"],
+    ["scope", "uses", "src/lib.rs", "CedarPolicyHarness"],
+    ["scope", "uses", "src/lib.rs", "HarnessGrpcService"]
   ],
-  "unresolved_count": 0
+  "unresolved_count": 1
 }

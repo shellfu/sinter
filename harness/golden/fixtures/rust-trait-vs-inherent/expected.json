@@ -25,14 +25,22 @@
     ["imports", "crate::widget::Widget"],
     ["calls", "new"],
     ["calls", "run"],
-    ["uses", "Runner"]
+    ["uses", "Runner"],
+    ["uses", "Widget", "src/lib.rs", "main_run"],
+    ["uses", "Widget", "src/widget.rs", ""],
+    ["uses", "Widget", "src/widget.rs", ""],
+    ["uses", "Widget", "src/widget.rs", "Widget::new"]
   ],
   "resolved": [
     ["import", "imports", "src/lib.rs", "Widget"],
     ["import", "calls", "main_run", "Widget::new"],
     ["scope", "uses", "src/widget.rs", "Runner"],
     ["dynamic", "calls", "Runner::run", "Widget::run"],
-    ["scope", "implements", "Widget", "Runner", "src/widget.rs", "src/widget.rs"]
+    ["scope", "implements", "Widget", "Runner", "src/widget.rs", "src/widget.rs"],
+    ["import", "uses", "main_run", "Widget"],
+    ["scope", "uses", "Widget::new", "Widget"],
+    ["scope", "uses", "src/widget.rs", "Widget"],
+    ["scope", "uses", "src/widget.rs", "Widget"]
   ],
   "unresolved_count": 1
 }

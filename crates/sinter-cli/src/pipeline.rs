@@ -31,6 +31,41 @@ pub struct BuildReport {
     pub total_edges: u64,
     pub total_unresolved: u64,
     pub elapsed: std::time::Duration,
+    /// A SCIP index was ingested that predates the newest source file:
+    /// its bindings are compiler evidence for code that has since moved.
+    pub scip_stale: bool,
+}
+
+/// Build progress, reported as it happens. The graph is complete and
+/// correct at `Ready`; `Compacting` is optional maintenance that follows
+/// it, so a build interrupted there loses nothing but page slack.
+pub enum Phase {
+    Scanning,
+    Scanned {
+        files: usize,
+        changed: usize,
+        removed: usize,
+    },
+    Extracting {
+        files: usize,
+    },
+    Resolving {
+        files: usize,
+    },
+    /// The ingested index is older than the corpus it binds.
+    ScipStale,
+    Ready {
+        nodes: u64,
+        edges: u64,
+        elapsed: std::time::Duration,
+    },
+    Compacting {
+        before: u64,
+    },
+    Compacted {
+        before: u64,
+        after: u64,
+    },
 }
 
 /// One reference for which internal evidence and compiler evidence chose
@@ -92,15 +127,21 @@ pub fn db_size(repo: &Path) -> String {
             };
             #[cfg(not(unix))]
             let bytes = meta.len();
-            if bytes >= 1 << 30 {
-                format!("{:.1}G", bytes as f64 / (1u64 << 30) as f64)
-            } else if bytes >= 1 << 20 {
-                format!("{:.1}M", bytes as f64 / (1u64 << 20) as f64)
-            } else {
-                format!("{}K", bytes >> 10)
-            }
+            human_bytes(bytes)
         }
         Err(_) => "?".to_string(),
+    }
+}
+
+/// Byte counts as humans read them (`139.2M`). Shared by the on-disk
+/// report and the compaction phase lines.
+pub fn human_bytes(bytes: u64) -> String {
+    if bytes >= 1 << 30 {
+        format!("{:.1}G", bytes as f64 / (1u64 << 30) as f64)
+    } else if bytes >= 1 << 20 {
+        format!("{:.1}M", bytes as f64 / (1u64 << 20) as f64)
+    } else {
+        format!("{}K", bytes >> 10)
     }
 }
 
@@ -126,6 +167,10 @@ pub struct Scan {
     pub hashes: Vec<(String, FileStamp)>,
     pub roots: Vec<ModuleRoot>,
     pub scopes: Vec<(String, CorpusScope)>,
+    /// Newest source mtime seen this walk (0 when the corpus is empty).
+    /// Harvested here because the walk already stats every file — SCIP
+    /// staleness would otherwise cost a second traversal per build.
+    pub newest_source_nanos: u128,
 }
 
 /// Stat-gated hashing (the `make` trick): a file whose identity and length
@@ -168,11 +213,16 @@ pub fn scan(repo: &Path, stored: &HashMap<String, FileStamp>) -> Result<Scan> {
     // Starting Rayon is a net loss for the small repositories that dominate
     // interactive queries. Large corpora still parallelize stat/read work.
     const PARALLEL_SCAN_THRESHOLD: usize = 512;
-    let hashes: Vec<(String, FileStamp)> = if current.len() < PARALLEL_SCAN_THRESHOLD {
+    let scanned: Vec<(String, FileStamp, u128)> = if current.len() < PARALLEL_SCAN_THRESHOLD {
         current.iter().filter_map(scan_one).collect()
     } else {
         current.par_iter().filter_map(scan_one).collect()
     };
+    let newest_source_nanos = scanned.iter().map(|(_, _, m)| *m).max().unwrap_or(0);
+    let hashes: Vec<(String, FileStamp)> = scanned
+        .into_iter()
+        .map(|(file, stamp, _)| (file, stamp))
+        .collect();
     let scopes = hashes
         .iter()
         .map(|(file, _)| (file.clone(), scope_policy.classify(file)))
@@ -181,6 +231,7 @@ pub fn scan(repo: &Path, stored: &HashMap<String, FileStamp>) -> Result<Scan> {
         hashes,
         roots,
         scopes,
+        newest_source_nanos,
     })
 }
 
@@ -214,12 +265,14 @@ fn scan_file(
     stored: &HashMap<String, FileStamp>,
     rel: &String,
     full_scan: bool,
-) -> Option<(String, FileStamp)> {
+) -> Option<(String, FileStamp, u128)> {
     let path = repo.join(rel);
     // (0, 0) on stat failure never matches a stored non-empty stamp.
-    let (identity_nanos, len) = std::fs::metadata(&path)
-        .ok()
-        .map(|m| (metadata_identity(&m), m.len()))
+    let metadata = std::fs::metadata(&path).ok();
+    let modified = metadata.as_ref().map_or(0, modified_nanos);
+    let (identity_nanos, len) = metadata
+        .as_ref()
+        .map(|m| (metadata_identity(m), m.len()))
         .unwrap_or((0, 0));
     if !full_scan
         && len > 0
@@ -227,7 +280,7 @@ fn scan_file(
         && stamp.identity_nanos == identity_nanos
         && stamp.len == len
     {
-        return Some((rel.clone(), stamp.clone()));
+        return Some((rel.clone(), stamp.clone(), modified));
     }
     match std::fs::read(&path) {
         Ok(bytes) if bytes.is_empty() => None,
@@ -238,11 +291,12 @@ fn scan_file(
                 identity_nanos,
                 len: bytes.len() as u64,
             },
+            modified,
         )),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         // Transient read error (permissions, editor race): keep the stored
         // state instead of tearing the file down as removed.
-        Err(_) => stored.get(rel).map(|s| (rel.clone(), s.clone())),
+        Err(_) => stored.get(rel).map(|s| (rel.clone(), s.clone(), modified)),
     }
 }
 
@@ -265,7 +319,17 @@ fn read_repo_source(repo: &Path, rel: &str) -> Option<String> {
 
 /// One incremental build pass. `only` narrows the scan to an explicit
 /// changed set (watcher/hook fast path); None scans the whole corpus.
+/// Silent build: the query, hook, and MCP path. Every caller that wants
+/// to show its work goes through `build_with`.
 pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
+    build_with(repo, only, &mut |_| {})
+}
+
+pub fn build_with(
+    repo: &Path,
+    only: Option<&[PathBuf]>,
+    on: &mut dyn FnMut(Phase),
+) -> Result<BuildReport> {
     let started = Instant::now();
     let repo = discover_root(repo);
     let repo = repo
@@ -302,10 +366,12 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
             .collect()
     });
     let stored: HashMap<String, FileStamp> = store.file_hashes()?.into_iter().collect();
+    on(Phase::Scanning);
     let Scan {
         hashes,
         roots: module_roots,
         scopes,
+        newest_source_nanos,
     } = scan(&repo, &stored)?;
     let current_set: HashSet<&str> = hashes.iter().map(|(f, _)| f.as_str()).collect();
     // Scope entries match exactly or as directory prefixes: a directory
@@ -329,6 +395,11 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
         .filter(|f| !current_set.contains(f.as_str()) && in_scope(f))
         .cloned()
         .collect();
+    on(Phase::Scanned {
+        files: hashes.len(),
+        changed: changed_files.len(),
+        removed: removed.len(),
+    });
 
     // Extract changed files in parallel, extractors pooled per language.
     let mut by_lang: Vec<(&'static LanguageSpec, Vec<&str>)> = Vec::new();
@@ -338,6 +409,11 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
             Some((_, files)) => files.push(rel),
             None => by_lang.push((spec, vec![rel])),
         }
+    }
+    if !changed_files.is_empty() {
+        on(Phase::Extracting {
+            files: changed_files.len(),
+        });
     }
     let mut changed_facts: Vec<FileFacts> = Vec::new();
     let mut failures: Vec<(String, String)> = Vec::new();
@@ -416,12 +492,18 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
     // re-extracts (facts are content-addressed and untouched). The index
     // uses len:mtime, not a content hash — indexes run to hundreds of MB
     // and this runs on every build.
-    let scip_fingerprint = scip_index_path(&repo).and_then(|p| {
+    // Index mtime serves twice: the resolve fingerprint, and the
+    // staleness signal below. Ingestion is unconditional when the file
+    // exists, so an index older than the corpus binds references the
+    // compiler last saw somewhere else — say so instead of ingesting it
+    // silently.
+    let scip_mtime = scip_index_path(&repo).and_then(|p| {
         let meta = std::fs::metadata(&p).ok()?;
-        let mtime = meta.modified().ok()?;
-        let nanos = mtime.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
-        Some(format!("{}:{}", meta.len(), nanos))
+        let nanos = modified_nanos(&meta);
+        Some((meta.len(), nanos))
     });
+    let scip_fingerprint = scip_mtime.map(|(len, nanos)| format!("{len}:{nanos}"));
+    let scip_stale = scip_mtime.is_some_and(|(_, nanos)| newest_source_nanos > nanos);
     let roots_fingerprint = {
         let mut hasher = blake3::Hasher::new();
         for root in &module_roots {
@@ -448,6 +530,12 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
     let mut dep_symbols = 0usize;
     let mut dep_packages = 0usize;
     if !affected.is_empty() {
+        on(Phase::Resolving {
+            files: affected.len(),
+        });
+        if scip_stale {
+            on(Phase::ScipStale);
+        }
         // Dynamic fan-out edges are re-derived from their dst files' facts;
         // any such file losing edges must join the set (its unchanged refs
         // re-resolve to identical edges — a set-semantics no-op). Read-only
@@ -635,6 +723,8 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
                 fields: Vec::new(),
                 embeds: Vec::new(),
                 trait_impls: Vec::new(),
+                scopes: Vec::new(),
+                body_terms: Vec::new(),
             });
         }
         let dep_removed: Vec<String> = if full_reresolve {
@@ -729,12 +819,32 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
         &failures,
     )?;
 
+    // The graph is complete and durable here. Report it BEFORE any
+    // maintenance: compaction below rewrites a multi-hundred-megabyte
+    // file and used to be the last thing between a finished build and
+    // its first line of output, which reads as a hang.
+    let (total_nodes, total_edges, total_unresolved) = (
+        store.node_count()?,
+        store.edge_count()?,
+        store.unresolved_count()?,
+    );
+    on(Phase::Ready {
+        nodes: total_nodes,
+        edges: total_edges,
+        elapsed: started.elapsed(),
+    });
+
     // Reclaim free pages after bulk (re)builds; never on incremental
     // updates — compaction rewrites the file and would blow the <1s
     // one-file-edit budget. Half the redb file was page slack on the
-    // benchmark corpus before this.
+    // benchmark corpus before this. Iterative and synchronous: the phase
+    // is named so a long one is visibly maintenance, not a stall.
     if changed_names.len() * 2 >= hashes.len() && !changed_names.is_empty() {
+        let before = std::fs::metadata(&db).map(|m| m.len()).unwrap_or(0);
+        on(Phase::Compacting { before });
         store.compact()?;
+        let after = std::fs::metadata(&db).map(|m| m.len()).unwrap_or(0);
+        on(Phase::Compacted { before, after });
     }
 
     Ok(BuildReport {
@@ -748,11 +858,42 @@ pub fn build(repo: &Path, only: Option<&[PathBuf]>) -> Result<BuildReport> {
         stats,
         dep_symbols,
         dep_packages,
-        total_nodes: store.node_count()?,
-        total_edges: store.edge_count()?,
-        total_unresolved: store.unresolved_count()?,
+        total_nodes,
+        total_edges,
+        total_unresolved,
         elapsed: started.elapsed(),
+        scip_stale,
     })
+}
+
+/// The onboarding view of a build: what the graph now contains, no
+/// resolver diagnostics. `print_report` keeps those for `sinter build`,
+/// where the audience already knows what an anchored miss rate is.
+pub fn print_summary(repo: &Path, report: &BuildReport) {
+    let resolved = report.stats.resolved();
+    let total = resolved + report.stats.unresolved();
+    let rate = if total > 0 {
+        format!(
+            " ({:.0}% of references bound)",
+            resolved as f64 / total as f64 * 100.0
+        )
+    } else {
+        String::new()
+    };
+    // Deliberately does not restate the symbol/edge counts: the `Ready`
+    // phase line already carries those, and one number printed twice
+    // reads as two different numbers.
+    println!(
+        "  {} indexed{rate}, {} on disk",
+        crate::render::count(report.scanned, "file"),
+        db_size(repo)
+    );
+    if !report.failures.is_empty() {
+        println!(
+            "  {} failed extraction — `sinter build` names them",
+            crate::render::count(report.failures.len(), "file")
+        );
+    }
 }
 
 pub fn print_report(report: &BuildReport) {
@@ -784,6 +925,11 @@ pub fn print_report(report: &BuildReport) {
         None => {
             println!("  anchored miss rate (this pass): not measured (no references re-resolved)")
         }
+    }
+    if report.scip_stale {
+        println!(
+            "  SCIP index is older than the newest source file — its bindings may be stale; rerun `sinter scip`"
+        );
     }
     let both = report.stats.scip_agree + report.stats.scip_disagree;
     if both > 0 {
@@ -875,5 +1021,81 @@ mod source_path_tests {
             .map(|(file, _)| file)
             .collect::<Vec<_>>();
         assert_eq!(files, vec!["src/indexed.rs"]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Compaction is maintenance, not construction: the graph must be
+    /// reported complete before it starts. Reporting after it is what
+    /// made a bulk build look hung for the length of a multi-hundred-
+    /// megabyte file rewrite.
+    #[test]
+    fn graph_is_reported_ready_before_compaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::write(repo.join("a.rs"), "pub fn f() { g(); }\npub fn g() {}\n").unwrap();
+
+        let mut seen: Vec<&'static str> = Vec::new();
+        build_with(repo, None, &mut |phase| {
+            seen.push(match phase {
+                Phase::Scanning => "scanning",
+                Phase::Scanned { .. } => "scanned",
+                Phase::Extracting { .. } => "extracting",
+                Phase::Resolving { .. } => "resolving",
+                Phase::ScipStale => "scip_stale",
+                Phase::Ready { .. } => "ready",
+                Phase::Compacting { .. } => "compacting",
+                Phase::Compacted { .. } => "compacted",
+            });
+        })
+        .unwrap();
+
+        let ready = seen.iter().position(|p| *p == "ready").expect("ready");
+        assert_eq!(seen.first(), Some(&"scanning"), "{seen:?}");
+        assert!(seen.contains(&"extracting"), "{seen:?}");
+        assert!(seen.contains(&"resolving"), "{seen:?}");
+        // A first build rewrites the whole corpus, so compaction runs —
+        // and every compaction phase must follow the ready line.
+        assert!(seen.contains(&"compacting"), "{seen:?}");
+        for (i, phase) in seen.iter().enumerate() {
+            if phase.starts_with("compact") {
+                assert!(i > ready, "{phase} preceded ready: {seen:?}");
+            }
+        }
+    }
+
+    /// Ingestion is unconditional whenever the index file exists, so an
+    /// index older than the corpus binds references the compiler last saw
+    /// elsewhere. The report has to carry that, not swallow it.
+    #[test]
+    fn stale_index_is_flagged_on_the_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::create_dir_all(repo.join(".sinter")).unwrap();
+        std::fs::write(repo.join("a.rs"), "pub fn f() {}\n").unwrap();
+        // Empty but valid SCIP: binds nothing, ingests cleanly.
+        let index = repo.join(".sinter/index.scip");
+        std::fs::write(&index, b"").unwrap();
+
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&index)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+        assert!(build(repo, None).unwrap().scip_stale, "index predates a.rs");
+
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&index)
+            .unwrap()
+            .set_modified(future)
+            .unwrap();
+        assert!(!build(repo, None).unwrap().scip_stale);
     }
 }

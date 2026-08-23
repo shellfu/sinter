@@ -10,7 +10,15 @@
     ["src/lib.rs", "Dog::speak"],
     ["src/lib.rs", "announce"]
   ],
-  "references": [["calls", "speak"]],
-  "resolved": [["scope", "calls", "announce", "Dog::speak"]],
+  "references": [
+    ["calls", "speak"],
+    ["uses", "Dog", "src/lib.rs", ""],
+    ["uses", "Dog", "src/lib.rs", "announce"]
+  ],
+  "resolved": [
+    ["scope", "calls", "announce", "Dog::speak"],
+    ["scope", "uses", "announce", "Dog"],
+    ["scope", "uses", "src/lib.rs", "Dog"]
+  ],
   "unresolved_count": 0
 }

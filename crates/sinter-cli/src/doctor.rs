@@ -145,9 +145,11 @@ pub fn run(repo: &Path, fix: bool) -> Result<bool> {
                 "run `sinter install`",
                 || install::run(None),
             ),
-            Err(_) => r.fixable("skill card not installed", "run `sinter install`", || {
-                install::run(None)
-            }),
+            // Not installed is a choice, not a defect: `sinter init` is
+            // project-scoped by default and the machine-wide card is what
+            // `--global` opts into. Reporting it as a problem is what used
+            // to force init to write outside the repo unasked.
+            Err(_) => r.ok("skill card not installed (optional — `sinter install` adds it)"),
         },
         None => r.warn(
             "cannot locate home directory for skill card",
@@ -175,7 +177,6 @@ pub fn run(repo: &Path, fix: bool) -> Result<bool> {
                 // variants are current.
                 s.contains(hook_file)
                     && s.contains(" prompt\"")
-                    && s.contains(" task\"")
                     && (s.contains(" grep\"") || s.contains(" grep-strict\""))
                     && (s.contains(" greptool\"") || s.contains(" greptool-strict\""))
             })

@@ -22,12 +22,16 @@
   "references": [
     ["imports", "types::Engine"],
     ["calls", "run_impl"],
-    ["calls", "inner"]
+    ["calls", "inner"],
+    ["uses", "Engine", "src/lib.rs", ""],
+    ["uses", "Local", "src/lib.rs", ""]
   ],
   "resolved": [
     ["import", "imports", "src/lib.rs", "Engine", "src/lib.rs", "src/types.rs"],
     ["scope", "calls", "Engine::run", "Engine::run_impl"],
-    ["scope", "calls", "Local::outer", "Local::inner"]
+    ["scope", "calls", "Local::outer", "Local::inner"],
+    ["import", "uses", "src/lib.rs", "Engine"],
+    ["scope", "uses", "src/lib.rs", "Local"]
   ],
   "unresolved_count": 0
 }

@@ -40,13 +40,20 @@
     ["imports", "crate::util::double"],
     ["calls", "add"],
     ["calls", "double"],
-    ["calls", "default_retries"]
+    ["calls", "default_retries"],
+    ["uses", "Config", "src/lib.rs", ""],
+    ["uses", "Config", "src/lib.rs", "Config::new"],
+    ["uses", "Config", "src/lib.rs", "Config::new"],
+    ["uses", "Result", "src/lib.rs", "Alias"]
   ],
   "resolved": [
     ["scope", "calls", "compute", "add"],
     ["scope", "calls", "Config::new", "default_retries"],
     ["import", "calls", "scaled", "double"],
-    ["import", "imports", "src/lib.rs", "double"]
+    ["import", "imports", "src/lib.rs", "double"],
+    ["scope", "uses", "Config::new", "Config"],
+    ["scope", "uses", "Config::new", "Config"],
+    ["scope", "uses", "src/lib.rs", "Config"]
   ],
-  "unresolved_count": 1
+  "unresolved_count": 2
 }

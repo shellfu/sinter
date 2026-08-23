@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::edge::Edge;
-use crate::node::Node;
+use crate::node::{CorpusScope, Node, NodeId};
 use crate::reference::{Embed, FieldBinding, LocalBinding, Reference, TraitImpl};
 
 /// Everything extraction produces for one file. Content-addressed: the hash
@@ -29,4 +29,12 @@ pub struct FileFacts {
     pub embeds: Vec<Embed>,
     /// Trait-impl blocks. Dynamic-dispatch edge input.
     pub trait_impls: Vec<TraitImpl>,
+    /// Node-level scope overrides (sparse): nodes whose role differs from
+    /// their file's path-derived scope, e.g. a Rust `#[cfg(test)]` module's
+    /// members or a `@generated` header's file node.
+    pub scopes: Vec<(NodeId, CorpusScope)>,
+    /// Body-only identifier words per function/method (sparse): words the
+    /// body uses that the name, signature, and doc do not. Ranking evidence
+    /// for concept-phrased questions.
+    pub body_terms: Vec<(NodeId, Vec<String>)>,
 }

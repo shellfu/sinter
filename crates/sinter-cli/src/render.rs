@@ -110,3 +110,12 @@ pub fn location(repo: &Path, file: &str, line: Option<usize>) -> String {
         text
     }
 }
+
+/// Pluralized count: `1 file`, `3 files`.
+pub fn count(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}

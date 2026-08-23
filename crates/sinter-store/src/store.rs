@@ -32,6 +32,9 @@ pub(crate) const FILE_HASH: TableDefinition<&str, &str> = TableDefinition::new("
 /// Repo-relative file -> corpus role. Nodes inherit their file's scope at
 /// query time, avoiding duplicated metadata in every node blob.
 pub(crate) const FILE_SCOPE: TableDefinition<&str, &str> = TableDefinition::new("file_scope");
+/// node id -> corpus role override for nodes whose role differs from their
+/// file's (inline test modules, generated banners). Sparse; see `scope`.
+pub(crate) const NODE_SCOPE: TableDefinition<&str, &str> = TableDefinition::new("node_scope");
 /// reference name -> files containing a reference with that name; the
 /// resolution invalidation index.
 pub(crate) const NAME_REFS: MultimapTableDefinition<&str, &str> =
@@ -48,6 +51,11 @@ pub(crate) const TRIGRAMS: MultimapTableDefinition<&str, u32> =
 /// were 58% of stored bytes before interning (bench finding).
 pub(crate) const TOKENS_WORDS: MultimapTableDefinition<&str, u32> =
     MultimapTableDefinition::new("tokens_words");
+/// lowercased body-only word -> interned node ids (see
+/// `FileFacts::body_terms`): evidence for concept questions whose terms
+/// appear only inside a function body.
+pub(crate) const BODY_TERMS: MultimapTableDefinition<&str, u32> =
+    MultimapTableDefinition::new("body_terms");
 /// Interner: u32 -> node id string and its reverse. Index tables store the
 /// u32; readers translate back on materialization.
 pub(crate) const INTERN: TableDefinition<u32, &str> = TableDefinition::new("intern");
@@ -71,7 +79,9 @@ pub(crate) const RESOLVE_META: TableDefinition<&str, &str> = TableDefinition::ne
 pub(crate) const PENDING: TableDefinition<&str, &[u8]> = TableDefinition::new("pending_delta");
 // v10: explicit per-file corpus scope. Older graphs are derived state and
 // rebuild so every query observes classified metadata, never a mixed corpus.
-const SCHEMA_VERSION: u32 = 10;
+// v11: node-level scope overrides (node_scope table, FileFacts.scopes).
+// v12: body-identifier terms (body_terms table, FileFacts.body_terms).
+const SCHEMA_VERSION: u32 = 12;
 
 /// Per-file freshness record: content hash plus the stat identity it was
 /// hashed at. On Unix the identity combines modification and change time,
@@ -193,6 +203,7 @@ impl Store {
             txn.open_table(FILE_FACTS)?;
             txn.open_table(FILE_HASH)?;
             txn.open_table(FILE_SCOPE)?;
+            txn.open_table(NODE_SCOPE)?;
             txn.open_multimap_table(OUT_EDGES)?;
             txn.open_multimap_table(IN_EDGES)?;
             txn.open_multimap_table(UNRESOLVED)?;
@@ -200,6 +211,7 @@ impl Store {
             txn.open_multimap_table(NAME_NODES)?;
             txn.open_multimap_table(TRIGRAMS)?;
             txn.open_multimap_table(TOKENS_WORDS)?;
+            txn.open_multimap_table(BODY_TERMS)?;
             txn.open_multimap_table(IMPORTS)?;
             txn.open_table(INTERN)?;
             txn.open_table(INTERN_REV)?;

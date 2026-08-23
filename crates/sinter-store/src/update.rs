@@ -10,8 +10,9 @@ use sinter_core::{CorpusScope, Edge, Evidence, FileFacts, UnresolvedReference};
 use crate::error::StoreError;
 use crate::search::{node_tokens, trigrams};
 use crate::store::{
-    FILE_FACTS, FILE_HASH, FILE_SCOPE, IMPORTS, IN_EDGES, INTERN, INTERN_REV, META, NAME_NODES,
-    NAME_REFS, NODES, OUT_EDGES, PENDING, Store, TOKENS_WORDS, TRIGRAMS, UNRESOLVED,
+    BODY_TERMS, FILE_FACTS, FILE_HASH, FILE_SCOPE, IMPORTS, IN_EDGES, INTERN, INTERN_REV, META,
+    NAME_NODES, NAME_REFS, NODE_SCOPE, NODES, OUT_EDGES, PENDING, Store, TOKENS_WORDS, TRIGRAMS,
+    UNRESOLVED,
 };
 
 /// FileFacts blobs are zstd-compressed postcard (19% of stored bytes at
@@ -155,6 +156,7 @@ impl Store {
             let mut facts_table = txn.open_table(FILE_FACTS)?;
             let mut hash_table = txn.open_table(FILE_HASH)?;
             let mut scope_table = txn.open_table(FILE_SCOPE)?;
+            let mut node_scope_table = txn.open_table(NODE_SCOPE)?;
             let mut out = txn.open_multimap_table(OUT_EDGES)?;
             let mut inn = txn.open_multimap_table(IN_EDGES)?;
             let mut unresolved = txn.open_multimap_table(UNRESOLVED)?;
@@ -162,6 +164,7 @@ impl Store {
             let mut name_nodes = txn.open_multimap_table(NAME_NODES)?;
             let mut grams = txn.open_multimap_table(TRIGRAMS)?;
             let mut tokens = txn.open_multimap_table(TOKENS_WORDS)?;
+            let mut body = txn.open_multimap_table(BODY_TERMS)?;
             let mut imports = txn.open_multimap_table(IMPORTS)?;
             let mut intern = txn.open_table(INTERN)?;
             let mut intern_rev = txn.open_table(INTERN_REV)?;
@@ -184,6 +187,13 @@ impl Store {
                 else {
                     continue;
                 };
+                for (id, terms) in &old.body_terms {
+                    if let Some(interned) = intern_rev.get(id.as_str())?.map(|g| g.value()) {
+                        for term in terms {
+                            body.remove(term.as_str(), interned)?;
+                        }
+                    }
+                }
                 for node in &old.nodes {
                     let id = node.id.as_str();
                     // Bidirectional edge cleanup: every edge listed on this
@@ -208,6 +218,7 @@ impl Store {
                     out.remove_all(id)?;
                     inn.remove_all(id)?;
                     nodes.remove(id)?;
+                    node_scope_table.remove(id)?;
                     let interned_opt = intern_rev.get(id)?.map(|g| g.value());
                     if let Some(interned) = interned_opt {
                         name_nodes.remove(node.name.as_str(), interned)?;
@@ -246,11 +257,15 @@ impl Store {
                 let mut name_pairs: Vec<(&str, u32)> = Vec::new();
                 let mut gram_pairs: Vec<(&str, u32)> = Vec::new();
                 let mut token_pairs: Vec<(&str, u32)> = Vec::new();
+                let mut body_pairs: Vec<(&str, u32)> = Vec::new();
                 let mut ref_pairs: Vec<(&str, &str)> = Vec::new();
                 for (facts, prep) in chunk.iter().zip(&prepared) {
                     let file = facts.file.as_str();
                     facts_table.insert(file, prep.encoded.as_slice())?;
                     scope_table.insert(file, CorpusScope::classify_path(file).as_str())?;
+                    for (id, scope) in &facts.scopes {
+                        node_scope_table.insert(id.as_str(), scope.as_str())?;
+                    }
                     // content hash is deliberately NOT written here: it commits
                     // last (commit_hashes), so a crash mid-derivation re-runs
                     // these files as changed instead of freezing the damage.
@@ -279,6 +294,11 @@ impl Store {
                         }
                         delta.def_names.insert(node.name.clone());
                     }
+                    for (id, terms) in &facts.body_terms {
+                        if let Some(interned) = intern_rev.get(id.as_str())?.map(|g| g.value()) {
+                            body_pairs.extend(terms.iter().map(|t| (t.as_str(), interned)));
+                        }
+                    }
                     for (edge, bytes) in facts.contains.iter().zip(&prep.edges) {
                         out.insert(edge.src.as_str(), bytes.as_slice())?;
                         inn.insert(edge.dst.as_str(), bytes.as_slice())?;
@@ -301,6 +321,10 @@ impl Store {
                 token_pairs.sort_unstable();
                 for (word, interned) in token_pairs {
                     tokens.insert(word, interned)?;
+                }
+                body_pairs.sort_unstable();
+                for (word, interned) in body_pairs {
+                    body.insert(word, interned)?;
                 }
                 ref_pairs.sort_unstable();
                 for (name, file) in ref_pairs {

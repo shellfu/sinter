@@ -22,7 +22,11 @@
     ["imports", "harness_domain::Harness", "crates/service/src/lib.rs"],
     ["calls", "check", "crates/service/src/lib.rs"],
     ["imports", "harness_domain::Harness", "crates/cedar/src/lib.rs"],
-    ["uses", "Harness", "crates/cedar/src/lib.rs"]
+    ["uses", "Harness", "crates/cedar/src/lib.rs"],
+    ["uses", "Arc", "crates/service/src/lib.rs", "HarnessGrpcService"],
+    ["uses", "CedarPolicyHarness", "crates/cedar/src/lib.rs", ""],
+    ["uses", "Harness", "crates/service/src/lib.rs", "HarnessGrpcService"],
+    ["uses", "HarnessGrpcService", "crates/service/src/lib.rs", ""]
   ],
   "resolved": [
     ["import", "imports", "crates/service/src/lib.rs", "Harness"],
@@ -30,7 +34,10 @@
     ["import", "imports", "crates/cedar/src/lib.rs", "Harness"],
     ["import", "uses", "crates/cedar/src/lib.rs", "Harness"],
     ["dynamic", "calls", "Harness::check", "CedarPolicyHarness::check"],
-    ["import", "implements", "CedarPolicyHarness", "Harness"]
+    ["import", "implements", "CedarPolicyHarness", "Harness"],
+    ["import", "uses", "HarnessGrpcService", "Harness"],
+    ["scope", "uses", "crates/cedar/src/lib.rs", "CedarPolicyHarness"],
+    ["scope", "uses", "crates/service/src/lib.rs", "HarnessGrpcService"]
   ],
-  "unresolved_count": 0
+  "unresolved_count": 1
 }

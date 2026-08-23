@@ -7,7 +7,7 @@ use redb::ReadableDatabase;
 use sinter_core::Node;
 
 use crate::error::StoreError;
-use crate::store::{INTERN, NAME_NODES, NODES, Store, TOKENS_WORDS};
+use crate::store::{BODY_TERMS, INTERN, NAME_NODES, NODES, Store, TOKENS_WORDS};
 
 /// Lowercased character trigrams of a name; names shorter than 3 chars
 /// index as one whole-name gram.
@@ -97,6 +97,41 @@ impl Store {
     /// Nodes indexed under this exact lowercase token (see `node_tokens`).
     pub fn nodes_with_token(&self, word: &str) -> Result<Vec<Node>, StoreError> {
         self.decode_ids(self.token_ids([word].into_iter())?)
+    }
+
+    /// Functions whose body (not header) uses this lowercase word, capped
+    /// at `limit` in id order.
+    pub fn nodes_with_body_term(&self, word: &str, limit: usize) -> Result<Vec<Node>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_multimap_table(BODY_TERMS)?;
+        let mut ids = BTreeSet::new();
+        for guard in table.get(word)?.take(limit) {
+            ids.insert(guard?.value());
+        }
+        drop(table);
+        drop(txn);
+        self.decode_ids(ids)
+    }
+
+    /// Every node id carrying `word` as a body term, in interned order.
+    /// Cheap (no node decode): membership evidence for ranking.
+    pub fn body_term_ids(&self, word: &str) -> Result<Vec<String>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_multimap_table(BODY_TERMS)?;
+        let intern = txn.open_table(INTERN)?;
+        let mut ids = Vec::new();
+        for guard in table.get(word)? {
+            if let Some(id) = intern.get(guard?.value())? {
+                ids.push(id.value().to_string());
+            }
+        }
+        Ok(ids)
+    }
+
+    /// Document frequency: how many nodes carry `word` as a body term.
+    pub fn body_term_df(&self, word: &str) -> Result<u64, StoreError> {
+        let txn = self.db.begin_read()?;
+        Ok(txn.open_multimap_table(BODY_TERMS)?.get(word)?.len())
     }
 
     /// Recall candidates for query terms: union over each term as an exact

@@ -321,3 +321,29 @@ fn scip_runs_indexer_from_nested_project_root() {
         project.canonicalize().unwrap().to_string_lossy()
     );
 }
+
+/// A build ingests `.sinter/index.scip` whenever it exists — including an
+/// index older than the code it binds. The report has to say so: silent
+/// ingestion of stale compiler evidence is how a graph starts lying.
+#[test]
+fn build_names_an_ingested_stale_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join(".sinter")).unwrap();
+    std::fs::write(repo.join("a.rs"), "pub fn f() {}\n").unwrap();
+    // Empty but valid SCIP: parses, binds nothing, ingests cleanly.
+    let index = repo.join(".sinter/index.scip");
+    std::fs::write(&index, b"").unwrap();
+
+    set_mtime(&index, SystemTime::now() - Duration::from_secs(60));
+    let out = sinter(repo, &["build"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{text}");
+    assert!(text.contains("SCIP index is older"), "{text}");
+    assert!(text.contains("rerun `sinter scip`"), "{text}");
+
+    set_mtime(&index, SystemTime::now() + Duration::from_secs(60));
+    let out = sinter(repo, &["build"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(!text.contains("SCIP index is older"), "{text}");
+}

@@ -21,7 +21,11 @@
   "references": [
     ["uses", "Speak"],
     ["uses", "Speak"],
-    ["calls", "speak"]
+    ["calls", "speak"],
+    ["uses", "Cat", "src/lib.rs", ""],
+    ["uses", "Dog", "src/lib.rs", ""],
+    ["uses", "Speak", "src/lib.rs", "announce"],
+    ["uses", "Speak", "src/lib.rs", "announce"]
   ],
   "resolved": [
     ["scope", "uses", "src/lib.rs", "Speak"],
@@ -30,7 +34,11 @@
     ["dynamic", "calls", "Speak::speak", "Dog::speak"],
     ["dynamic", "calls", "Speak::speak", "Cat::speak"],
     ["scope", "implements", "Dog", "Speak"],
-    ["scope", "implements", "Cat", "Speak"]
+    ["scope", "implements", "Cat", "Speak"],
+    ["scope", "uses", "announce", "Speak"],
+    ["scope", "uses", "announce", "Speak"],
+    ["scope", "uses", "src/lib.rs", "Cat"],
+    ["scope", "uses", "src/lib.rs", "Dog"]
   ],
   "unresolved_count": 0
 }

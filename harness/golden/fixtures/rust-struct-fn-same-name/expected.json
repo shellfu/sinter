@@ -11,10 +11,16 @@
     ["src/lib.rs", "go"]
   ],
   "references": [
-    ["calls", "Run"]
+    ["calls", "Run"],
+    ["uses", "Run", "src/lib.rs", "Run"],
+    ["uses", "Run", "src/lib.rs", "Run"],
+    ["uses", "Run", "src/lib.rs", "go"]
   ],
   "resolved": [
-    ["scope", "calls", "go", "Run"]
+    ["scope", "calls", "go", "Run"],
+    ["scope", "uses", "Run", "Run"],
+    ["scope", "uses", "Run", "Run"],
+    ["scope", "uses", "go", "Run"]
   ],
   "unresolved_count": 0
 }

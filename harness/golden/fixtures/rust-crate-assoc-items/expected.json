@@ -25,14 +25,26 @@
     ["imports", "auth::validator_kind"],
     ["calls", "new"],
     ["calls", "new"],
-    ["calls", "validator_kind"]
+    ["calls", "validator_kind"],
+    ["uses", "Config", "crates/util/src/lib.rs", ""],
+    ["uses", "Config", "crates/util/src/lib.rs", "Config::new"],
+    ["uses", "Config", "crates/util/src/lib.rs", "Config::new"],
+    ["uses", "Validator", "crates/util/src/auth.rs", ""],
+    ["uses", "Validator", "crates/util/src/auth.rs", "Validator::new"],
+    ["uses", "Validator", "crates/util/src/auth.rs", "Validator::new"]
   ],
   "resolved": [
     ["import", "imports", "crates/util/src/lib.rs", "Validator"],
     ["import", "imports", "crates/util/src/lib.rs", "validator_kind"],
     ["import", "calls", "main", "Config::new"],
     ["import", "calls", "main", "Validator::new"],
-    ["import", "calls", "main", "validator_kind"]
+    ["import", "calls", "main", "validator_kind"],
+    ["scope", "uses", "Config::new", "Config"],
+    ["scope", "uses", "Config::new", "Config"],
+    ["scope", "uses", "Validator::new", "Validator"],
+    ["scope", "uses", "Validator::new", "Validator"],
+    ["scope", "uses", "crates/util/src/auth.rs", "Validator"],
+    ["scope", "uses", "crates/util/src/lib.rs", "Config"]
   ],
   "unresolved_count": 0
 }
