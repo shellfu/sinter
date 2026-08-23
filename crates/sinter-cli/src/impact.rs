@@ -1,6 +1,7 @@
-//! `sinter impact <rev-range>`: changed symbols -> blast radius -> affected
+//! `sinter impact [rev-range]`: changed symbols -> blast radius -> affected
 //! tests. Line hunks come from `git diff -U0`; spans are matched against the
-//! graph built from the working tree, so build before asking.
+//! graph built from the working tree, so build before asking. Without a
+//! range the working tree is diffed against `HEAD`, untracked files included.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -8,15 +9,15 @@ use std::process::{Command, Output};
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
-use sinter_core::{Node, SymbolKind};
+use sinter_core::{CorpusScope, Node, SymbolKind};
 use sinter_resolve::qualified_of;
 use sinter_store::EdgeFilter;
 
 use crate::lookup::{open_current, open_store};
 
 /// Per-collection output budget for agent-facing impact results. Computation
-/// always remains complete; this limit applies only when rendering the three
-/// potentially large symbol collections.
+/// always remains complete; rendering applies this limit independently to
+/// every potentially large collection.
 pub const DEFAULT_LIMIT: usize = 20;
 
 #[derive(Serialize)]
@@ -36,7 +37,9 @@ pub struct ImpactReport {
     /// deleted, renamed, or otherwise unindexed paths.
     pub changed_files: Vec<ChangedFile>,
     /// Entries from `git status --porcelain`, including untracked paths
-    /// which Git does not include in a normal `git diff <rev>`.
+    /// which Git does not include in a normal `git diff <rev>`. Top-level
+    /// derived roots excluded from the graph are excluded here too: they
+    /// cannot make graph-relative impact analysis stale or incomplete.
     pub working_tree_changes: Vec<WorkingTreeChange>,
     /// Changed paths that could not be represented completely by the
     /// working-tree graph. A file can have mapped symbols and still appear
@@ -260,8 +263,12 @@ fn parse_changed_files(raw: &[u8]) -> Result<Vec<ChangedFile>> {
     Ok(files)
 }
 
-fn changed_files(repo: &Path, rev_range: &str) -> Result<Vec<ChangedFile>> {
-    let output = git_diff(repo, rev_range, &["--name-status", "-z", "--find-renames"])?;
+fn changed_files(repo: &Path, rev_range: &str, extra: &[&str]) -> Result<Vec<ChangedFile>> {
+    let output = git_diff(
+        repo,
+        rev_range,
+        &[extra, &["--name-status", "-z", "--find-renames"]].concat(),
+    )?;
     parse_changed_files(&output.stdout)
 }
 
@@ -327,12 +334,21 @@ fn parse_working_tree_changes(raw: &[u8]) -> Result<Vec<WorkingTreeChange>> {
             conflicted: is_conflict_status(index, worktree),
         });
     }
+    Ok(changes)
+}
+
+fn is_untracked(change: &WorkingTreeChange) -> bool {
+    change.index_status == "untracked" || change.worktree_status == "untracked"
+}
+
+fn sort_working_tree_changes(changes: &mut [WorkingTreeChange]) {
     changes.sort_by(|a, b| {
-        a.path
-            .cmp(&b.path)
+        b.conflicted
+            .cmp(&a.conflicted)
+            .then_with(|| is_untracked(a).cmp(&is_untracked(b)))
+            .then_with(|| a.path.cmp(&b.path))
             .then_with(|| a.old_path.cmp(&b.old_path))
     });
-    Ok(changes)
 }
 
 fn working_tree_changes(repo: &Path) -> Result<Vec<WorkingTreeChange>> {
@@ -348,7 +364,10 @@ fn working_tree_changes(repo: &Path) -> Result<Vec<WorkingTreeChange>> {
             stderr.lines().next().unwrap_or("").trim()
         );
     }
-    parse_working_tree_changes(&output.stdout)
+    let mut changes = parse_working_tree_changes(&output.stdout)?;
+    changes.retain(|change| !crate::corpus::excluded(&change.path));
+    sort_working_tree_changes(&mut changes);
+    Ok(changes)
 }
 
 fn parse_range(token: &str, prefix: char) -> Option<(usize, usize)> {
@@ -409,6 +428,44 @@ pub fn is_test(node: &Node) -> bool {
         || qualified_of(node.id.as_str()).split("::").any(|s| s == "tests")
 }
 
+/// Blast radius: union of transitive dependents of every changed symbol,
+/// keyed by node id, minus the changed symbols themselves.
+pub(crate) fn blast_radius(
+    store: &sinter_store::Store,
+    filter: &EdgeFilter,
+    changed: &[Node],
+) -> Result<BTreeMap<String, Node>> {
+    let mut radius: BTreeMap<String, Node> = BTreeMap::new();
+    for node in changed {
+        for reached in store.dependents(&node.id, filter, 25)? {
+            radius.insert(reached.node.id.as_str().to_string(), reached.node);
+        }
+    }
+    for node in changed {
+        radius.remove(node.id.as_str());
+    }
+    Ok(radius)
+}
+
+/// Affected-test selection shared by `impact` and `context`. Node scope
+/// decides what is a test: an inline `#[cfg(test)] mod tests` in a
+/// production file is affected-test material, not a changed production
+/// symbol.
+pub(crate) fn affected_tests(
+    store: &sinter_store::Store,
+    radius: &BTreeMap<String, Node>,
+    changed: &[Node],
+) -> Result<Vec<SymbolRef>> {
+    let scope_index = store.scope_index()?;
+    let is_test_node = |n: &Node| scope_index.scope_of(n) == CorpusScope::Test || is_test(n);
+    Ok(radius
+        .values()
+        .chain(changed.iter())
+        .filter(|n| is_test_node(n))
+        .map(symbol_ref)
+        .collect())
+}
+
 pub fn compute(repo: &Path, rev_range: &str) -> Result<ImpactReport> {
     compute_filtered(repo, rev_range, &EdgeFilter::default())
 }
@@ -431,15 +488,80 @@ pub(crate) fn compute_with_store(
     filter: &EdgeFilter,
     store: &sinter_store::Store,
 ) -> Result<ImpactReport> {
+    compute_with_store_mode(repo, rev_range, false, filter, store)
+}
+
+/// Untracked, non-ignored paths (`git ls-files --others --exclude-standard`).
+fn untracked_files(repo: &Path) -> Result<Vec<String>> {
+    let output = Command::new("git")
+        .args(["ls-files", "--others", "--exclude-standard", "-z"])
+        .current_dir(repo)
+        .output()
+        .context("run git ls-files")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "git ls-files failed: {}",
+            stderr.lines().next().unwrap_or("").trim()
+        );
+    }
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|raw| !raw.is_empty())
+        .map(path_string)
+        .filter(|path| !crate::corpus::excluded(path))
+        .collect())
+}
+
+/// `staged` diffs the index instead of the working tree (`git diff --cached`).
+fn compute_with_store_mode(
+    repo: &Path,
+    rev_range: &str,
+    staged: bool,
+    filter: &EdgeFilter,
+    store: &sinter_store::Store,
+) -> Result<ImpactReport> {
     let working_tree_changes = working_tree_changes(repo)?;
     let working_tree_dirty = !working_tree_changes.is_empty();
+    let historical = rev_range.contains("..");
     let historical_endpoint_matches_head = historical_endpoint_matches_head(repo, rev_range)?;
-    let mut changed_files = changed_files(repo, rev_range)?;
+    let cached: &[&str] = if staged { &["--cached"] } else { &[] };
+    let mut changed_files = changed_files(repo, rev_range, cached)?;
     // New-side hunks per file from Git. Name/status is deliberately a
     // separate command: patch text cannot represent config-only, binary,
     // deleted, pure-rename, or mode-only changes reliably.
-    let patch = git_diff(repo, rev_range, &["-U0", "--no-color", "--find-renames"])?;
-    let hunks = parse_hunks(&patch.stdout);
+    let patch = git_diff(
+        repo,
+        rev_range,
+        &[cached, &["-U0", "--no-color", "--find-renames"]].concat(),
+    )?;
+    let mut hunks = parse_hunks(&patch.stdout);
+    // Working-tree mode: untracked files are additions whose every line is a
+    // hunk; Git's diff against a revision never lists them.
+    let untracked_included = !historical && !staged;
+    if untracked_included {
+        for path in untracked_files(repo)? {
+            let lines = std::fs::read_to_string(repo.join(&path))
+                .map(|source| source.lines().count().max(1))
+                .unwrap_or(1);
+            hunks.insert(
+                path.clone(),
+                vec![Hunk {
+                    new_start: 1,
+                    new_count: lines,
+                    deleted_only: false,
+                }],
+            );
+            changed_files.push(ChangedFile {
+                path,
+                old_path: None,
+                git_status: "??".to_string(),
+                kind: FileChangeKind::Added,
+                mapped_symbols: 0,
+            });
+        }
+    }
 
     // Changed symbols: nodes whose byte span overlaps a changed line range.
     // The BTreeMap de-duplicates nodes while preserving deterministic output.
@@ -543,37 +665,26 @@ pub(crate) fn compute_with_store(
     }
     let changed: Vec<Node> = changed_by_id.into_values().collect();
 
-    // Blast radius: union of dependents of every changed symbol.
-    let mut radius: BTreeMap<String, Node> = BTreeMap::new();
-    for node in &changed {
-        for reached in store.dependents(&node.id, filter, 25)? {
-            radius.insert(reached.node.id.as_str().to_string(), reached.node);
-        }
-    }
-    for node in &changed {
-        radius.remove(node.id.as_str());
-    }
-
-    let affected_tests: Vec<SymbolRef> = radius
-        .values()
-        .chain(changed.iter())
-        .filter(|n| is_test(n))
-        .map(symbol_ref)
-        .collect();
+    let radius = blast_radius(store, filter, &changed)?;
+    let scope_index = store.scope_index()?;
+    let is_test_node = |n: &Node| scope_index.scope_of(n) == CorpusScope::Test || is_test(n);
+    let affected_tests = affected_tests(store, &radius, &changed)?;
+    let changed: Vec<Node> = changed.into_iter().filter(|n| !is_test_node(n)).collect();
 
     let mut partial_reasons = Vec::new();
     if !unmapped_files.is_empty() {
         partial_reasons.push("one_or_more_changed_files_are_not_fully_mapped");
     }
-    if rev_range.contains("..") && working_tree_dirty {
+    if historical && working_tree_dirty {
         partial_reasons.push("historical_diff_uses_a_dirty_working_tree_graph");
     }
     if !historical_endpoint_matches_head {
         partial_reasons.push("historical_diff_endpoint_does_not_match_graph_head");
     }
-    if working_tree_changes
-        .iter()
-        .any(|change| change.index_status == "untracked" || change.worktree_status == "untracked")
+    if !untracked_included
+        && working_tree_changes.iter().any(|change| {
+            change.index_status == "untracked" || change.worktree_status == "untracked"
+        })
     {
         partial_reasons.push("untracked_files_are_not_included_in_git_diff");
     }
@@ -600,9 +711,13 @@ pub(crate) fn compute_with_store(
     })
 }
 
+/// `rev_range` of `None` diffs the working tree (or, with `staged`, the
+/// index) against `HEAD`.
+#[allow(clippy::too_many_arguments)] // mirrors the clap subcommand one-to-one
 pub fn run(
     repo: &Path,
-    rev_range: &str,
+    rev_range: Option<&str>,
+    staged: bool,
     manifest: Option<&Path>,
     evidence: &[String],
     certain: bool,
@@ -610,7 +725,12 @@ pub fn run(
     json: bool,
 ) -> Result<()> {
     let filter = crate::lookup::edge_filter(evidence, certain)?;
-    let mut report = compute_filtered(repo, rev_range, &filter)?;
+    let rev_range = rev_range.unwrap_or("HEAD");
+    let mut report = {
+        let repo = repo.canonicalize()?;
+        let store = open_store(&repo)?;
+        compute_with_store_mode(&repo, rev_range, staged, &filter, &store)?
+    };
     // Workspace mode: follow boundary links out of the changed member and
     // continue the blast radius inside the other members.
     if let Some(manifest) = manifest {
@@ -729,17 +849,26 @@ fn print_symbols(label: &str, symbols: &[SymbolRef], limit: usize) {
 /// Also usable by the MCP server.
 pub fn to_json(report: &ImpactReport, limit: usize) -> serde_json::Value {
     let totals = serde_json::json!({
+        "changed_files": report.changed_files.len(),
+        "working_tree_changes": report.working_tree_changes.len(),
+        "unmapped_files": report.unmapped_files.len(),
         "changed_symbols": report.changed_symbols.len(),
         "blast_radius": report.blast_radius.len(),
         "affected_tests": report.affected_tests.len(),
     });
     let truncated = serde_json::json!({
+        "changed_files": truncated_count(report.changed_files.len(), limit),
+        "working_tree_changes": truncated_count(report.working_tree_changes.len(), limit),
+        "unmapped_files": truncated_count(report.unmapped_files.len(), limit),
         "changed_symbols": truncated_count(report.changed_symbols.len(), limit),
         "blast_radius": truncated_count(report.blast_radius.len(), limit),
         "affected_tests": truncated_count(report.affected_tests.len(), limit),
     });
     let mut value = serde_json::to_value(report).expect("impact report serializes");
     for (name, total) in [
+        ("changed_files", report.changed_files.len()),
+        ("working_tree_changes", report.working_tree_changes.len()),
+        ("unmapped_files", report.unmapped_files.len()),
         ("changed_symbols", report.changed_symbols.len()),
         ("blast_radius", report.blast_radius.len()),
         ("affected_tests", report.affected_tests.len()),
@@ -762,8 +891,9 @@ mod tests {
     use std::process::Command;
 
     use super::{
-        AnalysisStatus, FileChangeKind, ImpactReport, SymbolRef, UnmappedReason, changed_files,
-        compute, is_test, to_json, working_tree_changes,
+        AnalysisStatus, ChangedFile, FileChangeKind, ImpactReport, SymbolRef, UnmappedFile,
+        UnmappedReason, WorkingTreeChange, changed_files, compute, compute_with_store_mode,
+        is_test, to_json, working_tree_changes,
     };
     use sinter_core::{Node, NodeId, Span, SymbolKind};
     use tempfile::TempDir;
@@ -840,9 +970,30 @@ mod tests {
             analysis_status: AnalysisStatus::Complete,
             partial_reasons: Vec::new(),
             working_tree_dirty: false,
-            changed_files: Vec::new(),
-            working_tree_changes: Vec::new(),
-            unmapped_files: Vec::new(),
+            changed_files: (0..3)
+                .map(|index| ChangedFile {
+                    path: format!("changed-file-{index}"),
+                    old_path: None,
+                    git_status: "M".to_string(),
+                    kind: FileChangeKind::Modified,
+                    mapped_symbols: 1,
+                })
+                .collect(),
+            working_tree_changes: (0..4)
+                .map(|index| WorkingTreeChange {
+                    path: format!("working-tree-{index}"),
+                    old_path: None,
+                    index_status: "unmodified",
+                    worktree_status: "modified",
+                    conflicted: false,
+                })
+                .collect(),
+            unmapped_files: vec![UnmappedFile {
+                path: "unmapped-file".to_string(),
+                old_path: None,
+                git_status: "M".to_string(),
+                reason: UnmappedReason::NoSymbolOverlap,
+            }],
             changed_symbols: symbols("changed", 3),
             blast_radius: symbols("blast", 4),
             affected_tests: symbols("test", 1),
@@ -854,12 +1005,18 @@ mod tests {
         let value = to_json(&report_for_budget(), 2);
 
         assert_eq!(value["limit"], 2);
+        assert_eq!(value["changed_files"].as_array().unwrap().len(), 2);
+        assert_eq!(value["working_tree_changes"].as_array().unwrap().len(), 2);
+        assert_eq!(value["unmapped_files"].as_array().unwrap().len(), 1);
         assert_eq!(value["changed_symbols"].as_array().unwrap().len(), 2);
         assert_eq!(value["blast_radius"].as_array().unwrap().len(), 2);
         assert_eq!(value["affected_tests"].as_array().unwrap().len(), 1);
         assert_eq!(
             value["totals"],
             serde_json::json!({
+                "changed_files": 3,
+                "working_tree_changes": 4,
+                "unmapped_files": 1,
                 "changed_symbols": 3,
                 "blast_radius": 4,
                 "affected_tests": 1,
@@ -868,6 +1025,9 @@ mod tests {
         assert_eq!(
             value["truncated"],
             serde_json::json!({
+                "changed_files": 1,
+                "working_tree_changes": 2,
+                "unmapped_files": 0,
                 "changed_symbols": 1,
                 "blast_radius": 2,
                 "affected_tests": 0,
@@ -880,12 +1040,18 @@ mod tests {
         let value = to_json(&report_for_budget(), 0);
 
         assert_eq!(value["limit"], 0);
+        assert_eq!(value["changed_files"].as_array().unwrap().len(), 3);
+        assert_eq!(value["working_tree_changes"].as_array().unwrap().len(), 4);
+        assert_eq!(value["unmapped_files"].as_array().unwrap().len(), 1);
         assert_eq!(value["changed_symbols"].as_array().unwrap().len(), 3);
         assert_eq!(value["blast_radius"].as_array().unwrap().len(), 4);
         assert_eq!(value["affected_tests"].as_array().unwrap().len(), 1);
         assert_eq!(
             value["truncated"],
             serde_json::json!({
+                "changed_files": 0,
+                "working_tree_changes": 0,
+                "unmapped_files": 0,
                 "changed_symbols": 0,
                 "blast_radius": 0,
                 "affected_tests": 0,
@@ -938,7 +1104,7 @@ mod tests {
         git(repo.path(), &["add", "-A"]);
         git(repo.path(), &["commit", "-qm", "mixed changes"]);
 
-        let files = changed_files(repo.path(), "HEAD~1..HEAD").expect("collect changed paths");
+        let files = changed_files(repo.path(), "HEAD~1..HEAD", &[]).expect("collect changed paths");
         assert!(
             files
                 .iter()
@@ -990,6 +1156,11 @@ mod tests {
         fs::remove_file(repo.path().join("deleted.rs")).expect("delete fixture");
         git(repo.path(), &["mv", "old.rs", "renamed.rs"]);
         write(repo.path(), "untracked.rs", "pub fn untracked() {}\n");
+        write(
+            repo.path(),
+            "graphify-out/cache/derived.json",
+            "generated\n",
+        );
 
         let changes = working_tree_changes(repo.path()).expect("collect working tree state");
         let modified = changes
@@ -1016,6 +1187,23 @@ mod tests {
             .expect("untracked path");
         assert_eq!(untracked.index_status, "untracked");
         assert_eq!(untracked.worktree_status, "untracked");
+        assert!(
+            changes
+                .iter()
+                .all(|change| !change.path.starts_with("graphify-out/")),
+            "derived roots must not affect graph-relative working tree state"
+        );
+        assert!(
+            changes
+                .iter()
+                .position(|change| change.path == "untracked.rs")
+                .is_some_and(|position| {
+                    changes[..position]
+                        .iter()
+                        .all(|change| !super::is_untracked(change))
+                }),
+            "tracked changes must win the bounded output budget: {changes:#?}"
+        );
     }
 
     #[test]
@@ -1065,5 +1253,50 @@ mod tests {
         assert_eq!(report.analysis_status, AnalysisStatus::Complete);
         assert!(report.working_tree_dirty);
         assert!(report.partial_reasons.is_empty());
+    }
+
+    #[test]
+    fn working_tree_impact_includes_untracked_files_and_stays_complete() {
+        let repo = repository();
+        write(repo.path(), "src/new.rs", "pub fn fresh() -> u32 { 4 }\n");
+        crate::pipeline::build(repo.path(), None).expect("build fixture graph");
+        let store = crate::lookup::open_store(repo.path()).expect("open store");
+
+        let report = compute_with_store_mode(
+            repo.path(),
+            "HEAD",
+            false,
+            &sinter_store::EdgeFilter::default(),
+            &store,
+        )
+        .expect("compute working-tree impact");
+        assert_eq!(report.analysis_status, AnalysisStatus::Complete);
+        let added = report
+            .changed_files
+            .iter()
+            .find(|file| file.path == "src/new.rs")
+            .expect("untracked file listed");
+        assert_eq!(added.kind, FileChangeKind::Added);
+        assert!(
+            report
+                .changed_symbols
+                .iter()
+                .any(|s| s.qualified.contains("fresh"))
+        );
+
+        let staged = compute_with_store_mode(
+            repo.path(),
+            "HEAD",
+            true,
+            &sinter_store::EdgeFilter::default(),
+            &store,
+        )
+        .expect("compute staged impact");
+        assert!(staged.changed_files.is_empty());
+        assert!(
+            staged
+                .partial_reasons
+                .contains(&"untracked_files_are_not_included_in_git_diff")
+        );
     }
 }

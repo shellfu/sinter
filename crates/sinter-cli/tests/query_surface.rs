@@ -73,7 +73,10 @@ fn query_affected_path_impact() {
     // Direct callers are stated apart from the transitive total, so a
     // blast radius never reads as a caller count.
     assert!(out.contains("3 dependents of core_fn"), "{out}");
-    assert!(out.contains("2 direct in 1 file(s), 1 transitive"), "{out}");
+    assert!(
+        out.contains("1 direct in 1 file(s); 1 file(s) import it, 1 transitive"),
+        "{out}"
+    );
     let (_, out) = sinter(repo, &["affected", "core_fn", "--depth", "1"]);
     assert!(
         out.contains("2 dependents of core_fn") && !out.contains("test_entry"),
@@ -85,9 +88,10 @@ fn query_affected_path_impact() {
         (
             v["total"].as_u64(),
             v["direct"].as_u64(),
-            v["direct_files"].as_u64()
+            v["direct_files"].as_u64(),
+            v["importing_files"].as_u64()
         ),
-        (Some(3), Some(2), Some(1)),
+        (Some(3), Some(1), Some(1), Some(1)),
         "{out}"
     );
 
@@ -744,4 +748,45 @@ fn syntax_visible_test_callers_drive_affected_and_impact_selection() {
             .any(|test| test["qualified"] == "tests::dispatch_works"),
         "impact did not select the evidence-backed test: {out}"
     );
+}
+
+#[test]
+fn lookup_prefers_production_over_fixture_copies() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::create_dir_all(repo.join("tests/fixtures/a/src")).unwrap();
+    std::fs::write(
+        repo.join("src/lib.rs"),
+        "use crate::helper;\npub fn entry() -> u32 { 1 }\npub fn caller() -> u32 { entry() }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("tests/fixtures/a/src/lib.rs"),
+        "pub fn entry() -> u32 { 2 }\n",
+    )
+    .unwrap();
+    git(repo, &["init", "-q"]);
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "init"]);
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+
+    // Ambiguous only because of the fixture copy: resolve, mention the rest.
+    let (ok, out) = sinter(repo, &["show", "entry"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("src/lib.rs"), "{out}");
+    assert!(out.contains("1 more `entry` outside scope"), "{out}");
+
+    // Explicit file suffix still reaches the fixture copy.
+    let (ok, out) = sinter(repo, &["show", "entry@tests/fixtures/a/src/lib.rs"]);
+    assert!(ok, "{out}");
+
+    // affected counts file imports separately from callers.
+    let (ok, out) = sinter(repo, &["affected", "entry", "--json"]);
+    assert!(ok, "{out}");
+    let json = out.lines().find(|l| l.starts_with('{')).unwrap();
+    let v: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(v["direct"], 1, "{out}");
+    assert!(v.get("importing_files").is_some(), "{out}");
 }

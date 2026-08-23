@@ -5,7 +5,7 @@ use sinter_resolve::qualified_of;
 
 use sinter_store::EdgeFilter;
 
-use crate::lookup::{ensure_snapshot, ensure_snapshot_token, open_store, unique_symbol};
+use crate::lookup::{ensure_snapshot, ensure_snapshot_token, open_store, unique_symbol_in};
 
 /// `sinter path`: how one symbol reaches another. Ok(true) when a route
 /// exists (grep-style exit codes).
@@ -19,8 +19,8 @@ pub fn run(
 ) -> Result<bool> {
     let store = open_store(repo)?;
     let snapshot = ensure_snapshot(&store, if_snapshot)?;
-    let from_node = unique_symbol(&store, from)?;
-    let to_node = unique_symbol(&store, to)?;
+    let from_node = unique_symbol_in(&store, from, filter.scopes.as_ref())?;
+    let to_node = unique_symbol_in(&store, to, filter.scopes.as_ref())?;
     let path = store.shortest_path(&from_node.id, &to_node.id, filter)?;
     let scopes = store.file_scopes()?;
     let scope_of_id = |id: &sinter_core::NodeId| {

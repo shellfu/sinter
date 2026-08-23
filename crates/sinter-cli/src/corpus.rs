@@ -79,6 +79,17 @@ impl ScopeSelection {
         self.scopes.contains(&scope)
     }
 
+    /// Keep the in-scope nodes, unless none are in scope: then the
+    /// out-of-scope matches are the answer (e.g. `dep:` pseudo-files).
+    pub fn narrow(&self, nodes: &mut Vec<sinter_core::Node>, scopes: &sinter_store::ScopeIndex) {
+        if nodes
+            .iter()
+            .any(|node| self.contains(scopes.scope_of(node)))
+        {
+            nodes.retain(|node| self.contains(scopes.scope_of(node)));
+        }
+    }
+
     pub fn labels(&self) -> Vec<&'static str> {
         self.scopes.iter().map(|scope| scope.as_str()).collect()
     }

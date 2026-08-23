@@ -7,13 +7,12 @@
 # "deny" only blocks and is safe; default modes stay context-injection
 # only and emit no permissionDecision at all.
 # Modes:
-#   prompt   — UserPromptSubmit: one always-on router line
-#   grep     — PreToolUse(Bash): nudge on recursive-search commands, plus a
-#              git-archaeology nudge on git show/diff/diff-tree/log
-#   greptool — PreToolUse(Grep): nudge for the dedicated Grep tool
-#   task     — PreToolUse(Task|Agent): orchestration rule injected at
-#              subagent spawn, so prompts written for subagents mandate
-#              sinter for structure claims instead of steering to grep
+#   prompt   — UserPromptSubmit: one router line, once per session
+#   grep     — PreToolUse(Bash): nudge on recursive-search commands
+#              (rg/ag/grep -r/git grep/find -name), plus a git-archaeology
+#              nudge on `git log -S/-G`; each class at most once per session
+#   greptool — PreToolUse(Grep): nudge for the dedicated Grep tool (shares
+#              the search class with grep)
 #   grep-strict / greptool-strict — opt-in strict variants: the FIRST
 #              matching search of a session is denied with a redirect to
 #              sinter; the retry gets one advisory nudge, and later searches
@@ -32,7 +31,6 @@ while ($d) {
 if (-not $root) { exit 0 }
 
 $Nudge = 'sinter graph: unfamiliar repo -> map; vague discovery -> ask; exact symbol -> query/show; relations -> affected/deps/path; negative proof -> unresolved, with incomplete coverage reported as not_proven. Grep remains for content/function bodies.'
-$TaskNudge = 'sinter graph: require subagents to run map first when unfamiliar, then route structure through ask/query/show/affected/deps/path; use unresolved for negative proofs and report incomplete coverage as not_proven; use impact/overlap for changes. Reserve grep/rg for content.'
 $GitNudge = 'sinter graph: use impact <rev-range> for changed symbols, downstream effects, and tests; use overlap for collision risk; add --workspace for cross-repo analysis.'
 
 $DenyReason = 'This repo has a sinter graph. Run sinter map first if unfamiliar; use sinter ask for vague discovery, sinter query/show for exact symbols, sinter affected/deps/path for relations, sinter unresolved for negative proofs (incomplete coverage is not_proven), or sinter impact for diffs. If insufficient, rerun this exact search.'
@@ -85,6 +83,9 @@ function EmitDeny {
 
 switch ($Mode) {
     'prompt' {
+        $raw = ''
+        try { $raw = [Console]::In.ReadToEnd() } catch { $raw = '' }
+        if ((New-SessionMarker 'prompt' $raw) -eq $false) { exit 0 }
         Write-Output 'This repo has a sinter graph. Unfamiliar repo: sinter map first. Then use ask for vague discovery; query/show for exact symbols; affected/deps/path for relations; unresolved for negative proofs (incomplete coverage is not_proven); impact/overlap for changes; workspace/--workspace across repos. Use ensure/doctor/scip for setup or repair; read source for function bodies.'
     }
     { $_ -in 'grep', 'grep-strict' } {
@@ -93,21 +94,16 @@ switch ($Mode) {
         $cmd = ''
         try { $cmd = ($raw | ConvertFrom-Json).tool_input.command } catch { $cmd = '' }
         if (-not $cmd) { exit 0 }
-        if ($cmd -match '(^|[|;& ])(rg |git +grep|(xargs|-exec) +(grep|rg)|grep +(-[a-zA-Z]*[rR]|.* -[rR]))') {
+        if ($cmd -match '(^|[|;& ])(rg |ag |git +grep|(xargs|-exec) +(grep|rg)|grep +(-[a-zA-Z]*[rR]|.* -[rR])|find .* -i?name)') {
             if ($Mode -eq 'grep-strict' -and (Test-StrictDeny $raw)) { EmitDeny } else { Emit-Once 'search' $raw $Nudge }
         }
         # Git archaeology stays advisory in both modes.
-        elseif ($cmd -match '(^|[|;& ])git +(show|diff|diff-tree|log)\b') { Emit-Once 'git' $raw $GitNudge }
+        elseif ($cmd -match '(^|[|;& ])git +log .*-[SG]') { Emit-Once 'git' $raw $GitNudge }
     }
     { $_ -in 'greptool', 'greptool-strict' } {
         $raw = ''
         try { $raw = [Console]::In.ReadToEnd() } catch { $raw = '' }
         if ($Mode -eq 'greptool-strict' -and (Test-StrictDeny $raw)) { EmitDeny } else { Emit-Once 'search' $raw $Nudge }
-    }
-    'task' {
-        $raw = ''
-        try { $raw = [Console]::In.ReadToEnd() } catch { $raw = '' }
-        Emit-Once 'task' $raw $TaskNudge
     }
 }
 exit 0

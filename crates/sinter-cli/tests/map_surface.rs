@@ -1,5 +1,5 @@
-//! Acceptance for `sinter map`: one-screen orientation — module tree,
-//! hub symbols, doc entry points — terse, deterministic, --json-able.
+//! Acceptance for `sinter map`: a bounded structural inventory with module
+//! counts, dependency hubs, doc entry points, and an honest health envelope.
 
 use std::path::Path;
 use std::process::Command;
@@ -85,9 +85,12 @@ fn map_shows_modules_hubs_and_docs() {
     assert!(out.contains("core/"), "{out}");
     assert!(out.contains("util/"), "{out}");
 
-    // Hubs: `start` is called from two files — most depended-on.
-    assert!(out.contains("Hubs (most depended-on)"), "{out}");
-    let hub_section = &out[out.find("Hubs").unwrap()..];
+    // Dependency hubs: `start` is called from two files.
+    assert!(
+        out.contains("Dependency hubs (non-containment in-degree)"),
+        "{out}"
+    );
+    let hub_section = &out[out.find("Dependency hubs").unwrap()..];
     assert!(hub_section.contains("start"), "{out}");
     assert!(hub_section.contains("core/engine.ts:"), "{out}");
 
@@ -100,6 +103,14 @@ fn map_shows_modules_hubs_and_docs() {
     assert!(docs_section.contains("docs/design.md"), "{out}");
     assert!(docs_section.contains("Design"), "{out}");
     assert!(!docs_section.contains("Details"), "{out}");
+
+    // Map states the graph's trust boundary instead of looking exhaustive.
+    assert!(out.contains("Graph health"), "{out}");
+    assert!(out.contains("structural inventory"), "{out}");
+    assert!(
+        out.contains("not runtime entry-point or ownership proof"),
+        "{out}"
+    );
 
     // Next-step hints, like every other orientation verb.
     assert!(out.contains("Next: sinter ask"), "{out}");
@@ -129,9 +140,28 @@ fn map_json_is_valid_and_structured() {
         serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).expect("valid json");
 
     assert!(parsed["nodes"].as_u64().unwrap() > 0);
+    assert_eq!(parsed["orientation"]["kind"], "repository_inventory");
+    assert_eq!(
+        parsed["orientation"]["hub_metric"],
+        "non_contains_in_degree"
+    );
+    assert_eq!(
+        parsed["orientation"]["claim_boundary"],
+        "structural_evidence_not_runtime_architecture"
+    );
     let modules = parsed["modules"].as_array().expect("modules array");
-    assert!(modules.iter().any(|m| m["path"] == "core"), "{parsed}");
-    assert!(modules.iter().any(|m| m["path"] == "util"), "{parsed}");
+    assert!(
+        modules
+            .iter()
+            .any(|m| m["path"] == "core" && m["files"] == 1),
+        "{parsed}"
+    );
+    assert!(
+        modules
+            .iter()
+            .any(|m| m["path"] == "util" && m["files"] == 2),
+        "{parsed}"
+    );
     let hubs = parsed["hubs"].as_array().expect("hubs array");
     assert!(!hubs.is_empty(), "{parsed}");
     assert!(hubs[0]["in_degree"].as_u64().unwrap() > 0, "{parsed}");
@@ -147,6 +177,19 @@ fn map_json_is_valid_and_structured() {
                 .unwrap()
                 .iter()
                 .any(|s| s == "Overview")),
+        "{parsed}"
+    );
+    assert_eq!(parsed["health"]["status"], "partial", "{parsed}");
+    assert!(
+        parsed["health"]["compiler_index"]["state"].is_string(),
+        "{parsed}"
+    );
+    assert!(
+        parsed["health"]["graph"]["actionable_unresolved"].is_u64(),
+        "{parsed}"
+    );
+    assert!(
+        parsed["health"]["limitations"].as_array().is_some(),
         "{parsed}"
     );
 }

@@ -1,7 +1,7 @@
-//! `sinter map [repo]`: post-clone orientation in one screen — module
-//! shape, most-depended-on symbols, and doc entry points.
+//! `sinter map [repo]`: bounded post-clone structural inventory — module
+//! shape, explicitly measured dependency hubs, docs, and graph health.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::Result;
@@ -15,10 +15,29 @@ use crate::render::{line_of, location};
 const HUBS: usize = 10;
 const DOC_SECTIONS: usize = 6;
 
-/// Directory tree (depth 2) with per-directory node counts, keyed by the
-/// first path component. Root-level files land under ".".
-fn module_tree(nodes: &[Node]) -> BTreeMap<String, (usize, BTreeMap<String, usize>)> {
-    let mut tree: BTreeMap<String, (usize, BTreeMap<String, usize>)> = BTreeMap::new();
+#[derive(Default)]
+struct ModuleStats {
+    nodes: usize,
+    files: BTreeSet<String>,
+}
+
+impl ModuleStats {
+    fn record(&mut self, node: &Node) {
+        self.nodes += 1;
+        self.files.insert(node.file.clone());
+    }
+}
+
+#[derive(Default)]
+struct ModuleBranch {
+    total: ModuleStats,
+    children: BTreeMap<String, ModuleStats>,
+}
+
+/// Directory tree (depth 2) with node and distinct-file counts. Both are
+/// reported because symbol density alone exaggerates large source files.
+fn module_tree(nodes: &[Node]) -> BTreeMap<String, ModuleBranch> {
+    let mut tree: BTreeMap<String, ModuleBranch> = BTreeMap::new();
     for node in nodes {
         let dirs: Vec<&str> = {
             let mut parts: Vec<&str> = node.file.split('/').collect();
@@ -27,9 +46,13 @@ fn module_tree(nodes: &[Node]) -> BTreeMap<String, (usize, BTreeMap<String, usiz
         };
         let top = dirs.first().copied().unwrap_or(".").to_string();
         let entry = tree.entry(top).or_default();
-        entry.0 += 1;
+        entry.total.record(node);
         if let Some(second) = dirs.get(1) {
-            *entry.1.entry((*second).to_string()).or_default() += 1;
+            entry
+                .children
+                .entry((*second).to_string())
+                .or_default()
+                .record(node);
         }
     }
     tree
@@ -91,29 +114,30 @@ pub fn run(repo: &Path, json: bool, scopes: &ScopeSelection) -> Result<()> {
     let total_nodes = view["total_nodes"].as_u64().unwrap_or(0);
     let edge_count = view["edges"].as_u64().unwrap_or(0);
     println!(
-        "{name} — {node_count} scoped nodes ({total_nodes} total), {edge_count} edges · scope {}",
+        "{name} — repository inventory · {node_count} scoped nodes ({total_nodes} total), {edge_count} edges · scope {}",
         scopes.labels().join(",")
     );
     println!();
-    println!("Modules");
+    println!("Modules (depth 2; node/file counts)");
     for module in view["modules"].as_array().into_iter().flatten() {
         let path = module["path"].as_str().unwrap_or(".");
         let count = module["nodes"].as_u64().unwrap_or(0);
+        let files = module["files"].as_u64().unwrap_or(0);
         if let Some((_, child)) = path.split_once('/') {
-            println!("    {child:<22} {count}");
+            println!("    {child:<22} {count:>5} / {files:<5}");
         } else {
             let label = if path == "." {
                 ".".to_string()
             } else {
                 format!("{path}/")
             };
-            println!("  {label:<24} {count}");
+            println!("  {label:<24} {count:>5} / {files:<5}");
         }
     }
     let hubs = view["hubs"].as_array().cloned().unwrap_or_default();
     if !hubs.is_empty() {
         println!();
-        println!("Hubs (most depended-on)");
+        println!("Dependency hubs (non-containment in-degree)");
         for hub in hubs {
             let file = hub["file"].as_str().unwrap_or("");
             let line = hub["line"].as_u64().map(|line| line as usize);
@@ -150,8 +174,26 @@ pub fn run(repo: &Path, json: bool, scopes: &ScopeSelection) -> Result<()> {
             );
         }
     }
+    let health = &view["health"];
     println!();
-    println!("Next: sinter ask \"<question>\" · sinter show <symbol> · sinter affected <symbol>");
+    println!("Graph health");
+    println!(
+        "  {} · compiler index {} · actionable unresolved {} · partial-syntax files {} · unindexed files {}",
+        health["status"].as_str().unwrap_or("partial"),
+        health["compiler_index"]["state"]
+            .as_str()
+            .unwrap_or("unknown"),
+        health["graph"]["actionable_unresolved"]
+            .as_u64()
+            .unwrap_or(0),
+        health["graph"]["syntax_error_files"].as_u64().unwrap_or(0),
+        health["graph"]["unindexed_files"].as_u64().unwrap_or(0),
+    );
+    println!("  interpretation: structural inventory, not runtime entry-point or ownership proof");
+    println!();
+    println!(
+        "Next: sinter ask \"<question>\" · sinter show <symbol> · sinter affected <symbol> · sinter doctor"
+    );
     Ok(())
 }
 
@@ -166,18 +208,11 @@ pub(crate) fn response(
     // count in-degrees.
     let total_nodes = store.node_count()?;
     let edge_count = store.edge_count()?;
-    let persisted_scopes = store.file_scopes()?;
+    let persisted_scopes = store.scope_index()?;
     let nodes: Vec<Node> = store
         .all_nodes()?
         .into_iter()
-        .filter(|node| {
-            scopes.contains(
-                persisted_scopes
-                    .get(&node.file)
-                    .copied()
-                    .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(&node.file)),
-            )
-        })
+        .filter(|node| scopes.contains(persisted_scopes.scope_of(node)))
         .collect();
     let node_count = nodes.len();
     let by_id: BTreeMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
@@ -187,6 +222,7 @@ pub(crate) fn response(
     let tree = module_tree(&nodes);
     let hubs = hubs(&by_id, &in_degree);
     let docs = doc_entries(&nodes);
+    let health = crate::coverage::orientation_health_json(repo, store)?;
     let name = repo
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -194,11 +230,19 @@ pub(crate) fn response(
 
     let modules: Vec<serde_json::Value> = tree
         .iter()
-        .flat_map(|(top, (count, children))| {
-            std::iter::once(serde_json::json!({"path": top, "nodes": count}))
-                .chain(children.iter().map(
-                move |(child, n)| serde_json::json!({"path": format!("{top}/{child}"), "nodes": n}),
-            ))
+        .flat_map(|(top, branch)| {
+            std::iter::once(serde_json::json!({
+                "path": top,
+                "nodes": branch.total.nodes,
+                "files": branch.total.files.len(),
+            }))
+            .chain(branch.children.iter().map(move |(child, stats)| {
+                serde_json::json!({
+                    "path": format!("{top}/{child}"),
+                    "nodes": stats.nodes,
+                    "files": stats.files.len(),
+                })
+            }))
         })
         .collect();
     let hubs: Vec<serde_json::Value> = hubs
@@ -207,11 +251,7 @@ pub(crate) fn response(
             serde_json::json!({
                 "name": qualified_of(node.id.as_str()),
                 "kind": node.kind.as_str(),
-                "scope": persisted_scopes
-                    .get(&node.file)
-                    .copied()
-                    .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(&node.file))
-                    .as_str(),
+                "scope": persisted_scopes.scope_of(node).as_str(),
                 "file": node.file,
                 "line": line_of(repo, &node.file, node.span.start),
                 "in_degree": n,
@@ -228,6 +268,15 @@ pub(crate) fn response(
     Ok(serde_json::json!({
         "repo": name,
         "scope": scopes.json(),
+        "orientation": {
+            "kind": "repository_inventory",
+            "module_depth": 2,
+            "hub_metric": "non_contains_in_degree",
+            "hub_limit": HUBS,
+            "doc_entry_rule": "level_1_readme_and_top_level_docs",
+            "claim_boundary": "structural_evidence_not_runtime_architecture",
+        },
+        "health": health,
         "nodes": node_count,
         "total_nodes": total_nodes,
         "edges": edge_count,

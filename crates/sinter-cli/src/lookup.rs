@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use sinter_core::{Confidence, Evidence, Node, SymbolKey, SymbolKind};
+use sinter_core::{Confidence, CorpusScope, Evidence, Node, SymbolKey, SymbolKind};
 use sinter_resolve::qualified_of;
 use sinter_store::{EdgeFilter, Store};
 
@@ -264,15 +264,51 @@ pub fn ensure_snapshot_token(expected: Option<&str>, actual: &str) -> Result<()>
     Ok(())
 }
 
-/// Exactly one node or a listed-candidates error.
+/// Exactly one node or a listed-candidates error. A name ambiguous only
+/// because of fixture/test/vendor copies resolves to the lone
+/// production/docs candidate (the same default scope as `sinter map`).
 pub fn unique_symbol(store: &Store, symbol: &str) -> Result<Node> {
+    unique_symbol_in(store, symbol, None)
+}
+
+/// `unique_symbol` with an explicit preferred scope set (`None` = the agent
+/// default). Candidates outside it only break ties, never hide results:
+/// `--scope all` or an `@file` suffix still reaches them.
+pub fn unique_symbol_in(
+    store: &Store,
+    symbol: &str,
+    scopes: Option<&BTreeSet<CorpusScope>>,
+) -> Result<Node> {
     match find_symbol(store, symbol)? {
         Found::Exact(mut nodes) if nodes.len() == 1 => Ok(nodes.remove(0)),
-        Found::Exact(nodes) => Err(SymbolLookupError::Ambiguous {
-            requested: symbol.to_string(),
-            candidates: nodes,
+        Found::Exact(nodes) => {
+            let preferred = scopes
+                .cloned()
+                .unwrap_or_else(|| crate::corpus::ScopeSelection::agent_default().as_set());
+            let scope_index = store.scope_index()?;
+            let in_scope = |n: &Node| preferred.contains(&scope_index.scope_of(n));
+            let (keep, excluded): (Vec<Node>, Vec<Node>) =
+                nodes.into_iter().partition(|n| in_scope(n));
+            // Out-of-scope copies only matter when nothing in scope matches.
+            if !keep.is_empty() && !excluded.is_empty() {
+                let labels: Vec<&str> = preferred.iter().map(|s| s.as_str()).collect();
+                eprintln!(
+                    "note: {} more `{symbol}` outside scope {} ignored; use `{symbol}@<file>` to pick one of those",
+                    excluded.len(),
+                    labels.join(","),
+                );
+            }
+            let mut candidates = if keep.is_empty() { excluded } else { keep };
+            if candidates.len() > 1 {
+                Err(SymbolLookupError::Ambiguous {
+                    requested: symbol.to_string(),
+                    candidates,
+                }
+                .into())
+            } else {
+                Ok(candidates.remove(0))
+            }
         }
-        .into()),
         Found::Relocated(nodes) => Err(SymbolLookupError::Relocated {
             requested: symbol.to_string(),
             candidates: nodes,

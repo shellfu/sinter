@@ -5,7 +5,7 @@ use sinter_resolve::qualified_of;
 
 use sinter_store::EdgeFilter;
 
-use crate::lookup::{ensure_snapshot, open_store, unique_symbol};
+use crate::lookup::{ensure_snapshot, open_store, unique_symbol_in};
 use crate::render::node_json;
 
 /// `sinter deps`: forward blast radius — everything the symbol transitively
@@ -22,15 +22,10 @@ pub fn run(
 ) -> Result<bool> {
     let store = open_store(repo)?;
     let snapshot = ensure_snapshot(&store, if_snapshot)?;
-    let node = unique_symbol(&store, symbol)?;
+    let node = unique_symbol_in(&store, symbol, filter.scopes.as_ref())?;
     let mut reached = store.dependencies(&node.id, filter, max_depth)?;
-    let scopes = store.file_scopes()?;
-    let scope_of = |file: &str| {
-        scopes
-            .get(file)
-            .copied()
-            .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(file))
-    };
+    let scopes = store.scope_index()?;
+    let scope_of = |node: &sinter_core::Node| scopes.scope_of(node);
     let total = reached.len();
     let root = crate::pipeline::discover_root(repo);
     // Honest-empty signal: unresolved refs inside this definition mean the
@@ -54,7 +49,7 @@ pub fn run(
                     "s": qualified_of(r.node.id.as_str()),
                     "k": r.node.kind.as_str(),
                     "f": r.node.file,
-                    "scope": scope_of(&r.node.file).as_str(),
+                    "scope": scope_of(&r.node).as_str(),
                     "e": format!("{}/{}", r.via.relation.as_str(), r.via.evidence.as_str()),
                     "c": match r.via.confidence {
                         sinter_core::Confidence::Certain => "certain",
@@ -77,7 +72,7 @@ pub fn run(
         pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         pairs.truncate(10);
         let mut symbol_json = node_json(&node);
-        symbol_json["scope"] = serde_json::json!(scope_of(&node.file).as_str());
+        symbol_json["scope"] = serde_json::json!(scope_of(&node).as_str());
         let mut out = serde_json::json!({
             "status": if total > 0 { "found" } else { "not_proven" },
             "symbol": symbol_json,

@@ -51,7 +51,7 @@ function-body behavior.
 
 | Question | Command |
 |---|---|
-| First look in an unfamiliar repo (modules, hubs, docs) | `sinter map` |
+| First look in an unfamiliar repo (module inventory, dependency hubs, docs, graph health) | `sinter map` |
 | Vague/conceptual discovery (calibrated lexical search) | `sinter ask "<question>"` (`--explain` adds ranking diagnostics) |
 | Exact or fuzzy symbol lookup | `sinter query <symbol>` |
 | Inspect one symbol (signature, docs, callers) | `sinter show <symbol>` |
@@ -310,8 +310,8 @@ pub(crate) fn claude_home() -> Option<PathBuf> {
 }
 
 /// Install Claude Code enforcement: the sinter-first hook script plus the
-/// four settings entries that fire it (per-prompt router, Bash grep
-/// nudge, Grep-tool nudge, subagent-spawn orchestration rule). The script gates on `.sinter/graph.redb`
+/// three settings entries that fire it (once-per-session prompt router,
+/// Bash grep nudge, Grep-tool nudge). The script gates on `.sinter/graph.redb`
 /// existing, so hooks stay silent in graph-less repos. Merging is
 /// idempotent and preserves every other setting and hook.
 ///
@@ -321,8 +321,8 @@ pub(crate) fn claude_home() -> Option<PathBuf> {
 ///
 /// `strict` opts the two grep entries into the script's `-strict` modes
 /// (first search of a session is denied with a sinter redirect; its retry
-/// gets the session's one search nudge). Search, git-archaeology, and task
-/// nudges are otherwise emitted at most once per session. Switching
+/// gets the session's one search nudge). Search, git-archaeology, and
+/// prompt nudges are otherwise emitted at most once per session. Switching
 /// strictness is idempotent: the same settings slot is replaced either way.
 /// Strict uses only permissionDecision "deny" — the hooks never emit
 /// "allow".
@@ -379,10 +379,6 @@ pub fn enforce(repo: Option<&Path>, strict: bool) -> Result<()> {
     for (event, matcher, mode) in [
         ("PreToolUse", Some("Bash"), grep_mode),
         ("PreToolUse", Some("Grep"), greptool_mode),
-        // Subagent spawn (the tool is Task in stable Claude Code, Agent in
-        // newer builds): the orchestrator writes the subagent's prompt at
-        // this moment — the one point where grep-steering can be caught.
-        ("PreToolUse", Some("Task|Agent"), "task"),
         ("UserPromptSubmit", None, "prompt"),
     ] {
         let groups = hooks

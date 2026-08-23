@@ -91,18 +91,9 @@ pub(crate) fn node_json(node: &Node) -> Value {
     })
 }
 
-pub(crate) fn scoped_node_json(
-    node: &Node,
-    scopes: &HashMap<String, sinter_core::CorpusScope>,
-) -> Value {
+pub(crate) fn scoped_node_json(node: &Node, scopes: &sinter_store::ScopeIndex) -> Value {
     let mut value = node_json(node);
-    value["scope"] = json!(
-        scopes
-            .get(&node.file)
-            .copied()
-            .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(&node.file))
-            .as_str()
-    );
+    value["scope"] = json!(scopes.scope_of(node).as_str());
     value
 }
 

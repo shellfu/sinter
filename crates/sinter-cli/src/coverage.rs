@@ -398,6 +398,31 @@ fn repository_coverage(repo: &Path, store: &Store) -> Result<serde_json::Value> 
     }))
 }
 
+/// Compact repository-health summary for the orientation card. The complete
+/// traversal contract stays private to this module; Map needs only enough
+/// evidence to stop a structural inventory from looking exhaustive.
+pub(crate) fn orientation_health_json(repo: &Path, store: &Store) -> Result<serde_json::Value> {
+    let coverage = repository_coverage(repo, store)?;
+    let graph = &coverage["graph"];
+    let count = |field: &str| graph[field].as_array().map_or(0, std::vec::Vec::len);
+    Ok(serde_json::json!({
+        "status": coverage["completeness"].clone(),
+        "snapshot": coverage["snapshot"].clone(),
+        "compiler_index": {
+            "state": coverage["compiler_index"]["state"].clone(),
+            "indexable_languages": coverage["compiler_index"]["indexable_languages"].clone(),
+            "stale_inputs": coverage["compiler_index"]["stale_inputs"].clone(),
+        },
+        "graph": {
+            "unresolved_references": graph["unresolved_references"].clone(),
+            "actionable_unresolved": graph["actionable_unresolved"].clone(),
+            "syntax_error_files": count("syntax_error_files"),
+            "unindexed_files": count("unindexed_files"),
+        },
+        "limitations": coverage["limitations"].clone(),
+    }))
+}
+
 fn filter_json(filter: &EdgeFilter) -> serde_json::Value {
     let relation_values = filter
         .relations
@@ -643,7 +668,9 @@ mod tests {
     };
     use sinter_store::{EdgeFilter, Store};
 
-    use super::{Classifier, TraversalEvidence, UnresolvedCategory, traversal_json};
+    use super::{
+        Classifier, TraversalEvidence, UnresolvedCategory, orientation_health_json, traversal_json,
+    };
 
     fn item(name: &str, path: Option<&str>, reason: UnresolvedReason) -> UnresolvedReference {
         UnresolvedReference {
@@ -766,5 +793,29 @@ mod tests {
                 .iter()
                 .any(|source| source["kind"] == "scip" && source["status"] == "available")
         );
+    }
+
+    #[test]
+    fn orientation_health_is_compact_and_names_complete_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::create_dir_all(repo.join(".sinter")).unwrap();
+        std::fs::write(
+            repo.join("Cargo.toml"),
+            "[package]\nname='fixture'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join("src/lib.rs"), "pub fn source() {}\n").unwrap();
+        std::fs::write(repo.join(".sinter/index.scip"), []).unwrap();
+        let store = Store::create(repo.join(".sinter/graph.redb")).unwrap();
+
+        let health = orientation_health_json(repo, &store).unwrap();
+
+        assert_eq!(health["status"], "complete_for_indexed_snapshot");
+        assert_eq!(health["compiler_index"]["state"], "fresh");
+        assert_eq!(health["graph"]["actionable_unresolved"], 0);
+        assert!(health["compiler_index"].get("projects").is_none());
+        assert!(health.get("available_sources").is_none());
     }
 }

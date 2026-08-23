@@ -8,13 +8,12 @@
 # "deny" only blocks and is safe; default modes stay context-injection
 # only and emit no permissionDecision at all.
 # Modes:
-#   prompt   — UserPromptSubmit: one always-on router line
-#   grep     — PreToolUse(Bash): nudge on recursive-search commands, plus a
-#              git-archaeology nudge on git show/diff/diff-tree/log
-#   greptool — PreToolUse(Grep): nudge for the dedicated Grep tool
-#   task     — PreToolUse(Task|Agent): orchestration rule injected at
-#              subagent spawn, so prompts written for subagents mandate
-#              sinter for structure claims instead of steering to grep
+#   prompt   — UserPromptSubmit: one router line, once per session
+#   grep     — PreToolUse(Bash): nudge on recursive-search commands
+#              (rg/ag/grep -r/git grep/find -name), plus a git-archaeology
+#              nudge on `git log -S/-G`; each class at most once per session
+#   greptool — PreToolUse(Grep): nudge for the dedicated Grep tool (shares
+#              the search class with grep)
 #   grep-strict / greptool-strict — opt-in strict variants: the FIRST
 #              matching search of a session is denied with a redirect to
 #              sinter; the retry gets one advisory nudge, and later searches
@@ -29,7 +28,6 @@ done
 [ -z "$root" ] && exit 0
 
 NUDGE="sinter graph: unfamiliar repo -> map; vague discovery -> ask; exact symbol -> query/show; relations -> affected/deps/path; negative proof -> unresolved, with incomplete coverage reported as not_proven. Grep remains for content/function bodies."
-TASK_NUDGE="sinter graph: require subagents to run map first when unfamiliar, then route structure through ask/query/show/affected/deps/path; use unresolved for negative proofs and report incomplete coverage as not_proven; use impact/overlap for changes. Reserve grep/rg for content."
 GIT_NUDGE="sinter graph: use impact <rev-range> for changed symbols, downstream effects, and tests; use overlap for collision risk; add --workspace for cross-repo analysis."
 DENY_REASON="This repo has a sinter graph. Run sinter map first if unfamiliar; use sinter ask for vague discovery, sinter query/show for exact symbols, sinter affected/deps/path for relations, sinter unresolved for negative proofs (incomplete coverage is not_proven), or sinter impact for diffs. If insufficient, rerun this exact search."
 
@@ -90,18 +88,21 @@ emit_deny() {
 
 case "$1" in
   prompt)
+    input=$(cat)
+    mark_session_once prompt "$input"
+    [ $? -eq 1 ] && exit 0
     echo "This repo has a sinter graph. Unfamiliar repo: sinter map first. Then use ask for vague discovery; query/show for exact symbols; affected/deps/path for relations; unresolved for negative proofs (incomplete coverage is not_proven); impact/overlap for changes; workspace/--workspace across repos. Use ensure/doctor/scip for setup or repair; read source for function bodies."
     ;;
   grep|grep-strict)
     input=$(cat)
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
-    if printf '%s' "$cmd" | grep -qE '(^|[|;& ])(rg |git +grep|(xargs|-exec) +(grep|rg)|grep +(-[a-zA-Z]*[rR]|.* -[rR]))'; then
+    if printf '%s' "$cmd" | grep -qE '(^|[|;& ])(rg |ag |git +grep|(xargs|-exec) +(grep|rg)|grep +(-[a-zA-Z]*[rR]|.* -[rR])|find .* -i?name)'; then
       if [ "$1" = "grep-strict" ] && strict_deny "$input"; then
         emit_deny
       else
         emit_once search "$input" "$NUDGE"
       fi
-    elif printf '%s' "$cmd" | grep -qE '(^|[|;& ])git +(show|diff|diff-tree|log)\b'; then
+    elif printf '%s' "$cmd" | grep -qE '(^|[|;& ])git +log .*-[SG]'; then
       # Git archaeology stays advisory in both modes.
       emit_once git "$input" "$GIT_NUDGE"
     fi
@@ -113,10 +114,6 @@ case "$1" in
     else
       emit_once search "$input" "$NUDGE"
     fi
-    ;;
-  task)
-    input=$(cat)
-    emit_once task "$input" "$TASK_NUDGE"
     ;;
 esac
 exit 0

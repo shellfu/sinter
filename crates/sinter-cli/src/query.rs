@@ -23,15 +23,8 @@ pub fn run(
         Found::Relocated(nodes) => ("relocated", false, nodes),
         Found::Suggestions(nodes) => ("suggestions", false, nodes),
     };
-    let file_scopes = store.file_scopes()?;
-    nodes.retain(|node| {
-        scopes.contains(
-            file_scopes
-                .get(&node.file)
-                .copied()
-                .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(&node.file)),
-        )
-    });
+    let scope_index = store.scope_index()?;
+    scopes.narrow(&mut nodes, &scope_index);
     if json {
         // Same shape as the MCP `query` tool.
         crate::agent_protocol::write_json(&serde_json::json!({
@@ -41,11 +34,7 @@ pub fn run(
             "scope": scopes.json(),
             "results": nodes.iter().take(limit).map(|node| {
                 let mut value = node_json(node);
-                value["scope"] = serde_json::json!(file_scopes
-                    .get(&node.file)
-                    .copied()
-                    .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(&node.file))
-                    .as_str());
+                value["scope"] = serde_json::json!(scope_index.scope_of(node).as_str());
                 value
             }).collect::<Vec<_>>(),
         }))?;

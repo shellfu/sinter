@@ -13,9 +13,10 @@ in prose. If the user types `/sinter`, use this card before anything else.
 
 ## Rules
 
-- In an unfamiliar repository, run `sinter map` first. It returns the module
-  tree, documentation entry points, and structural hubs without broad file
-  listing or speculative reads.
+- In an unfamiliar repository, run `sinter map` first. It returns a structural
+  inventory: module node/file counts, documentation entry points, dependency
+  hubs ranked by non-containment in-degree, and graph health. Treat hubs as
+  dependency-central symbols, not runtime entry points or domain ownership.
 - For later codebase questions, query sinter first whenever `.sinter/` exists:
   use `sinter ask` as a calibrated lexical navigator for vague discovery,
   `sinter query`/`show` for exact symbols, and the traversal verbs for graph
@@ -55,16 +56,19 @@ raw recursive search (grep/rg or the Grep tool) of a Claude Code session
 is blocked with a redirect to `sinter ask/show/affected/deps/path/impact`;
 the retry passes with a one-time advisory nudge, and later searches in that
 class are silent for the session — sinter-first, grep-second, never
-grep-never. Strict mode only ever denies (it never auto-approves anything);
-default installs inject each search, git-archaeology, and subagent-prompt
-advisory at most once per session. Calls without a session ID remain
-nudge-only.
+grep-never. Strict mode only ever denies (it never auto-approves anything).
+Default installs are quiet: hooks fire only on plain structure searches
+(rg/ag/grep -r/git grep/find -name, `git log -S`) and the Grep tool, each
+class at most once per session, plus one router line on the session's first
+prompt. Everyday commands (git status, cargo, ls, cat) and subagent spawns
+never nudge. Calls without a session ID remain nudge-only.
 
 ## Routing
 
 | Question shape | Command |
 |---|---|
-| Orient in an unfamiliar repo (modules, hubs, doc entry points) | `sinter map --repo <repo>` |
+| Orient in an unfamiliar repo (module inventory, dependency hubs, docs, graph health) | `sinter map --repo <repo>` |
+| Starting a coding task ("add X", "fix Y", "cap Z") | `sinter context "<task>" --repo <repo>` first; then the specialized verbs below on the handles it returns |
 | Vague/conceptual: "where is the X", "how does Y work" | `sinter ask "<question>" --repo <repo>` |
 | Orient on a found symbol or file | `sinter show <symbol> --repo <repo>` |
 | Exact/fuzzy symbol lookup | `sinter query <symbol> --repo <repo>` |
@@ -72,7 +76,7 @@ nudge-only.
 | What does X depend on (forward, before touching X) | `sinter deps <symbol> --repo <repo>` |
 | Where is the graph blind (honesty check, negative proofs) | `sinter unresolved [--file <f>] [--name <n>] --repo <repo>` |
 | How does A reach B | `sinter path <A> <B> --repo <repo>` |
-| What does this commit/diff/PR affect downstream ("what changed recently and what does it touch") | `sinter impact <rev-range> --repo <repo>` (e.g. `HEAD~1..HEAD`; each symbol collection returns 20 entries by default with full totals/truncation metadata; use `--limit 0` for all entries; a single rev such as `HEAD` also reports staged, unstaged, deleted, renamed, and untracked working-tree entries) — prefer over `git show`/`git log` archaeology |
+| What does this commit/diff/PR affect downstream ("what changed recently and what does it touch") | `sinter impact [rev-range] --repo <repo>` (no range while editing = uncommitted working tree incl. untracked files; `--staged` = index only; e.g. `HEAD~1..HEAD`; each symbol collection returns 20 entries by default with full totals/truncation metadata; use `--limit 0` for all entries; a single rev such as `HEAD` also reports staged, unstaged, deleted, renamed, and untracked working-tree entries) — prefer over `git show`/`git log` archaeology |
 | Where do open PRs collide / merge risk | `sinter overlap <base...prA> <base...prB> ... --repo <repo>` |
 | Build or refresh a cross-repo graph | `sinter workspace <manifest.toml>` |
 | Cross-repo (distributed system) versions of the above | add `--workspace <manifest.toml>`; symbols may be `member:Symbol` |
@@ -108,9 +112,12 @@ do not infer production ownership from a path string.
 
 ## Reading results
 
-- Every `ask` topic reports query-term coverage, `ranking_margin`, calibration
-  version/sample/precision, `verify_required`, and advice. Honor `abstain` and
-  verification decisions before using a hit to mutate code.
+- Every `ask` topic reports query-term coverage, `ranking_margin`,
+  `confidence.ranking_bucket`, calibration version/sample/precision,
+  `verify_required`, and advice. The bucket measures score separation; it is
+  not a per-result probability. `confidence.level` is the v1 compatibility
+  alias. Honor `abstain` and verification decisions before using a hit to
+  mutate code.
 - Edges carry the call site: dependents and path steps print the
   `file:line` where the reference occurs (`site` in JSON) — jump straight
   there instead of re-searching.
