@@ -147,7 +147,10 @@ fn exact_variable(value: &str) -> Option<&str> {
 }
 
 pub fn observe_evidence(value: &serde_json::Value) -> AgentEvidence {
-    let coverage = value.get("coverage").unwrap_or(value);
+    let coverage = value
+        .get("coverage")
+        .or_else(|| value.get("health"))
+        .unwrap_or(value);
     let coverage_status = coverage
         .get("status")
         .and_then(serde_json::Value::as_str)
@@ -164,7 +167,7 @@ pub fn observe_evidence(value: &serde_json::Value) -> AgentEvidence {
             .get("stale")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
-    let partial = coverage_status.as_deref() == Some("not_proven")
+    let partial = matches!(coverage_status.as_deref(), Some("not_proven" | "partial"))
         || coverage
             .get("conclusive")
             .and_then(serde_json::Value::as_bool)
@@ -264,5 +267,20 @@ mod tests {
         assert!(evidence.partial);
         assert!(evidence.stale);
         assert_eq!(evidence.dirty_snapshot, Some(true));
+    }
+
+    #[test]
+    fn map_health_observation_marks_partial_inventory() {
+        let evidence = observe_evidence(&json!({
+            "health": {
+                "status": "partial",
+                "snapshot": {"dirty": false},
+                "compiler_index": {"state": "missing"}
+            }
+        }));
+        assert!(evidence.partial);
+        assert!(!evidence.stale);
+        assert_eq!(evidence.coverage_status.as_deref(), Some("partial"));
+        assert_eq!(evidence.compiler_index_state.as_deref(), Some("missing"));
     }
 }

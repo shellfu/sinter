@@ -76,7 +76,7 @@ pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
         }
         "show" => {
             let node = unique_symbol(store, &required_string(args, "symbol")?)?;
-            let scopes = store.file_scopes()?;
+            let scopes = store.scope_index()?;
             let edge_json = |edge: &sinter_core::Edge, other: &sinter_core::NodeId| {
                 json!({
                     "symbol": qualified_of(other.as_str()),
@@ -105,7 +105,7 @@ pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
             let limit = limit(args, 10);
             let selection = crate::corpus::ScopeSelection::from_json(
                 args,
-                crate::corpus::ScopeSelection::all(),
+                crate::corpus::ScopeSelection::agent_default(),
             )?;
             let (resolution, exact, mut nodes) =
                 match find_symbol(store, &required_string(args, "symbol")?)? {
@@ -113,15 +113,8 @@ pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
                     Found::Relocated(nodes) => ("relocated", false, nodes),
                     Found::Suggestions(nodes) => ("suggestions", false, nodes),
                 };
-            let scopes = store.file_scopes()?;
-            nodes.retain(|node| {
-                selection.contains(
-                    scopes
-                        .get(&node.file)
-                        .copied()
-                        .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(&node.file)),
-                )
-            });
+            let scopes = store.scope_index()?;
+            selection.narrow(&mut nodes, &scopes);
             Ok(json!({
                 "resolution": resolution,
                 "exact": exact,
@@ -129,6 +122,7 @@ pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
                 "results": nodes.iter().take(limit).map(|node| scoped_node_json(node, &scopes)).collect::<Vec<_>>(),
             }))
         }
+        "context" => crate::context::response(repo, store, &required_string(args, "task")?),
         "affected" => affected(repo, store, args),
         "deps" => dependencies(repo, store, args),
         "path" => path(repo, store, args),
@@ -225,7 +219,7 @@ fn affected_one(
         Err(error) => return Err(error),
     };
     let reached = store.dependents(&node.id, filter, depth)?;
-    let scopes = store.file_scopes()?;
+    let scopes = store.scope_index()?;
     let unresolved = store.unresolved_named(&node.name)?;
     let evidence = crate::coverage::TraversalEvidence::from_confidences(
         reached.iter().map(|item| item.via.confidence),
@@ -252,8 +246,7 @@ fn affected_one(
                     "s": qualified_of(reached.node.id.as_str()),
                     "k": reached.node.kind.as_str(),
                     "f": reached.node.file,
-                    "scope": scopes.get(&reached.node.file).copied()
-                        .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(&reached.node.file)).as_str(),
+                    "scope": scopes.scope_of(&reached.node).as_str(),
                     "e": format!("{}/{}", reached.via.relation.as_str(), reached.via.evidence.as_str()),
                     "c": match reached.via.confidence {
                         sinter_core::Confidence::Certain => "certain",
@@ -297,7 +290,7 @@ fn dependencies(repo: &Path, store: &sinter_store::Store, args: &Value) -> Resul
     let limit = limit(args, 50);
     let node = unique_symbol(store, &required_string(args, "symbol")?)?;
     let reached = store.dependencies(&node.id, &filter, depth)?;
-    let scopes = store.file_scopes()?;
+    let scopes = store.scope_index()?;
     let unresolved = store
         .references_in(&node.file)?
         .iter()
@@ -315,8 +308,7 @@ fn dependencies(repo: &Path, store: &sinter_store::Store, args: &Value) -> Resul
                 "s": qualified_of(reached.node.id.as_str()),
                 "k": reached.node.kind.as_str(),
                 "f": reached.node.file,
-                "scope": scopes.get(&reached.node.file).copied()
-                    .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(&reached.node.file)).as_str(),
+                "scope": scopes.scope_of(&reached.node).as_str(),
                 "e": format!("{}/{}", reached.via.relation.as_str(), reached.via.evidence.as_str()),
                 "c": match reached.via.confidence {
                     sinter_core::Confidence::Certain => "certain",
@@ -352,16 +344,13 @@ fn path(repo: &Path, store: &sinter_store::Store, args: &Value) -> Result<Value>
     let from = unique_symbol(store, &required_string(args, "from")?)?;
     let to = unique_symbol(store, &required_string(args, "to")?)?;
     let path = store.shortest_path(&from.id, &to.id, &filter)?;
-    let scopes = store.file_scopes()?;
+    let scopes = store.scope_index()?;
     let scope_of_id = |id: &sinter_core::NodeId| {
         let file = id
             .as_str()
             .split_once('#')
             .map_or(id.as_str(), |(file, _)| file);
-        scopes
-            .get(file)
-            .copied()
-            .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(file))
+        scopes.scope_of_id(id.as_str(), file)
     };
     let miss = path
         .is_none()
@@ -397,7 +386,7 @@ fn path(repo: &Path, store: &sinter_store::Store, args: &Value) -> Result<Value>
     Ok(out)
 }
 
-/// One-screen repository orientation card, matching `sinter map --json`.
+/// Structural repository inventory, matching `sinter map --json`.
 fn map(repo: &Path, store: &sinter_store::Store, args: &Value) -> Result<Value> {
     let selection = crate::corpus::ScopeSelection::from_json(
         args,

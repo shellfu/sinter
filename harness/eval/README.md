@@ -14,8 +14,10 @@ recorded in `cases.json`. It contains 249 hand-labeled tasks: 3 exact lookups,
 checks. Each run builds syntax-only graphs, so the score represents Sinter's
 zero-config behavior without SCIP.
 
-The local corpus in `agent-flows.json` adds nine multi-step scenarios:
-orientation, forward dependency analysis, reverse blast radius, test
+The local corpus in `agent-flows.json` adds nine multi-step scenarios. Its
+orientation case checks labeled repository facts from Map: the expected module,
+dependency hub, documentation entry point, hub metric, and graph-health state.
+The remaining scenarios cover forward dependency analysis, reverse blast radius, test
 selection, ambiguity and unresolved-reference handling, diff impact,
 stable-handle reuse after a harmless edit, dirty-working-tree refresh, and
 MCP/CLI parity. Each flow starts from a fresh two-commit fixture under
@@ -23,8 +25,10 @@ MCP/CLI parity. Each flow starts from a fresh two-commit fixture under
 The runner records flow and step correctness, abstention failures,
 unsafe-confidence failures, tool-call count, output bytes, and stale or
 partial evidence. These agent-flow measurements are observational and do not
-have release floors yet. A failing assertion appears in the scorecard instead
-of making the retrieval gates easier to pass.
+have release floors yet. The Map assertions validate its structural inventory;
+they do not prove that seeing Map improves an autonomous agent's task outcome.
+A failing assertion appears in the scorecard instead of making the retrieval
+gates easier to pass.
 
 Caller labels list every call site found by reading the source, including
 tests and receiver-typed calls (`cmd.Traverse(...)`) that a syntax-only graph
@@ -47,16 +51,19 @@ Hono and Gson are holdout repositories. A ranking change may be motivated by
 tuning results, but the holdout repositories only measure it. This prevents a
 repository's vocabulary and structure from appearing on both sides of the
 split. The scorecard reports ask metrics per split, repository, and intent,
-reports confidence-bucket precision only on holdout repositories, and lists
+reports ranking-margin-bucket precision only on holdout repositories, and lists
 every wrong top result beside the first relevant rank.
 
 The agent contract names the current frozen observation
 `ask-holdout-2026-08-21.v1`: high-margin results were correct in 22/25
 holdout cases, medium in 8/12, and low in 2/9. These are descriptive bucket
-measurements, not per-result probabilities. Runtime output therefore exposes
-the score gap as `ranking_margin`, reports the calibration version, sample,
-and measured precision separately, and requires verification below 95%
-measured precision. A result abstains when there is no runner-up, query-term
+measurements, not per-result probabilities, and 46 holdout cases is a small
+sample: the high bucket's Wilson 95% interval is about 70-96%. Runtime output
+therefore exposes the score gap as `ranking_margin`, reports the calibration
+version, counts, measured precision, and `precision_interval_95` separately,
+and requires verification below 95% measured precision. The 2026-08-22
+stopword and fuzzy-name-prefix ranking change was re-run on the holdout and
+reproduced the same bucket counts, so the calibration version is unchanged. A result abstains when there is no runner-up, query-term
 coverage is below 50%, or its calibration bucket has fewer than 10 cases.
 Changing these constants requires a new full holdout run and calibration
 version; tuning-only results cannot be substituted.
@@ -133,3 +140,57 @@ Labels come from source inspection. Do not change an expected symbol because Sin
 
 The network-backed retrieval evaluation remains ignored during normal
 `cargo test` and runs through `make test-eval`.
+
+## Coding-agent evaluation (optional-use)
+
+The retrieval suite above forces verb sequences. `agent_eval.py` instead
+hands a real change request to an unmodified coding agent and asks whether
+Sinter, merely being available, changes the outcome. This is the measurement
+that decides adoption. **No results have been produced yet**; the harness is
+scaffolded and verified only with a fake agent.
+
+Corpus: `agent_tasks/tasks.json` pins 30 change tasks across the five
+retrieval repositories (ripgrep, Cobra, Flask, Hono, Gson; five each) and this
+repository at a fixed commit (five). Each task has a natural-language request,
+`expected_files` (the files a correct change edits), optional
+`forbidden_files`, a `validate` command, and `hidden_files`: a test the agent
+never sees, copied into the clone after the agent finishes and before
+`validate` runs. Hidden tests live under `agent_tasks/hidden/<task-id>/`.
+Labels come from reading the pinned source; do not change a task to match an
+agent's answer.
+
+Arms, same model and prompt:
+
+- `baseline`: fresh clone, Sinter removed from `PATH`, no skill card.
+- `sinter-optional`: `sinter build` run in the clone, the skill card copied to
+  `.claude/skills/sinter/SKILL.md` and `AGENTS.md`; the agent chooses.
+- `sinter-context`: as above plus a prompt hint to use `sinter context`. The
+  arm is marked `skipped` when `sinter context --help` does not exit 0.
+
+Agent CLIs are configured in `agent_tasks/agents.json` (`claude -p` and
+`codex exec` included; `{prompt}` is substituted). Per (task, arm, run) the
+runner records one JSONL row: validate success, edited files and wrong-file
+edits (edited but not in `expected_files`), wall time, discovery tool calls
+(`rg`/`grep`/`find`/`cat`/`head`/`sed`/`ls`/Read/Grep/Glob and `sinter`
+invocations parsed from the transcript), bytes returned by those calls,
+fallback searches after the first `sinter` call, and total and maximum `sinter`
+response bytes. `scorecard.md` reports per-arm medians and the adoption gates:
+success holds or improves; median discovery calls and bytes fall at least 25%;
+wrong-file edits fall; every `sinter` response is within
+`SINTER_BUDGET_BYTES` (8192). Transcript metrics depend on the agent emitting
+JSONL (`--output-format stream-json` / `--json`); plain-text transcripts fall
+back to a regex over lines and report 0 bytes.
+
+```bash
+# prove the pipeline: fake agent, one task, one arm (builds sinter-core once)
+python3 harness/eval/agent_eval.py --dry-run
+
+# full evaluation (30 tasks x 3 arms x N runs; every run is a fresh clone
+# and an agent session — expect hours and real API spend)
+python3 harness/eval/agent_eval.py --agent claude --runs 3
+python3 harness/eval/agent_eval.py --agent codex --runs 3 --out target/sinter-agent-eval-codex
+```
+
+Outputs go to `target/sinter-agent-eval/` (`results.jsonl`, `scorecard.json`,
+`scorecard.md`, `transcripts/`). Toolchains the validate commands need: cargo,
+go, python3 with venv, node plus yarn, and maven with a JDK for Gson.

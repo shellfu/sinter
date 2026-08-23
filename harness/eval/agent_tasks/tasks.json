@@ -1,0 +1,434 @@
+{
+  "schema": 1,
+  "repositories": {
+    "ripgrep-14.1.1": {
+      "url": "https://github.com/BurntSushi/ripgrep.git",
+      "commit": "4649aa9700619f94cf9c66876e9549d83420e16c",
+      "language": "rust",
+      "setup": null
+    },
+    "cobra-v1.8.1": {
+      "url": "https://github.com/spf13/cobra.git",
+      "commit": "e94f6d0dd9a5e5738dca6bce03c4b1207ffbc0ec",
+      "language": "go",
+      "setup": null
+    },
+    "flask-3.0.3": {
+      "url": "https://github.com/pallets/flask.git",
+      "commit": "c12a5d874c5a014495eb2db8a73f40037bc813ac",
+      "language": "python",
+      "setup": "python3 -m venv .venv && .venv/bin/pip install -q -e . pytest"
+    },
+    "hono-v4.4.0": {
+      "url": "https://github.com/honojs/hono.git",
+      "commit": "03090608db9767652fe32482bc943882c6aa5cfb",
+      "language": "typescript",
+      "setup": "yarn install --frozen-lockfile --silent"
+    },
+    "gson-2.11.0": {
+      "url": "https://github.com/google/gson.git",
+      "commit": "828a97be0f8d58108b140b77df8dc76b657f4a87",
+      "language": "java",
+      "setup": null
+    },
+    "sinter": {
+      "url": "self",
+      "commit": "7bc9288f39bcab49d98f2aa05a8b3340cc549bc2",
+      "language": "rust",
+      "setup": null
+    }
+  },
+  "tasks": [
+    {
+      "id": "rg-hyperlink-zed-alias",
+      "repo": "ripgrep-14.1.1",
+      "request": "Add a `zed` hyperlink format alias so `--hyperlink-format zed` expands to `zed://file{path}:{line}:{column}`. Keep the alias table sorted; the existing sortedness test must still pass.",
+      "expected_files": [
+        "crates/printer/src/hyperlink_aliases.rs"
+      ],
+      "forbidden_files": [],
+      "validate": "cargo test -p grep-printer --test agent_eval_hidden",
+      "hidden_files": [
+        "crates/printer/tests/agent_eval_hidden.rs"
+      ]
+    },
+    {
+      "id": "rg-byteset-len",
+      "repo": "ripgrep-14.1.1",
+      "request": "`grep_matcher::ByteSet` has add/remove/contains but no way to ask how many bytes are in it. Add `len(&self) -> usize` and `is_empty(&self) -> bool`.",
+      "expected_files": [
+        "crates/matcher/src/lib.rs"
+      ],
+      "forbidden_files": [],
+      "validate": "cargo test -p grep-matcher --test agent_eval_hidden",
+      "hidden_files": [
+        "crates/matcher/tests/agent_eval_hidden.rs"
+      ]
+    },
+    {
+      "id": "rg-match-contains",
+      "repo": "ripgrep-14.1.1",
+      "request": "Add `Match::contains(&self, other: Match) -> bool` to grep-matcher: true when `other` lies entirely within `self` (an empty match at either boundary counts as contained).",
+      "expected_files": [
+        "crates/matcher/src/lib.rs"
+      ],
+      "forbidden_files": [],
+      "validate": "cargo test -p grep-matcher --test agent_eval_hidden_contains",
+      "hidden_files": [
+        "crates/matcher/tests/agent_eval_hidden_contains.rs"
+      ]
+    },
+    {
+      "id": "rg-types-remove",
+      "repo": "ripgrep-14.1.1",
+      "request": "`ignore::types::TypesBuilder` can add and clear type definitions but cannot delete one. Add `remove(&mut self, name: &str) -> bool` that drops the definition entirely (it must no longer appear in `definitions()`) and returns whether it existed.",
+      "expected_files": [
+        "crates/ignore/src/types.rs"
+      ],
+      "forbidden_files": [],
+      "validate": "cargo test -p ignore --test agent_eval_hidden",
+      "hidden_files": [
+        "crates/ignore/tests/agent_eval_hidden.rs"
+      ]
+    },
+    {
+      "id": "rg-types-dash-names",
+      "repo": "ripgrep-14.1.1",
+      "request": "Users define file types like `my-type:*.mt` and `my_type:*.mt` but `TypesBuilder::add`/`add_def` reject names containing `-` or `_`. Allow `-` and `_` in type names (still reject `all` and other punctuation). Update the doc comment that states the rule.",
+      "expected_files": [
+        "crates/ignore/src/types.rs"
+      ],
+      "forbidden_files": [],
+      "validate": "cargo test -p ignore --test agent_eval_hidden_names",
+      "hidden_files": [
+        "crates/ignore/tests/agent_eval_hidden_names.rs"
+      ]
+    },
+    {
+      "id": "cobra-args-plural",
+      "repo": "cobra-v1.8.1",
+      "request": "The positional-arg validators print `arg(s)`. Pluralise properly: `requires at least 1 arg, only received 0`, `requires at least 2 args, only received 1`, and likewise for MaximumNArgs, ExactArgs and RangeArgs (`accepts between 2 and 4 args, received 1`). Update the existing tests that assert the old wording.",
+      "expected_files": [
+        "args.go",
+        "args_test.go"
+      ],
+      "forbidden_files": [],
+      "validate": "go test ./...",
+      "hidden_files": [
+        "agent_eval_hidden_args_test.go"
+      ]
+    },
+    {
+      "id": "cobra-activehelp-empty",
+      "repo": "cobra-v1.8.1",
+      "request": "`AppendActiveHelp(compArray, \"\")` currently appends a bare marker line that the shells render as an empty hint. Make it a no-op when activeHelpStr is empty.",
+      "expected_files": [
+        "active_help.go"
+      ],
+      "forbidden_files": [],
+      "validate": "go test ./...",
+      "hidden_files": [
+        "agent_eval_hidden_activehelp_test.go"
+      ]
+    },
+    {
+      "id": "cobra-activehelp-global-fallback",
+      "repo": "cobra-v1.8.1",
+      "request": "`GetActiveHelpConfig` returns \"\" when `<PROGRAM>_ACTIVE_HELP` is unset even if `COBRA_ACTIVE_HELP` is set to something other than \"0\". When the program-specific variable is unset, fall back to the value of `COBRA_ACTIVE_HELP`.",
+      "expected_files": [
+        "active_help.go"
+      ],
+      "forbidden_files": [],
+      "validate": "go test ./...",
+      "hidden_files": [
+        "agent_eval_hidden_activehelp_fallback_test.go"
+      ]
+    },
+    {
+      "id": "cobra-command-depth",
+      "repo": "cobra-v1.8.1",
+      "request": "Add `(c *Command) Depth() int` returning how many ancestors a command has: the root is 0, a direct subcommand is 1, and so on.",
+      "expected_files": [
+        "command.go"
+      ],
+      "forbidden_files": [],
+      "validate": "go test ./...",
+      "hidden_files": [
+        "agent_eval_hidden_depth_test.go"
+      ]
+    },
+    {
+      "id": "cobra-onlyvalidargs-suggestion",
+      "repo": "cobra-v1.8.1",
+      "request": "`OnlyValidArgs` reports the invalid argument but builds the `Did you mean this?` suggestions from `args[0]` instead of the argument that failed. Suggest based on the offending argument.",
+      "expected_files": [
+        "args.go"
+      ],
+      "forbidden_files": [],
+      "validate": "go test ./...",
+      "hidden_files": [
+        "agent_eval_hidden_validargs_test.go"
+      ]
+    },
+    {
+      "id": "flask-debug-flag-off",
+      "repo": "flask-3.0.3",
+      "request": "`FLASK_DEBUG=off` enables debug mode because get_debug_flag only recognises 0/false/no. Treat `off` as false too.",
+      "expected_files": [
+        "src/flask/helpers.py"
+      ],
+      "forbidden_files": [],
+      "validate": ".venv/bin/python -m pytest -q tests/test_agent_eval_hidden_debug.py tests/test_helpers.py",
+      "hidden_files": [
+        "tests/test_agent_eval_hidden_debug.py"
+      ]
+    },
+    {
+      "id": "flask-flashed-category-str",
+      "repo": "flask-3.0.3",
+      "request": "`get_flashed_messages(category_filter=\"error\")` silently filters by the characters e, r, o because the argument is iterated. Accept a single string category and treat it as a one-element filter.",
+      "expected_files": [
+        "src/flask/helpers.py"
+      ],
+      "forbidden_files": [],
+      "validate": ".venv/bin/python -m pytest -q tests/test_agent_eval_hidden_flash.py tests/test_basic.py -k flash",
+      "hidden_files": [
+        "tests/test_agent_eval_hidden_flash.py"
+      ]
+    },
+    {
+      "id": "flask-blueprint-name-whitespace",
+      "repo": "flask-3.0.3",
+      "request": "Blueprint names with leading or trailing whitespace (`Blueprint(' api ', __name__)`) break endpoint lookups. Reject them in the constructor with a ValueError like the existing empty-name and dot checks.",
+      "expected_files": [
+        "src/flask/sansio/blueprints.py"
+      ],
+      "forbidden_files": [],
+      "validate": ".venv/bin/python -m pytest -q tests/test_agent_eval_hidden_bp.py tests/test_blueprints.py",
+      "hidden_files": [
+        "tests/test_agent_eval_hidden_bp.py"
+      ]
+    },
+    {
+      "id": "flask-prefixed-env-bare-prefix",
+      "repo": "flask-3.0.3",
+      "request": "`Config.from_prefixed_env()` with an environment variable named exactly `FLASK_` stores a config key of \"\". Skip variables whose name is only the prefix.",
+      "expected_files": [
+        "src/flask/config.py"
+      ],
+      "forbidden_files": [],
+      "validate": ".venv/bin/python -m pytest -q tests/test_agent_eval_hidden_config.py tests/test_config.py",
+      "hidden_files": [
+        "tests/test_agent_eval_hidden_config.py"
+      ]
+    },
+    {
+      "id": "flask-flash-empty-category",
+      "repo": "flask-3.0.3",
+      "request": "`flash(msg, category=\"\")` stores an empty category that templates then render as a blank CSS class. Fall back to the default `message` category when an empty category is passed.",
+      "expected_files": [
+        "src/flask/helpers.py"
+      ],
+      "forbidden_files": [],
+      "validate": ".venv/bin/python -m pytest -q tests/test_agent_eval_hidden_flash_cat.py tests/test_basic.py -k flash",
+      "hidden_files": [
+        "tests/test_agent_eval_hidden_flash_cat.py"
+      ]
+    },
+    {
+      "id": "hono-mime-case-insensitive",
+      "repo": "hono-v4.4.0",
+      "request": "`getMimeType('LOGO.PNG')` returns undefined because the extension lookup is case-sensitive. Make the extension match case-insensitively.",
+      "expected_files": [
+        "src/utils/mime.ts"
+      ],
+      "forbidden_files": [],
+      "validate": "npx vitest --run src/utils/mime.agent-eval.test.ts src/utils/mime.test.ts",
+      "hidden_files": [
+        "src/utils/mime.agent-eval.test.ts"
+      ]
+    },
+    {
+      "id": "hono-getextension-params",
+      "repo": "hono-v4.4.0",
+      "request": "`getExtension('text/html; charset=utf-8')` returns undefined because parameters are not stripped. Ignore anything after `;` when looking up the extension.",
+      "expected_files": [
+        "src/utils/mime.ts"
+      ],
+      "forbidden_files": [],
+      "validate": "npx vitest --run src/utils/mime.agent-eval-ext.test.ts src/utils/mime.test.ts",
+      "hidden_files": [
+        "src/utils/mime.agent-eval-ext.test.ts"
+      ]
+    },
+    {
+      "id": "hono-poweredby-server-name",
+      "repo": "hono-v4.4.0",
+      "request": "Let the poweredBy middleware take an options object `{ serverName?: string }` so the `X-Powered-By` header value can be customised; default stays `Hono`.",
+      "expected_files": [
+        "src/middleware/powered-by/index.ts"
+      ],
+      "forbidden_files": [],
+      "validate": "npx vitest --run src/middleware/powered-by/agent-eval.test.ts src/middleware/powered-by",
+      "hidden_files": [
+        "src/middleware/powered-by/agent-eval.test.ts"
+      ]
+    },
+    {
+      "id": "hono-parseaccept-bare-param",
+      "repo": "hono-v4.4.0",
+      "request": "`parseAccept('text/html;level')` throws because a parameter without `=` has no value. Tolerate bare parameters: record them with an empty-string value instead of throwing.",
+      "expected_files": [
+        "src/helper/accepts/accepts.ts"
+      ],
+      "forbidden_files": [],
+      "validate": "npx vitest --run src/helper/accepts/agent-eval.test.ts src/helper/accepts",
+      "hidden_files": [
+        "src/helper/accepts/agent-eval.test.ts"
+      ]
+    },
+    {
+      "id": "hono-accepts-wildcard",
+      "repo": "hono-v4.4.0",
+      "request": "In the accepts helper, `defaultMatch` falls through to the default when the client sends `*/*` or `*`. Make a wildcard accept entry match the first supported type instead (explicit non-wildcard matches still win).",
+      "expected_files": [
+        "src/helper/accepts/accepts.ts"
+      ],
+      "forbidden_files": [],
+      "validate": "npx vitest --run src/helper/accepts/agent-eval-wildcard.test.ts src/helper/accepts",
+      "hidden_files": [
+        "src/helper/accepts/agent-eval-wildcard.test.ts"
+      ]
+    },
+    {
+      "id": "gson-jsonarray-addall-collection",
+      "repo": "gson-2.11.0",
+      "request": "Add `JsonArray.addAll(Collection<? extends JsonElement>)`; null elements become JsonNull.INSTANCE like the other add methods.",
+      "expected_files": [
+        "gson/src/main/java/com/google/gson/JsonArray.java"
+      ],
+      "forbidden_files": [],
+      "validate": "mvn -q -pl gson test -Dtest=AgentEvalJsonArrayAddAllTest -Dsurefire.failIfNoSpecifiedTests=false",
+      "hidden_files": [
+        "gson/src/test/java/com/google/gson/AgentEvalJsonArrayAddAllTest.java"
+      ]
+    },
+    {
+      "id": "gson-jsonobject-getordefault",
+      "repo": "gson-2.11.0",
+      "request": "Add `JsonObject.getOrDefault(String memberName, JsonElement defaultValue)` returning the member if present (including an explicit JsonNull), otherwise the default.",
+      "expected_files": [
+        "gson/src/main/java/com/google/gson/JsonObject.java"
+      ],
+      "forbidden_files": [],
+      "validate": "mvn -q -pl gson test -Dtest=AgentEvalJsonObjectGetOrDefaultTest -Dsurefire.failIfNoSpecifiedTests=false",
+      "hidden_files": [
+        "gson/src/test/java/com/google/gson/AgentEvalJsonObjectGetOrDefaultTest.java"
+      ]
+    },
+    {
+      "id": "gson-naming-upper-dashes",
+      "repo": "gson-2.11.0",
+      "request": "Add `FieldNamingPolicy.UPPER_CASE_WITH_DASHES` (`someFieldName` -> `SOME-FIELD-NAME`, `_someFieldName` -> `_SOME-FIELD-NAME`) following the pattern of the existing policies.",
+      "expected_files": [
+        "gson/src/main/java/com/google/gson/FieldNamingPolicy.java"
+      ],
+      "forbidden_files": [],
+      "validate": "mvn -q -pl gson test -Dtest=AgentEvalNamingPolicyTest -Dsurefire.failIfNoSpecifiedTests=false",
+      "hidden_files": [
+        "gson/src/test/java/com/google/gson/AgentEvalNamingPolicyTest.java"
+      ]
+    },
+    {
+      "id": "gson-parsestring-null",
+      "repo": "gson-2.11.0",
+      "request": "`JsonParser.parseString(null)` fails with a NullPointerException from deep inside StringReader. Fail fast with a NullPointerException whose message is `json == null`.",
+      "expected_files": [
+        "gson/src/main/java/com/google/gson/JsonParser.java"
+      ],
+      "forbidden_files": [],
+      "validate": "mvn -q -pl gson test -Dtest=AgentEvalJsonParserNullTest -Dsurefire.failIfNoSpecifiedTests=false",
+      "hidden_files": [
+        "gson/src/test/java/com/google/gson/AgentEvalJsonParserNullTest.java"
+      ]
+    },
+    {
+      "id": "gson-jsonarray-contains-null",
+      "repo": "gson-2.11.0",
+      "request": "`JsonArray.contains(null)` and `JsonArray.remove((JsonElement) null)` return false even when the array holds JsonNull, while `add(null)` stores JsonNull.INSTANCE. Normalise null to JsonNull.INSTANCE in contains and remove.",
+      "expected_files": [
+        "gson/src/main/java/com/google/gson/JsonArray.java"
+      ],
+      "forbidden_files": [],
+      "validate": "mvn -q -pl gson test -Dtest=AgentEvalJsonArrayNullTest -Dsurefire.failIfNoSpecifiedTests=false",
+      "hidden_files": [
+        "gson/src/test/java/com/google/gson/AgentEvalJsonArrayNullTest.java"
+      ]
+    },
+    {
+      "id": "sinter-scope-case-insensitive",
+      "repo": "sinter",
+      "request": "`CorpusScope::from_str_opt(\"Test\")` returns None; users pass `--scope Test` and `PROD`. Make scope parsing case-insensitive.",
+      "expected_files": [
+        "crates/sinter-core/src/node.rs"
+      ],
+      "forbidden_files": [],
+      "validate": "cargo test -p sinter-core --test agent_eval_hidden_scope",
+      "hidden_files": [
+        "crates/sinter-core/tests/agent_eval_hidden_scope.rs"
+      ]
+    },
+    {
+      "id": "sinter-relation-from-str",
+      "repo": "sinter",
+      "request": "`Relation` and `Evidence` have `as_str` but no inverse. Add `from_str_opt(&str) -> Option<Self>` on both, accepting exactly the strings `as_str` produces.",
+      "expected_files": [
+        "crates/sinter-core/src/edge.rs"
+      ],
+      "forbidden_files": [],
+      "validate": "cargo test -p sinter-core --test agent_eval_hidden_relation",
+      "hidden_files": [
+        "crates/sinter-core/tests/agent_eval_hidden_relation.rs"
+      ]
+    },
+    {
+      "id": "sinter-rel-display-curdir",
+      "repo": "sinter",
+      "request": "`rel_display(Path::new(\"./src/a.rs\"))` yields `./src/a.rs`, which breaks byte-exact file key comparisons. Drop `.` (current-dir) components so it yields `src/a.rs`.",
+      "expected_files": [
+        "crates/sinter-core/src/paths.rs"
+      ],
+      "forbidden_files": [],
+      "validate": "cargo test -p sinter-core --test agent_eval_hidden_paths",
+      "hidden_files": [
+        "crates/sinter-core/tests/agent_eval_hidden_paths.rs"
+      ]
+    },
+    {
+      "id": "sinter-nodeid-file",
+      "repo": "sinter",
+      "request": "Add `NodeId::file(&self) -> &str` returning the path part before the first `#`; for file-node ids (no `#`) return the whole id.",
+      "expected_files": [
+        "crates/sinter-core/src/node.rs"
+      ],
+      "forbidden_files": [],
+      "validate": "cargo test -p sinter-core --test agent_eval_hidden_nodeid",
+      "hidden_files": [
+        "crates/sinter-core/tests/agent_eval_hidden_nodeid.rs"
+      ]
+    },
+    {
+      "id": "sinter-classify-jest-dirs",
+      "repo": "sinter",
+      "request": "`CorpusScope::classify_path` does not recognise Jest conventions: files under `__tests__/` or `__mocks__/` directories are classified as production. Classify them as Test.",
+      "expected_files": [
+        "crates/sinter-core/src/node.rs"
+      ],
+      "forbidden_files": [],
+      "validate": "cargo test -p sinter-core --test agent_eval_hidden_classify",
+      "hidden_files": [
+        "crates/sinter-core/tests/agent_eval_hidden_classify.rs"
+      ]
+    }
+  ]
+}

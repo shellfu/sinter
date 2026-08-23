@@ -1,0 +1,14 @@
+{
+  "claude": {
+    "cmd": ["claude", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits"],
+    "timeout_s": 1800
+  },
+  "codex": {
+    "cmd": ["codex", "exec", "--json", "--full-auto", "{prompt}"],
+    "timeout_s": 1800
+  },
+  "fake": {
+    "cmd": ["sh", "{harness}/agent_tasks/fake_agent.sh"],
+    "timeout_s": 60
+  }
+}

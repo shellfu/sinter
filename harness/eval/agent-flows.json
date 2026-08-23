@@ -14,9 +14,14 @@
           "id": "map",
           "args": ["map"],
           "expect": [
-            {"pointer": "/nodes", "predicate": "non_empty"},
-            {"pointer": "/modules", "predicate": "non_empty"},
-            {"pointer": "/docs", "predicate": "non_empty"}
+            {"pointer": "/orientation/kind", "predicate": "equals", "value": "repository_inventory"},
+            {"pointer": "/orientation/hub_metric", "predicate": "equals", "value": "non_contains_in_degree"},
+            {"pointer": "/modules", "predicate": "contains", "value": {"path": "src", "files": 1}},
+            {"pointer": "/hubs", "predicate": "contains", "value": {"name": "dispatch", "file": "src/lib.rs"}},
+            {"pointer": "/docs", "predicate": "contains", "value": {"file": "README.md"}},
+            {"pointer": "/docs/0/sections", "predicate": "contains", "value": "Agent flow fixture"},
+            {"pointer": "/health/status", "predicate": "equals", "value": "partial"},
+            {"pointer": "/health/compiler_index/state", "predicate": "equals", "value": "missing"}
           ]
         },
         {

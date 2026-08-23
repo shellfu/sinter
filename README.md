@@ -7,8 +7,10 @@
 A local code knowledge graph for coding agents, shipped as one static binary.
 sinter builds a typed, directed graph of a repository's symbols with
 tree-sitter and keeps it fresh incrementally. Start in an unfamiliar repository
-with `sinter map`: it returns a one-screen module tree, the most depended-on
-symbols, and documentation entry points. Then use the graph for focused work:
+with `sinter map`: it returns a bounded structural inventory with module
+node/file counts, dependency hubs measured by graph in-degree, documentation
+entry points, and graph-health limitations. It does not infer runtime entry
+points or domain ownership. Then use the graph for focused work:
 
 - **Reverse blast radius** — what transitively depends on a symbol,
   cross-file and cross-language (`sinter affected`).
@@ -22,8 +24,10 @@ symbols, and documentation entry points. Then use the graph for focused work:
   zero setup is not compiler-complete resolution.
 - **Calibrated lexical navigation** — `sinter ask` ranks content-bearing
   starting points from names, docs, paths, signatures, and limited call
-  evidence. It reports measured top-result calibration and explicit
-  verify-or-abstain guidance; it is a navigator, not a semantic answer engine.
+  evidence. It reports a ranking-margin bucket, that bucket's holdout count
+  with a 95% interval (the holdout is 46 cases, so the interval is wide), and
+  explicit verify-or-abstain guidance. The bucket is not a per-result
+  probability; `ask` is a navigator, not a semantic answer engine.
 - **Symbol orientation** — `sinter show` turns a selected symbol into a compact
   card with its definition and graph neighborhood.
 - **Cross-repo workspaces** — federated graphs over many repos for
@@ -37,7 +41,11 @@ operator-declared cross-repo links, and Rust trait impls add labeled
 `dynamic` dispatch fan-out so blast radius survives `dyn Trait`).
 Ambiguity resolves to nothing — "unresolved" is a first-class, counted
 outcome, never a guess. Every edge carries its evidence kind, and every
-query can filter on it.
+query can filter on it. Be clear about what that buys without a compiler:
+syntax-only evidence binds names it can prove by scope and imports and
+leaves the rest (receiver calls, re-exports, macros) unresolved, so the
+zero-setup graph is a precise subset, not the full graph. `sinter scip`
+closes that gap where a compiler index is available.
 
 ## Install
 
@@ -93,12 +101,18 @@ This command only builds or refreshes `.sinter/`. It is safe to run within a
 read-oriented coding flow.
 
 Onboard a repository — builds the graph, installs git hooks, registers
-agent integration (AGENTS.md block, MCP, Claude skill), and finishes with
-a doctor report:
+agent integration (AGENTS.md block, MCP), and finishes with a doctor
+report:
 
 ```
 ./target/release/sinter init /path/to/repo
 ```
+
+Init prints everything it is about to write, grouped by scope, and asks
+once before writing any of it (`-y` skips the prompt; a non-interactive
+run prints the plan and proceeds). Every write lands inside the repo —
+`--global` adds the machine-wide skill card and enforcement hooks in
+`~/.claude`.
 
 On a terminal, init asks before running compiler indexers (`sinter scip`)
 because those toolchains execute repository build scripts; pass `--scip`
@@ -148,11 +162,12 @@ $ sinter ask "where is the trigram search"
 `ask` is a calibrated lexical navigator, so treat its hits as places to inspect
 rather than generated answers. Every hit shows its match provenance. Agent JSON
 groups results by topic under one strict result budget and reports
-`ranking_margin`, query-term
-coverage, the named holdout calibration, `verify_required`, and topic-level
-advice. Weak singletons, low term coverage, and undersampled confidence
-buckets abstain. CLI JSON and MCP `structuredContent.data` use the same
-`sinter.agent.v1` payload.
+`ranking_margin`, query-term coverage, the named holdout calibration,
+`verify_required`, and topic-level advice. Weak singletons, low term coverage,
+and undersampled ranking-margin buckets abstain. In `sinter.agent.v1`,
+`confidence.ranking_bucket` names the bucket explicitly while
+`confidence.level` remains as a compatibility alias. CLI JSON and MCP
+`structuredContent.data` use the same payload.
 
 Every `affected`, `deps`, and `path` response is deliberately bounded. Positive
 and negative answers include a `coverage` object with the graph snapshot,
@@ -173,8 +188,8 @@ silently rebinding.
 | Command | Purpose |
 |---|---|
 | `sinter ensure [repo]` | Build or refresh only the derived graph; does not install hooks or edit agent/client configuration |
-| `sinter map [repo]` | First action in an unfamiliar repo: one-screen module tree, hub symbols, and doc entry points (`--json`) |
-| `sinter init [repo]` | Onboard a repo: build + hooks + agent integration + doctor (`--scip`/`--no-scip` answer the indexer consent up front; `-g` also installs enforcement hooks globally) |
+| `sinter map [repo]` | First action in an unfamiliar repo: structural module inventory, explicitly measured dependency hubs, doc entry points, and graph health (`--json`) |
+| `sinter init [repo]` | Onboard a repo: build + hooks + agent integration + doctor. Shows its plan and confirms first (`-y` skips). Repo-scoped by default; `-g` also installs the skill card and enforcement hooks machine-wide (`--scip`/`--no-scip` answer the indexer consent up front) |
 | `sinter uninit [repo]` | Offboard completely: remove the graph and every sinter-managed artifact (`-g` also removes global skill + hooks) |
 | `sinter build [repo]` | Build or incrementally refresh the graph |
 | `sinter watch [repo]` | Keep the graph fresh from filesystem events |

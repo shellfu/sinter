@@ -2,6 +2,7 @@ mod affected;
 mod agent_protocol;
 mod ask;
 mod build;
+mod context;
 mod corpus;
 mod coverage;
 mod deps;
@@ -17,6 +18,7 @@ mod map;
 mod overlap;
 mod pathcmd;
 mod pipeline;
+mod progress;
 mod query;
 mod render;
 mod repository_tools;
@@ -42,6 +44,15 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 struct Cli {
     #[command(subcommand)]
     command: Command,
+    /// Cap `--json` output at this many bytes: text fields are shortened,
+    /// then trailing entries dropped (`truncated`, `totals`, `next_cursor`
+    /// say what was cut). Unlimited by default — MCP defaults to 8000
+    #[arg(long, global = true, value_name = "N")]
+    budget_bytes: Option<usize>,
+    /// Resume result lists at this offset (a previous `next_cursor`;
+    /// `--cursor` is taken by `init`'s Cursor rule file)
+    #[arg(long, global = true, value_name = "N", default_value_t = 0)]
+    offset: usize,
 }
 
 const EXIT_CODES: &str =
@@ -114,9 +125,12 @@ enum Command {
         /// Skip compiler indexers without prompting
         #[arg(long)]
         no_scip: bool,
-        /// Also install enforcement hooks globally (~/.claude), not just this repo
+        /// Also install the skill card and enforcement hooks machine-wide (~/.claude)
         #[arg(short = 'g', long)]
         global: bool,
+        /// Skip the confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
         /// Write a starter workspace manifest instead (path defaults to ws.toml)
         #[arg(long, value_name = "MANIFEST")]
         workspace: Option<Option<PathBuf>>,
@@ -225,6 +239,18 @@ enum Command {
         #[arg(long, requires = "json")]
         explain: bool,
     },
+    /// Evidence packet for a coding task: edit candidates, direct
+    /// deps/dependents, relevant tests, gaps, next commands
+    Context {
+        /// Task description ("cap every agent JSON response at 8 KB")
+        task: String,
+        /// Repository to query
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`)
+        #[arg(long)]
+        json: bool,
+    },
     /// One-screen orientation card for a symbol or file
     Show {
         /// Symbol: name, qualified suffix (`Config::new`), or node id
@@ -239,9 +265,10 @@ enum Command {
         #[arg(long)]
         if_snapshot: Option<String>,
     },
-    /// Search symbols (exact + trigram), content-bearing results
+    /// Find symbols by name or fragment (exact + trigram); for relations
+    /// use `show`, `affected`, `deps`, `path`
     Query {
-        /// Symbol name, qualified suffix, or fuzzy fragment
+        /// Symbol name, qualified suffix, or fuzzy fragment (not a relation query)
         symbol: String,
         /// Repository to query
         #[arg(long, default_value = ".")]
@@ -250,7 +277,7 @@ enum Command {
         #[arg(long, default_value_t = 10)]
         limit: usize,
         /// Corpus roles to search (comma-separated, or `all`)
-        #[arg(long, value_delimiter = ',', default_value = "all")]
+        #[arg(long, value_delimiter = ',', default_value = "production,docs")]
         scope: Vec<String>,
         /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`)
         #[arg(long)]
@@ -275,7 +302,9 @@ enum Command {
         /// Maximum dependents to print
         #[arg(long, default_value_t = 200)]
         limit: usize,
-        /// Corpus roles traversal may enter (comma-separated, or `all`)
+        /// Corpus roles traversal may enter (comma-separated, or `all`).
+        /// Symbol lookup prefers production,docs when a name is ambiguous;
+        /// pass an explicit scope or `name@file` to pick another copy
         #[arg(long, value_delimiter = ',', default_value = "all")]
         scope: Vec<String>,
         /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`; not
@@ -303,7 +332,9 @@ enum Command {
         /// Maximum dependencies to print
         #[arg(long, default_value_t = 200)]
         limit: usize,
-        /// Corpus roles traversal may enter (comma-separated, or `all`)
+        /// Corpus roles traversal may enter (comma-separated, or `all`).
+        /// Symbol lookup prefers production,docs when a name is ambiguous;
+        /// pass an explicit scope or `name@file` to pick another copy
         #[arg(long, value_delimiter = ',', default_value = "all")]
         scope: Vec<String>,
         /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`)
@@ -347,7 +378,9 @@ enum Command {
         /// Traverse across the workspace (path to manifest)
         #[arg(long)]
         workspace: Option<PathBuf>,
-        /// Corpus roles traversal may enter (comma-separated, or `all`)
+        /// Corpus roles traversal may enter (comma-separated, or `all`).
+        /// Symbol lookup prefers production,docs when a name is ambiguous;
+        /// pass an explicit scope or `name@file` to pick another copy
         #[arg(long, value_delimiter = ',', default_value = "all")]
         scope: Vec<String>,
         /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`; not
@@ -363,11 +396,16 @@ enum Command {
         relations: RelationsArg,
     },
     /// Changed symbols, blast radius, and affected tests for a rev range
+    /// or, with no range, for the uncommitted working tree
     Impact {
-        /// Git rev range (e.g. HEAD~1..HEAD, main...branch). A single rev
-        /// (`HEAD`) diffs the working tree against it: uncommitted edits to
-        /// tracked files; untracked files are not included
-        rev_range: String,
+        /// Git rev range (e.g. HEAD~1..HEAD, main...branch). Omitted (or a
+        /// single rev such as `HEAD`): diff the working tree against it,
+        /// including untracked non-ignored files
+        rev_range: Option<String>,
+        /// Diff the index (staged changes) against HEAD instead of the
+        /// working tree; untracked files are not included
+        #[arg(long, conflicts_with = "rev_range")]
+        staged: bool,
         /// Repository to query
         #[arg(long, default_value = ".")]
         repo: PathBuf,
@@ -416,7 +454,7 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// One-screen orientation for a repo: modules, hubs, doc entry points
+    /// Structural repo inventory: modules, dependency hubs, docs, graph health
     Map {
         #[command(flatten)]
         repo: RepoArg,
@@ -530,6 +568,16 @@ fn main() -> ExitCode {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
     let cli = Cli::parse();
+    // `context` is the one CLI verb with a default budget: its packet is
+    // agent-facing by definition (it exists to be pasted into a context
+    // window), so it gets the MCP default unless `--budget-bytes` says
+    // otherwise (0 = unlimited).
+    let default_budget = matches!(cli.command, Command::Context { .. })
+        .then_some(agent_protocol::MCP_DEFAULT_BUDGET_BYTES);
+    agent_protocol::set_cli_budget(agent_protocol::Budget {
+        bytes: cli.budget_bytes.or(default_budget).filter(|&n| n > 0),
+        cursor: cli.offset,
+    });
     // Stale-artifact nudge on maintenance commands only: one stderr line
     // per installed artifact that differs from this binary's embedded
     // copy. Query verbs stay clean — agents read stderr with stdout, and
@@ -574,6 +622,7 @@ fn main() -> ExitCode {
             scip,
             no_scip,
             global,
+            yes,
             workspace,
             name,
             members,
@@ -611,7 +660,7 @@ fn main() -> ExitCode {
             } else {
                 None
             };
-            return match init::run(repo.path(), cursor, scip_consent, global) {
+            return match init::run(repo.path(), cursor, scip_consent, global, yes) {
                 Ok(true) => ExitCode::SUCCESS,
                 Ok(false) => ExitCode::FAILURE,
                 Err(e) => {
@@ -678,6 +727,14 @@ fn main() -> ExitCode {
                     });
             return if json {
                 grep_exit_json("ask", result)
+            } else {
+                grep_exit(result)
+            };
+        }
+        Command::Context { task, repo, json } => {
+            let result = context::run(&repo, &task, json);
+            return if json {
+                grep_exit_json("context", result)
             } else {
                 grep_exit(result)
             };
@@ -819,6 +876,7 @@ fn main() -> ExitCode {
         }
         Command::Impact {
             rev_range,
+            staged,
             repo,
             workspace,
             limit,
@@ -827,7 +885,8 @@ fn main() -> ExitCode {
         } => {
             let result = impact::run(
                 &repo,
-                &rev_range,
+                rev_range.as_deref(),
+                staged,
                 workspace.as_deref(),
                 &filter.evidence,
                 filter.certain,
