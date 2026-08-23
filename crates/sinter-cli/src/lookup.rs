@@ -414,10 +414,10 @@ fn language_of(node: &Node) -> Option<&'static str> {
 fn dominant_language(file_scopes: &HashMap<String, CorpusScope>) -> Option<String> {
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for (file, scope) in file_scopes {
-        if *scope == CorpusScope::Production {
-            if let Some(spec) = sinter_extract::spec_for_path(file) {
-                *counts.entry(spec.name).or_default() += 1;
-            }
+        if *scope == CorpusScope::Production
+            && let Some(spec) = sinter_extract::spec_for_path(file)
+        {
+            *counts.entry(spec.name).or_default() += 1;
         }
     }
     counts
@@ -438,16 +438,17 @@ fn break_ties(
     let mut dropped = Vec::new();
     let mut reason = None;
     let mut keep = nodes;
-    if let Some(dominant) = dominant {
-        if keep.len() > 1 && keep.iter().any(|n| language_of(n) == Some(dominant)) {
-            let (same, other): (Vec<Node>, Vec<Node>) = keep
-                .into_iter()
-                .partition(|n| language_of(n) == Some(dominant));
-            keep = same;
-            if !other.is_empty() {
-                dropped.extend(other);
-                reason = Some("language");
-            }
+    if let Some(dominant) = dominant
+        && keep.len() > 1
+        && keep.iter().any(|n| language_of(n) == Some(dominant))
+    {
+        let (same, other): (Vec<Node>, Vec<Node>) = keep
+            .into_iter()
+            .partition(|n| language_of(n) == Some(dominant));
+        keep = same;
+        if !other.is_empty() {
+            dropped.extend(other);
+            reason = Some("language");
         }
     }
     if keep.len() > 1 {
