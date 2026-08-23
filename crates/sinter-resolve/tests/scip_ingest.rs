@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use protobuf::Message;
 use scip::types::{Document, Index, Occurrence};
 use sinter_core::{Evidence, Node, NodeId, Reference, Relation, Span, SymbolKind};
@@ -105,11 +107,18 @@ fn scip_binds_reference_to_definition() {
         ..Default::default()
     };
 
-    let resolution = resolve_with_index(&index, &nodes, &references, |path| match path {
-        "a.rs" => Some(a_src.to_string()),
-        "b.rs" => Some(b_src.to_string()),
-        _ => None,
-    });
+    let resolution =
+        resolve_with_index(
+            &index,
+            &nodes,
+            &references,
+            &BTreeSet::new(),
+            |path| match path {
+                "a.rs" => Some(a_src.to_string()),
+                "b.rs" => Some(b_src.to_string()),
+                _ => None,
+            },
+        );
 
     let bindings = resolution.bindings;
     assert_eq!(bindings.len(), 1);
@@ -175,7 +184,7 @@ fn external_moniker_synthesizes_dep_node() {
         ..Default::default()
     };
 
-    let resolution = resolve_with_index(&index, &nodes, &references, |path| {
+    let resolution = resolve_with_index(&index, &nodes, &references, &BTreeSet::new(), |path| {
         (path == "m.rs").then(|| src.to_string())
     });
 
@@ -237,7 +246,7 @@ fn descriptor_markers_pick_kinds() {
             }],
             ..Default::default()
         };
-        let resolution = resolve_with_index(&index, &[], &references, |path| {
+        let resolution = resolve_with_index(&index, &[], &references, &BTreeSet::new(), |path| {
             (path == "m.rs").then(|| src.to_string())
         });
         assert_eq!(resolution.external.len(), 1, "{descriptors}");
@@ -245,4 +254,72 @@ fn descriptor_markers_pick_kinds() {
         assert_eq!(dep.kind, kind, "{descriptors}");
         assert_eq!(dep.name, name, "{descriptors}");
     }
+}
+
+/// A SCIP occurrence inside a macro token tree overlaps no extracted
+/// reference; in a file being resolved it still becomes an edge from the
+/// enclosing node to the definition. Out of scope, nothing is produced.
+#[test]
+fn unanchored_occurrence_in_scope_becomes_edge() {
+    let a_src = "fn target() {}\n";
+    let b_src = "fn caller() { assert_eq!(target(), 1); }\n";
+    let nodes = vec![
+        node(
+            "a.rs#target@0",
+            "a.rs",
+            "target",
+            Span { start: 0, end: 14 },
+        ),
+        node(
+            "b.rs#caller@0",
+            "b.rs",
+            "caller",
+            Span { start: 0, end: 40 },
+        ),
+    ];
+    let index = Index {
+        documents: vec![
+            Document {
+                relative_path: "a.rs".to_string(),
+                occurrences: vec![Occurrence {
+                    range: vec![0, 3, 9],
+                    symbol: "test . . . target().".to_string(),
+                    symbol_roles: scip::types::SymbolRole::Definition as i32,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            Document {
+                relative_path: "b.rs".to_string(),
+                occurrences: vec![Occurrence {
+                    range: vec![0, 25, 31],
+                    symbol: "test . . . target().".to_string(),
+                    symbol_roles: 0,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let read = |path: &str| match path {
+        "a.rs" => Some(a_src.to_string()),
+        "b.rs" => Some(b_src.to_string()),
+        _ => None,
+    };
+
+    let out_of_scope = resolve_with_index(&index, &nodes, &[], &BTreeSet::new(), read);
+    assert!(out_of_scope.bindings.is_empty());
+    assert!(out_of_scope.unanchored.is_empty());
+
+    let scope = BTreeSet::from(["b.rs".to_string()]);
+    let resolution = resolve_with_index(&index, &nodes, &[], &scope, read);
+    assert!(resolution.bindings.is_empty());
+    assert_eq!(resolution.unanchored.len(), 1);
+    let edge = &resolution.unanchored[0];
+    assert_eq!(edge.src.as_str(), "b.rs#caller@0");
+    assert_eq!(edge.dst.as_str(), "a.rs#target@0");
+    assert_eq!(edge.relation, Relation::Calls);
+    assert_eq!(edge.evidence, Evidence::Scip);
+    assert_eq!(edge.site, Some(Span { start: 25, end: 31 }));
 }

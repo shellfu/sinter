@@ -53,7 +53,8 @@
 
 ; type references from signatures, bodies, fields, struct literals and
 ; `Type::assoc` paths: a function that mentions a type depends on it.
-; Single-letter names (generics) and `Self` carry no resolvable target.
+; Single-letter names (generics), `Self` and the inferred `_` carry no
+; resolvable target.
 (scoped_type_identifier name: (type_identifier) @ref.use) @refpath
-((type_identifier) @ref.use (#not-match? @ref.use "^(Self|[A-Z])$"))
-((scoped_identifier path: (identifier) @ref.use) (#match? @ref.use "^[A-Z]"))
+((type_identifier) @ref.use (#not-match? @ref.use "^(Self|_|[A-Z])$"))
+((scoped_identifier path: (identifier) @ref.use) (#match? @ref.use "^[A-Z]") (#not-eq? @ref.use "Self"))

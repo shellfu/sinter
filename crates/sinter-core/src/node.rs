@@ -58,6 +58,12 @@ impl CorpusScope {
     /// explicit override. Rules operate on complete path components and
     /// well-known generated suffixes to avoid hiding ordinary source whose
     /// name merely contains words such as `test` or `example`.
+    ///
+    /// Test-infrastructure directories (`harness`, `bench`, `benches`,
+    /// `benchmark`, `benchmarks`, `eval`, `evals`, `e2e`) count only as the
+    /// top-level component: a crate or module literally named `eval` under
+    /// `crates/` or `src/` stays production. Nested `fixtures`, `golden`,
+    /// `testdata`, `examples`, and `tests` components still match anywhere.
     pub fn classify_path(file: &str) -> Self {
         if file.starts_with("dep:") {
             return Self::Vendor;
@@ -113,6 +119,19 @@ impl CorpusScope {
         if components
             .iter()
             .any(|component| matches!(*component, "test" | "tests" | "spec" | "specs"))
+            || components.first().is_some_and(|component| {
+                matches!(
+                    *component,
+                    "harness"
+                        | "bench"
+                        | "benches"
+                        | "benchmark"
+                        | "benchmarks"
+                        | "eval"
+                        | "evals"
+                        | "e2e"
+                )
+            })
             || basename.starts_with("test_")
             || basename.contains("_test.")
             || basename.contains(".test.")
@@ -401,6 +420,20 @@ mod tests {
             ("third_party/parser.c", CorpusScope::Vendor),
             ("docs/architecture.md", CorpusScope::Docs),
             ("src/contest.rs", CorpusScope::Production),
+            ("harness/eval/runner/scoring.rs", CorpusScope::Test),
+            (
+                "harness/eval/fixtures/agent-flow/main.rs",
+                CorpusScope::Fixture,
+            ),
+            (
+                "harness/golden/fixtures/go-basic/main.go",
+                CorpusScope::Fixture,
+            ),
+            ("benches/ask.rs", CorpusScope::Test),
+            ("e2e/smoke.ts", CorpusScope::Test),
+            ("crates/sinter-cli/tests/cli.rs", CorpusScope::Test),
+            ("crates/eval/src/lib.rs", CorpusScope::Production),
+            ("src/eval/mod.rs", CorpusScope::Production),
         ];
         for (path, expected) in cases {
             assert_eq!(CorpusScope::classify_path(path), expected, "{path}");

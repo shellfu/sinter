@@ -34,6 +34,8 @@ pub struct BuildReport {
     /// A SCIP index was ingested that predates the newest source file:
     /// its bindings are compiler evidence for code that has since moved.
     pub scip_stale: bool,
+    /// FILE_SCOPE rows whose classification changed without the file changing.
+    pub scope_rows_restamped: usize,
 }
 
 /// Build progress, reported as it happens. The graph is complete and
@@ -385,9 +387,17 @@ pub fn build_with(
                 })
         })
     };
+    // Facts are content-addressed against the *extractor* that produced
+    // them: a new binary may extract different references from identical
+    // bytes (query or classifier changes). Different binary → every file is
+    // changed, so stale facts never survive an upgrade silently.
+    let binary_fingerprint = Some(env!("CARGO_PKG_VERSION").to_string());
+    let extractor_changed = store.resolve_fingerprint("binary")? != binary_fingerprint;
     let changed_files: Vec<&str> = hashes
         .iter()
-        .filter(|(f, s)| stored.get(f).map(|st| &st.hash) != Some(&s.hash) && in_scope(f))
+        .filter(|(f, s)| {
+            (extractor_changed || stored.get(f).map(|st| &st.hash) != Some(&s.hash)) && in_scope(f)
+        })
         .map(|(f, _)| f.as_str())
         .collect();
     let removed: Vec<String> = stored
@@ -466,7 +476,7 @@ pub fn build_with(
     let delta = store.update_files(&changed_facts, &removed)?;
     // Classification is independent of source bytes. Persist it on every
     // build so editing only `.sinter.toml` immediately changes agent views.
-    store.set_file_scopes(&scopes)?;
+    let scope_rows_restamped = store.set_file_scopes(&scopes)?;
     // Only file names are needed past this point; the full facts (gigabytes
     // on large corpora) drop here instead of living to end of build.
     let changed_names: Vec<String> = changed_facts.iter().map(|f| f.file.clone()).collect();
@@ -605,9 +615,10 @@ pub fn build_with(
         let mut dep_derived: HashMap<String, Vec<sinter_core::Node>> = HashMap::new();
         if let Some(scip_path) = scip_index_path(&repo) {
             let index = sinter_resolve::load_index(&scip_path)?;
-            let resolution = sinter_resolve::resolve_with_index(&index, &nodes, &refs, |rel| {
-                read_repo_source(&repo, rel)
-            });
+            let resolution =
+                sinter_resolve::resolve_with_index(&index, &nodes, &refs, &affected, |rel| {
+                    read_repo_source(&repo, rel)
+                });
             for binding in resolution.bindings {
                 if resolved_idx.insert(binding.reference) {
                     stats.scip += 1;
@@ -672,6 +683,10 @@ pub fn build_with(
                     dep_derived.entry(node.file.clone()).or_default().push(node);
                 }
             }
+            // Occurrences no extracted reference anchors (macro token
+            // trees): compiler-proven, so they become edges too.
+            stats.scip_unanchored = resolution.unanchored.len();
+            edges.extend(resolution.unanchored);
             dep_symbols = used_dep_ids.len();
             dep_packages = dep_derived.len();
         }
@@ -806,6 +821,7 @@ pub fn build_with(
     store.commit_stamps(&stamp_rows)?;
     store.set_resolve_fingerprint("scip", scip_fingerprint.as_deref())?;
     store.set_resolve_fingerprint("module_roots", roots_fingerprint.as_deref())?;
+    store.set_resolve_fingerprint("binary", binary_fingerprint.as_deref())?;
     // Everything above is committed; the crash-recovery intent has served
     // its purpose. (A crash between the stamps and here replays some files
     // redundantly next build — idempotent, same edges.)
@@ -863,6 +879,7 @@ pub fn build_with(
         total_unresolved,
         elapsed: started.elapsed(),
         scip_stale,
+        scope_rows_restamped,
     })
 }
 
@@ -883,8 +900,12 @@ pub fn print_summary(repo: &Path, report: &BuildReport) {
     // Deliberately does not restate the symbol/edge counts: the `Ready`
     // phase line already carries those, and one number printed twice
     // reads as two different numbers.
+    let restamped = match report.scope_rows_restamped {
+        0 => String::new(),
+        n => format!(", {n} scope rows re-stamped"),
+    };
     println!(
-        "  {} indexed{rate}, {} on disk",
+        "  {} indexed{rate}{restamped}, {} on disk",
         crate::render::count(report.scanned, "file"),
         db_size(repo)
     );
@@ -907,8 +928,11 @@ pub fn print_report(report: &BuildReport) {
         report.failures.len(),
         report.elapsed,
     );
+    if report.scope_rows_restamped > 0 {
+        println!("  {} scope rows re-stamped", report.scope_rows_restamped);
+    }
     println!(
-        "  resolution (this pass): {} resolved (scip {}, import {}, scope {}), {} unresolved ({} internal, {} external)",
+        "  resolution (this pass): {} resolved (scip {}, import {}, scope {}), {} unresolved ({} internal, {} external), {} unanchored scip edges",
         report.stats.resolved(),
         report.stats.scip,
         report.stats.import,
@@ -916,6 +940,7 @@ pub fn print_report(report: &BuildReport) {
         report.stats.unresolved(),
         report.stats.unresolved_internal,
         report.stats.unresolved_external,
+        report.stats.scip_unanchored,
     );
     match report.stats.anchored_unresolved_rate() {
         Some(rate) => println!(

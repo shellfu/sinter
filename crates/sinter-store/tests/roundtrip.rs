@@ -202,3 +202,30 @@ proptest! {
         prop_assert_eq!(Store::open(&path).unwrap().read_graph().unwrap(), g);
     }
 }
+
+#[test]
+fn unchanged_file_gets_rescoped_when_classification_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::create(dir.path().join("g.redb")).unwrap();
+    let file = "harness/h.rs".to_string();
+    let mut graph = Graph::new();
+    graph.add_node(node("h")).unwrap();
+    store.write_graph(&graph).unwrap();
+    // First classifier: harness/ is production.
+    let n = store
+        .set_file_scopes(&[(file.clone(), CorpusScope::Production)])
+        .unwrap();
+    assert_eq!(n, 1);
+    assert_eq!(store.file_scopes().unwrap()[&file], CorpusScope::Production);
+    // Classifier changed, file bytes did not: no update_files call.
+    let n = store
+        .set_file_scopes(&[(file.clone(), CorpusScope::Test)])
+        .unwrap();
+    assert_eq!(n, 1);
+    assert_eq!(store.file_scopes().unwrap()[&file], CorpusScope::Test);
+    // Same classification again: write-free, zero rows.
+    assert_eq!(
+        store.set_file_scopes(&[(file, CorpusScope::Test)]).unwrap(),
+        0
+    );
+}

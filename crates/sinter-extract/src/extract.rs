@@ -276,6 +276,15 @@ impl Extractor {
         // its path and bare): keep the path-bearing one, never both.
         let mut refs = collected.refs;
         refs.retain(|r| !collected.def_name_spans.contains(&(r.start, r.end)));
+        // Rust prelude/primitive names never name a corpus symbol unless
+        // this file defines one of the same name (then it may shadow).
+        if self.spec.name == "rust" {
+            refs.retain(|r| {
+                r.path.is_some()
+                    || !RUST_PRELUDE.contains(&r.name.as_str())
+                    || entries.iter().any(|e| e.name == r.name)
+            });
+        }
         refs.sort_by_key(|r| (r.start, r.end, r.path.is_none()));
         refs.dedup_by_key(|r| (r.start, r.end));
         let references = refs
@@ -407,6 +416,14 @@ impl Extractor {
         })
     }
 }
+
+/// Bare Rust names that always come from the prelude or are primitive
+/// types: a reference to one is noise unless the file shadows it.
+const RUST_PRELUDE: &[&str] = &[
+    "Ok", "Err", "Some", "None", "Vec", "String", "Box", "Option", "Result", "Self", "bool",
+    "char", "str", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128",
+    "isize", "f32", "f64",
+];
 
 /// Byte ranges of every node of the given kinds, in document order —
 /// the included-range input for a secondary inline parse. Matched nodes
@@ -572,7 +589,7 @@ fn collect(
                     start: node.start_byte(),
                     end: node.end_byte(),
                     name: text(node, source).to_string(),
-                    path: refpath.map(|p| text(p, source).to_string()),
+                    path: refpath.map(|p| qualified_path(p, node, source)),
                     alias: None,
                     relation,
                 });
@@ -595,6 +612,22 @@ fn collect(
             }
         }
     }
+}
+
+/// Path text for a qualified reference: the immediate receiver joined to
+/// the referenced name by the separator written between them. Using the
+/// receiver child rather than the whole `refpath` text keeps a method
+/// chain (`a.b().c()`) from smearing the entire chain into the path of
+/// its tail, and drops the whitespace/comments around the separator.
+fn qualified_path(refpath: TsNode<'_>, name: TsNode<'_>, source: &str) -> String {
+    let receiver = refpath
+        .named_child(0)
+        .filter(|c| refpath.id() != name.id() && c.end_byte() <= name.start_byte());
+    let Some(receiver) = receiver else {
+        return text(refpath, source).to_string();
+    };
+    let sep = source[receiver.end_byte()..name.start_byte()].trim();
+    format!("{}{sep}{}", text(receiver, source), text(name, source))
 }
 
 fn text<'a>(node: TsNode<'_>, source: &'a str) -> &'a str {

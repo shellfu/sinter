@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use protobuf::Message;
 use scip::types::Index;
-use sinter_core::{Edge, Node, NodeId, Reference, Span, SymbolKind};
+use sinter_core::{Edge, Node, NodeId, Reference, Relation, Span, SymbolKind};
 
 use crate::resolver::Binding;
 
@@ -24,6 +24,11 @@ pub struct ScipResolution {
     /// parse as a `<scheme> <manager> <package> <version> <descriptors>`
     /// moniker (skipped silently, counted here).
     pub external_skipped: usize,
+    /// Edges from SCIP reference occurrences that overlap NO extracted
+    /// reference (macro token trees: `format!`, `assert_eq!`, ...) but sit
+    /// inside one of our nodes and point at an in-corpus definition. Only
+    /// produced for files in `scope`; src is the enclosing node.
+    pub unanchored: Vec<Edge>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -108,10 +113,14 @@ pub fn merge_index_files(paths: &[&Path], out: &Path) -> Result<(), ScipError> {
 /// occurrence overlaps its span and the symbol's definition occurrence
 /// falls inside one of our nodes. `read_source` maps a repo-relative path
 /// to its content (for line→byte conversion); return None to skip a file.
+/// `scope` is the set of files being (re)resolved: occurrences there that
+/// anchor to no extracted reference still yield `unanchored` edges, so
+/// calls the extractor cannot see (inside macro token trees) are not lost.
 pub fn resolve_with_index(
     index: &Index,
     nodes: &[Node],
     references: &[Reference],
+    scope: &BTreeSet<String>,
     mut read_source: impl FnMut(&str) -> Option<String>,
 ) -> ScipResolution {
     let mut line_starts: HashMap<String, Vec<u64>> = HashMap::new();
@@ -206,10 +215,14 @@ pub fn resolve_with_index(
     // symbol -> parsed dep node (None: unparseable, skip and count once).
     let mut dep_cache: HashMap<String, Option<Node>> = HashMap::new();
     let mut skipped: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut unanchored: Vec<Edge> = Vec::new();
     for document in &index.documents {
-        let Some(file_refs) = refs_by_file.get(document.relative_path.as_str()) else {
+        let file = document.relative_path.as_str();
+        let in_scope = scope.contains(file);
+        let file_refs = refs_by_file.get(file).map_or(&[][..], Vec::as_slice);
+        if file_refs.is_empty() && !in_scope {
             continue;
-        };
+        }
         for occ in &document.occurrences {
             if occ.symbol_roles & scip::types::SymbolRole::Definition as i32 != 0
                 || occ.symbol.starts_with("local ")
@@ -229,10 +242,12 @@ pub fn resolve_with_index(
             else {
                 continue;
             };
+            let mut anchored = false;
             for (i, r) in file_refs {
                 if !span_contains(r.span, pos) {
                     continue;
                 }
+                anchored = true;
                 let distance = pos - r.span.start;
                 let make_edge = |dst: NodeId| Edge {
                     src: r
@@ -271,6 +286,39 @@ pub fn resolve_with_index(
                     }
                 }
             }
+            if anchored || !in_scope {
+                continue;
+            }
+            // No extracted reference covers this occurrence (macro token
+            // tree): the compiler still proved the call, so keep it.
+            let (Some(target), Some(src)) = (
+                target,
+                nodes_by_file
+                    .get(file)
+                    .into_iter()
+                    .flatten()
+                    .filter(|n| span_contains(n.span, pos))
+                    .min_by_key(|n| n.span.end - n.span.start),
+            ) else {
+                continue;
+            };
+            let end = match occ.range.as_slice() {
+                [_, _, c] => to_byte(file, occ.range[0], *c),
+                [_, _, l, c] => to_byte(file, *l, *c),
+                _ => None,
+            }
+            .unwrap_or(pos);
+            unanchored.push(Edge {
+                src: src.id.clone(),
+                dst: target.id.clone(),
+                relation: match target.kind {
+                    SymbolKind::Function | SymbolKind::Method => Relation::Calls,
+                    _ => Relation::Uses,
+                },
+                evidence: sinter_core::Evidence::Scip,
+                confidence: sinter_core::Evidence::Scip.confidence(),
+                site: Some(Span { start: pos, end }),
+            });
         }
     }
     let mut external_nodes: HashMap<String, Node> = HashMap::new();
@@ -288,6 +336,7 @@ pub fn resolve_with_index(
             .collect(),
         external_nodes: external_nodes.into_values().collect(),
         external_skipped: skipped.len(),
+        unanchored,
     }
 }
 

@@ -499,28 +499,32 @@ impl Store {
         Ok(out)
     }
 
-    /// Persist repository classification overrides for already indexed
-    /// files. Clean builds remain write-free when every row is unchanged.
-    pub fn set_file_scopes(&self, rows: &[(String, CorpusScope)]) -> Result<(), StoreError> {
+    /// Persist repository classification for already indexed files and
+    /// return how many rows changed. Classification is path-only, so the
+    /// caller passes every known file on every build: a classifier or
+    /// `.sinter.toml` change re-stamps unchanged files too. Clean builds
+    /// remain write-free when every row is unchanged.
+    pub fn set_file_scopes(&self, rows: &[(String, CorpusScope)]) -> Result<usize, StoreError> {
         if rows.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
         let existing = self.file_scopes()?;
-        if rows
+        let stale: Vec<&(String, CorpusScope)> = rows
             .iter()
-            .all(|(file, scope)| existing.get(file) == Some(scope))
-        {
-            return Ok(());
+            .filter(|(file, scope)| existing.get(file) != Some(scope))
+            .collect();
+        if stale.is_empty() {
+            return Ok(0);
         }
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(FILE_SCOPE)?;
-            for (file, scope) in rows {
+            for (file, scope) in &stale {
                 table.insert(file.as_str(), scope.as_str())?;
             }
         }
         txn.commit()?;
-        Ok(())
+        Ok(stale.len())
     }
 
     /// Complete persisted scope map. Unknown legacy/malformed values fall

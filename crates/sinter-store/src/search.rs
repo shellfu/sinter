@@ -228,11 +228,14 @@ impl Store {
         ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let table = txn.open_table(NODES)?;
         let mut nodes = Vec::new();
-        for (id, shared) in ranked.into_iter().take(limit.max(1)) {
-            // Require a majority of query trigrams to appear in the name.
-            if shared * 2 >= query_grams.len()
-                && let Some(guard) = table.get(id.as_str())?
-            {
+        // Require a majority of query trigrams to appear in the name; filter
+        // before capping so weak hits cannot crowd out qualifying ones.
+        for (id, _) in ranked
+            .into_iter()
+            .filter(|(_, shared)| shared * 2 >= query_grams.len())
+            .take(limit.max(1))
+        {
+            if let Some(guard) = table.get(id.as_str())? {
                 nodes.push(postcard::from_bytes(guard.value())?);
             }
         }

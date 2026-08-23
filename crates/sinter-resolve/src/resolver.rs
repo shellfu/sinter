@@ -47,6 +47,9 @@ pub struct ResolutionStats {
     /// denominators: internal evidence can never find a symbol with no
     /// in-corpus definition, so mixing these in would fake a regression.
     pub scip_external: usize,
+    /// Edges from SCIP occurrences no extracted reference anchors (macro
+    /// token trees). Not references, so outside every rate denominator.
+    pub scip_unanchored: usize,
 }
 
 impl ResolutionStats {
