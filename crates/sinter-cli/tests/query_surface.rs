@@ -776,7 +776,7 @@ fn lookup_prefers_production_over_fixture_copies() {
     let (ok, out) = sinter(repo, &["show", "entry"]);
     assert!(ok, "{out}");
     assert!(out.contains("src/lib.rs"), "{out}");
-    assert!(out.contains("1 more `entry` outside scope"), "{out}");
+    assert!(out.contains("1 other `entry` ignored (fixture)"), "{out}");
 
     // Explicit file suffix still reaches the fixture copy.
     let (ok, out) = sinter(repo, &["show", "entry@tests/fixtures/a/src/lib.rs"]);

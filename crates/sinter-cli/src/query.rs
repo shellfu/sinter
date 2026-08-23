@@ -34,6 +34,18 @@ fn rank_suggestions(store: &Store, symbol: &str) -> Result<Vec<Node>> {
     Ok(nodes)
 }
 
+/// `head*tail` when the symbol holds exactly one `*`; `None` for exact
+/// lookup. Only `*` is supported.
+fn glob_parts(symbol: &str) -> Result<Option<(&str, &str)>> {
+    match symbol.split_once('*') {
+        None => Ok(None),
+        Some((_, tail)) if tail.contains('*') => {
+            anyhow::bail!("glob `{symbol}` may contain only one `*`")
+        }
+        Some(parts) => Ok(Some(parts)),
+    }
+}
+
 /// `file:LINE (start..end)` header plus signature and doc, matching `show`.
 fn print_node(repo: &Path, node: &Node) {
     let line = line_of(repo, &node.file, node.span.start);
@@ -67,10 +79,17 @@ pub fn run(
 ) -> Result<bool> {
     let store = open_store(repo)?;
     let snapshot = ensure_snapshot(&store, if_snapshot)?;
-    let (resolution, exact, mut nodes) = match find_symbol(&store, symbol)? {
-        Found::Exact(nodes) => ("exact", true, nodes),
-        Found::Relocated(nodes) => ("relocated", false, nodes),
-        Found::Suggestions(_) => ("suggestions", false, rank_suggestions(&store, symbol)?),
+    let (resolution, exact, mut nodes) = match glob_parts(symbol)? {
+        Some((head, tail)) => {
+            let mut nodes = store.nodes_glob(head, tail)?;
+            nodes.sort_by(|a, b| (&a.file, a.span.start).cmp(&(&b.file, b.span.start)));
+            ("glob", true, nodes)
+        }
+        None => match find_symbol(&store, symbol)? {
+            Found::Exact(nodes) => ("exact", true, nodes),
+            Found::Relocated(nodes) => ("relocated", false, nodes),
+            Found::Suggestions(_) => ("suggestions", false, rank_suggestions(&store, symbol)?),
+        },
     };
     let scope_index = store.scope_index()?;
     scopes.narrow(&mut nodes, &scope_index);
@@ -107,4 +126,18 @@ pub fn run(
         }
     }
     Ok(!nodes.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::glob_parts;
+
+    #[test]
+    fn glob_parts_splits_single_star() {
+        assert_eq!(glob_parts("Hooks::*").unwrap(), Some(("Hooks::", "")));
+        assert_eq!(glob_parts("*::run").unwrap(), Some(("", "::run")));
+        assert_eq!(glob_parts("resolve_*").unwrap(), Some(("resolve_", "")));
+        assert_eq!(glob_parts("run").unwrap(), None);
+        assert!(glob_parts("a*b*").is_err());
+    }
 }

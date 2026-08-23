@@ -844,7 +844,9 @@ mod tests {
 
         assert_eq!(
             advice_for(&hits).as_deref(),
-            Some("abstain: no_runner_up; refine the topic or inspect multiple candidates")
+            Some(
+                "confidence: unrated (no_runner_up); verify top hit or inspect multiple candidates"
+            )
         );
     }
 

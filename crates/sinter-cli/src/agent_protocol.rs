@@ -190,7 +190,7 @@ fn summary(operation: &str, data: &Value) -> String {
 
 /// Replace every `compiler_index` object with its MCP summary:
 /// `{state, stale_inputs, missing_index_for}`.
-fn slim_compiler_index(value: &mut Value) {
+pub(crate) fn slim_compiler_index(value: &mut Value) {
     match value {
         Value::Object(map) => {
             for (key, v) in map.iter_mut() {

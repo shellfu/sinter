@@ -20,32 +20,57 @@ struct Report {
     fixed: usize,
     /// Findings after `integration()` are notes, not problems.
     integration: bool,
+    /// `--json`: findings are collected per section and emitted once by
+    /// `summary()` instead of being printed as they arrive.
+    json: Option<HashMap<&'static str, Vec<serde_json::Value>>>,
 }
 
 impl Report {
-    fn new(fix: bool) -> Self {
+    fn new(fix: bool, json: bool) -> Self {
         Self {
             problems: 0,
             notes: 0,
             fix,
             fixed: 0,
             integration: false,
+            json: json.then(HashMap::new),
+        }
+    }
+    fn emit(&mut self, status: &str, msg: &str, fix: Option<&str>) {
+        if let Some(sections) = &mut self.json {
+            let section = if self.integration {
+                "integration"
+            } else {
+                "graph"
+            };
+            let mut finding = serde_json::json!({ "status": status, "message": msg });
+            if let Some(fix) = fix {
+                finding["fix"] = fix.into();
+            }
+            sections.entry(section).or_default().push(finding);
+        } else {
+            println!("  {status:<5} {msg}");
+            if let Some(fix) = fix {
+                println!("        -> {fix}");
+            }
         }
     }
     fn ok(&mut self, msg: &str) {
-        println!("  ok    {msg}");
+        self.emit("ok", msg, None);
     }
     fn section(&mut self, name: &str) {
         self.integration = name == "integration";
-        println!("{name}");
+        if self.json.is_none() {
+            println!("{name}");
+        }
     }
     fn warn(&mut self, msg: &str, fix: &str) {
         if self.integration {
             self.notes += 1;
-            println!("  note  {msg}\n        -> {fix}");
+            self.emit("note", msg, Some(fix));
         } else {
             self.problems += 1;
-            println!("  FIX   {msg}\n        -> {fix}");
+            self.emit("FIX", msg, Some(fix));
         }
     }
     /// A finding doctor can repair itself. Under `--fix` the action runs
@@ -61,12 +86,22 @@ impl Report {
         match action() {
             Ok(()) => {
                 self.fixed += 1;
-                println!("  FIXED {msg}");
+                self.emit("FIXED", msg, None);
             }
             Err(e) => self.warn(&format!("{msg} (auto-fix failed: {e:#})"), cmd),
         }
     }
-    fn summary(&self) {
+    fn summary(&mut self) {
+        if let Some(mut sections) = self.json.take() {
+            let out = serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "graph": sections.remove("graph").unwrap_or_default(),
+                "integration": sections.remove("integration").unwrap_or_default(),
+                "summary": { "fixed": self.fixed, "problems": self.problems, "notes": self.notes },
+            });
+            println!("{out}");
+            return;
+        }
         if self.fix {
             println!(
                 "{} fixed, {} graph problem(s), {} integration note(s) remaining",
@@ -82,7 +117,7 @@ impl Report {
 }
 
 /// Workspace health: member freshness and boundary-link staleness.
-pub fn run_workspace(manifest: &Path, fix: bool) -> Result<bool> {
+pub fn run_workspace(manifest: &Path, fix: bool, json: bool) -> Result<bool> {
     // The one fix for every workspace finding is the build itself, and it
     // is stat-gated (cheap when fresh) — so `--fix` runs it up front and
     // the diagnosis below reports the post-fix state.
@@ -90,12 +125,12 @@ pub fn run_workspace(manifest: &Path, fix: bool) -> Result<bool> {
         crate::workspace::run(manifest)?;
     }
     let ws = crate::workspace::load(manifest)?;
-    let mut r = Report::new(fix);
-    println!(
+    let mut r = Report::new(fix, json);
+    r.section(&format!(
         "workspace `{}` ({} members)",
         ws.manifest.workspace.name,
         ws.members.len()
-    );
+    ));
     for (name, repo) in &ws.members {
         if pipeline::db_path(repo).exists() {
             r.ok(&format!(
@@ -127,10 +162,12 @@ pub fn run_workspace(manifest: &Path, fix: bool) -> Result<bool> {
     Ok(r.problems == 0)
 }
 
-pub fn run(repo: &Path, fix: bool) -> Result<bool> {
-    let mut r = Report::new(fix);
+pub fn run(repo: &Path, fix: bool, json: bool) -> Result<bool> {
+    let mut r = Report::new(fix, json);
 
-    println!("sinter {}", env!("CARGO_PKG_VERSION"));
+    if !json {
+        println!("sinter {}", env!("CARGO_PKG_VERSION"));
+    }
     r.section("graph");
     let names: Vec<&str> = LANGUAGES.iter().map(|l| l.name).collect();
     r.ok(&format!("languages: {}", names.join(", ")));

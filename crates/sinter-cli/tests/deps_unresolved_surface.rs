@@ -127,9 +127,16 @@ fn unresolved_lists_and_filters_gaps() {
 
     // missing_fn is extracted but never bound — it must be listed with
     // its site and enclosing definition.
+    // Default output is counts plus actionable rows; likely-external names
+    // are hidden behind `--all`.
     let (ok, out) = sinter(repo, &["unresolved"]);
     assert!(ok, "{out}");
     assert!(out.contains("unresolved reference(s)"), "{out}");
+    assert!(out.contains("likely_external"), "{out}");
+    assert!(!out.contains("missing_fn"), "{out}");
+    assert!(out.contains("--all"), "{out}");
+    let (ok, out) = sinter(repo, &["unresolved", "--all"]);
+    assert!(ok, "{out}");
     assert!(out.contains("missing_fn"), "{out}");
     assert!(out.contains("unrelated"), "{out}");
 
@@ -145,11 +152,25 @@ fn unresolved_lists_and_filters_gaps() {
     assert!(!ok, "{out}");
     assert!(out.contains("0 unresolved"), "{out}");
 
-    // JSON carries the same entries.
+    // JSON default keeps the totals but lists only default rows; `--all`
+    // carries every entry.
     let (ok, out) = sinter(repo, &["unresolved", "--json"]);
     assert!(ok, "{out}");
     let v: serde_json::Value = serde_json::from_str(&out).expect("json");
     assert!(v["total"].as_u64().unwrap() >= 1, "{out}");
+    assert!(
+        v["by_category"]["likely_external"].as_u64().unwrap() >= 1,
+        "{out}"
+    );
+    let rows = v["unresolved"].as_array().unwrap();
+    assert!(!rows.is_empty(), "{out}");
+    assert!(
+        rows.iter().all(|r| r["category"] != "likely_external"),
+        "{out}"
+    );
+    let (ok, out) = sinter(repo, &["unresolved", "--json", "--all"]);
+    assert!(ok, "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("json");
     assert!(
         v["unresolved"].as_array().unwrap().iter().any(|r| {
             r["name"].as_str() == Some("missing_fn") && r["reason"].as_str() == Some("syntax_only")
@@ -174,6 +195,22 @@ fn negative_traversals_lead_with_not_proven_and_keep_observed_counts() {
         out.contains("unresolved ref(s) also name `target`"),
         "{out}"
     );
+    // No index: scip is the fix. Footer is one coverage line carrying the
+    // snapshot, plus the index gap; the generic disclaimers stay out.
+    assert!(out.contains("`sinter scip` would bind them"), "{out}");
+    assert!(out.contains("coverage: partial · 0 certain"), "{out}");
+    assert!(out.contains("· snapshot graph-"), "{out}");
+    assert!(!out.contains("  snapshot: "), "{out}");
+    assert!(!out.contains("filters:"), "{out}");
+    assert!(!out.contains("not proof that no runtime path"), "{out}");
+    assert_eq!(out.matches("gap:").count(), 1, "{out}");
+
+    // Fresh index: the same refs are not bindable by scip.
+    std::fs::write(repo.join(".sinter/index.scip"), b"").unwrap();
+    let (_, out) = sinter(repo, &["affected", "target"]);
+    assert!(out.contains("not bindable by scip"), "{out}");
+    assert!(!out.contains("gap:"), "{out}");
+    std::fs::remove_file(repo.join(".sinter/index.scip")).unwrap();
 
     let (ok, out) = sinter(repo, &["affected", "target", "--json"]);
     assert!(!ok, "{out}");
@@ -181,6 +218,17 @@ fn negative_traversals_lead_with_not_proven_and_keep_observed_counts() {
     assert_eq!(value["status"], "not_proven", "{out}");
     assert_eq!(value["total"], 0, "{out}");
     assert!(value["unresolved_refs_matching_name"].as_u64().unwrap() >= 1);
+    // CLI JSON carries the slim compiler index; `doctor` keeps the projects.
+    assert!(
+        value["coverage"]["compiler_index"]
+            .get("projects")
+            .is_none(),
+        "{out}"
+    );
+    assert_eq!(
+        value["coverage"]["compiler_index"]["state"], "missing",
+        "{out}"
+    );
 
     let (ok, out) = sinter(repo, &["deps", "unresolved_receiver"]);
     assert!(!ok, "{out}");

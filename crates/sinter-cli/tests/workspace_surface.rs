@@ -105,7 +105,7 @@ fn workspace_end_to_end() {
     assert!(out.contains("auth:Login"), "{out}");
     assert!(out.contains("billing:Charge"), "{out}");
     assert!(out.contains("import"), "{out}");
-    assert!(out.contains("snapshot: workspace-"), "{out}");
+    assert!(out.contains("snapshot workspace-"), "{out}");
     assert!(out.contains("coverage: partial"), "{out}");
 
     // Declared link: PublishSettled's dependents include billing's

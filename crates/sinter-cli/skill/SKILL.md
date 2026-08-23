@@ -74,7 +74,8 @@ never nudge. Calls without a session ID remain nudge-only.
 | Exact/fuzzy symbol lookup | `sinter query <symbol> --repo <repo>` |
 | What depends on X / blast radius (reverse) | `sinter affected <symbol> --repo <repo>` |
 | What does X depend on (forward, before touching X) | `sinter deps <symbol> --repo <repo>` |
-| Where is the graph blind (honesty check, negative proofs) | `sinter unresolved [--file <f>] [--name <n>] --repo <repo>` |
+| Where is the graph blind (honesty check, negative proofs) | `sinter unresolved [--file <f>] [--name <n>] [--all] --repo <repo>` (default prints actionable gaps only; `--all` lists external/unsupported rows) |
+| List a type's members or every impl of a method | `sinter query 'Type::*'` · `sinter query '*::method'` |
 | How does A reach B | `sinter path <A> <B> --repo <repo>` |
 | What does this commit/diff/PR affect downstream ("what changed recently and what does it touch") | `sinter impact [rev-range] --repo <repo>` (no range while editing = uncommitted working tree incl. untracked files; `--staged` = index only; e.g. `HEAD~1..HEAD`; each symbol collection returns 20 entries by default with full totals/truncation metadata; use `--limit 0` for all entries; a single rev such as `HEAD` also reports staged, unstaged, deleted, renamed, and untracked working-tree entries) — prefer over `git show`/`git log` archaeology |
 | Where do open PRs collide / merge risk | `sinter overlap <base...prA> <base...prB> ... --repo <repo>` |
@@ -105,8 +106,10 @@ tiers) plus `--relations calls,uses,imports,implements,extends` —
 `--relations calls,uses` cuts file-level import noise from a blast
 radius; implements/extends follows interface fan-out.
 
-Discovery defaults to `production,docs`. Pass `--scope` (or MCP `scope`) when
-tests, fixtures, examples, generated files, or vendor code are relevant.
+Text footers are one `coverage:` line plus query-specific gaps; set `SINTER_VERBOSE_COVERAGE=1` for filters and every repository-wide limitation.
+
+Every verb defaults to `production,test,docs`. Pass `--scope` (or MCP `scope`)
+when fixtures, examples, generated files, or vendor code are relevant.
 Exact `show` remains unfiltered. Result nodes carry their persisted `scope`;
 do not infer production ownership from a path string.
 

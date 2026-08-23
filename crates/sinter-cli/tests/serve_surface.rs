@@ -288,7 +288,10 @@ fn map_tool_and_error_hints() {
     // map: explicit inventory semantics, health, modules, and dependency
     // hubs (Base has four dependents).
     let v: serde_json::Value = body(&responses[1]);
-    assert_eq!(v["scope"], serde_json::json!(["production", "docs"]));
+    assert_eq!(
+        v["scope"],
+        serde_json::json!(["production", "test", "docs"])
+    );
     assert_eq!(v["orientation"]["kind"], "repository_inventory");
     assert_eq!(v["health"]["status"], "partial");
     assert!(v["nodes"].as_u64().unwrap() > 0, "{v}");

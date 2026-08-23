@@ -87,7 +87,7 @@ fn map_shows_modules_hubs_and_docs() {
 
     // Dependency hubs: `start` is called from two files.
     assert!(
-        out.contains("Dependency hubs (non-containment in-degree)"),
+        out.contains("Dependency hubs (non-containment in-degree"),
         "{out}"
     );
     let hub_section = &out[out.find("Dependency hubs").unwrap()..];
@@ -143,7 +143,7 @@ fn map_json_is_valid_and_structured() {
     assert_eq!(parsed["orientation"]["kind"], "repository_inventory");
     assert_eq!(
         parsed["orientation"]["hub_metric"],
-        "non_contains_in_degree"
+        "cross_module_in_degree_then_non_contains_in_degree"
     );
     assert_eq!(
         parsed["orientation"]["claim_boundary"],
@@ -220,7 +220,10 @@ fn default_map_excludes_golden_fixture_hubs_but_all_scope_recovers_them() {
     let (ok, default) = sinter(repo, &["map", "--json"]);
     assert!(ok, "{default}");
     let default: serde_json::Value = serde_json::from_str(&default).unwrap();
-    assert_eq!(default["scope"], serde_json::json!(["production", "docs"]));
+    assert_eq!(
+        default["scope"],
+        serde_json::json!(["production", "test", "docs"])
+    );
     assert!(
         default["modules"]
             .as_array()

@@ -404,6 +404,7 @@ fn repository_coverage(repo: &Path, store: &Store) -> Result<serde_json::Value> 
             "syntax_error_files": health.syntax_error_files,
             "unindexed_files": health.failed_files.keys().collect::<Vec<_>>(),
             "excluded_derived_roots": crate::corpus::DERIVED_ROOTS,
+            "excluded_derived_dirs": crate::corpus::DERIVED_DIRS,
         },
         "available_sources": available_sources,
         "limitations": limitations,
@@ -516,6 +517,41 @@ fn filter_json(filter: &EdgeFilter) -> serde_json::Value {
     })
 }
 
+/// What to tell a reader about unresolved references naming the queried
+/// symbol: `sinter scip` binds them only while the index is missing or
+/// stale; against a fresh index they are macro bodies, unsupported syntax,
+/// or external names.
+pub fn unresolved_hint(repo: &Path) -> &'static str {
+    match crate::scip::staleness(repo) {
+        crate::scip::Staleness::Fresh => {
+            "macro body / unsupported syntax / external; not bindable by scip"
+        }
+        _ => "`sinter scip` would bind them",
+    }
+}
+
+/// Full footer and full `coverage` JSON on demand; the default is the
+/// compact agent-facing form. `doctor` is always full.
+pub fn verbose() -> bool {
+    std::env::var_os("SINTER_VERBOSE_COVERAGE").is_some()
+}
+
+const SYNTAX_ERROR_FILES_SHOWN: usize = 5;
+
+/// Per-query envelope: repository-wide detail (every indexing project,
+/// every partial-syntax file) belongs to `doctor`, not to each answer.
+fn slim_for_traversal(coverage: &mut serde_json::Value) {
+    crate::agent_protocol::slim_compiler_index(coverage);
+    let graph = &mut coverage["graph"];
+    if let Some(files) = graph["syntax_error_files"].as_array_mut() {
+        let total = files.len();
+        if total > SYNTAX_ERROR_FILES_SHOWN {
+            files.truncate(SYNTAX_ERROR_FILES_SHOWN);
+            graph["syntax_error_files_total"] = serde_json::json!(total);
+        }
+    }
+}
+
 /// Machine-readable trust envelope carried by every traversal answer.
 pub fn traversal_json(
     repo: &Path,
@@ -526,6 +562,9 @@ pub fn traversal_json(
 ) -> Result<serde_json::Value> {
     let mut coverage = repository_coverage(repo, store)?;
     coverage["status"] = serde_json::json!(if found { "found" } else { "not_proven" });
+    if !verbose() {
+        slim_for_traversal(&mut coverage);
+    }
     coverage["filters"] = filter_json(filter);
     coverage["evidence"] = serde_json::json!({
         "count_scope": "all_matches_before_limit",
@@ -541,55 +580,74 @@ pub fn traversal_json(
     Ok(coverage)
 }
 
-pub fn print_traversal(
+/// Text footer. Default: one `coverage:` line plus gaps specific to this
+/// query (a missing/stale compiler index). `SINTER_VERBOSE_COVERAGE=1`
+/// restores filters and every repository-wide limitation.
+pub fn print_footer(
     repo: &Path,
     store: &Store,
     filter: &EdgeFilter,
     evidence: TraversalEvidence,
     found: bool,
+    snapshot: Option<&str>,
 ) -> Result<()> {
     let coverage = traversal_json(repo, store, filter, evidence, found)?;
-    println!(
-        "  coverage: {} ({} certain, {} possible, {} unresolved matching query; never runtime proof)",
-        coverage["completeness"].as_str().unwrap_or("partial"),
-        coverage["evidence"]["certain"]["results"]
-            .as_u64()
-            .unwrap_or(0),
-        coverage["evidence"]["possible"]["results"]
-            .as_u64()
-            .unwrap_or(0),
-        coverage["evidence"]["unresolved"]["matching_query"]
-            .as_u64()
-            .unwrap_or(0),
-    );
-    let relations = coverage["filters"]["relations"]["values"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(serde_json::Value::as_str)
-        .collect::<Vec<_>>()
-        .join(",");
-    println!(
-        "  filters: relations={relations} min_confidence={} scope={}",
-        coverage["filters"]["min_confidence"]
-            .as_str()
-            .unwrap_or("any"),
-        coverage["filters"]["scope"]["values"]
+    let verbose = verbose();
+    println!("{}", footer_line(&coverage, snapshot));
+    if verbose {
+        let relations = coverage["filters"]["relations"]["values"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(serde_json::Value::as_str)
             .collect::<Vec<_>>()
-            .join(",")
-    );
-    if let Some(items) = coverage["limitations"].as_array() {
-        for item in items {
-            if let Some(text) = item.as_str() {
-                println!("  gap: {text}");
-            }
-        }
+            .join(",");
+        println!(
+            "  filters: relations={relations} min_confidence={} scope={}",
+            coverage["filters"]["min_confidence"]
+                .as_str()
+                .unwrap_or("any"),
+            coverage["filters"]["scope"]["values"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+    }
+    for text in query_gaps(&coverage, verbose) {
+        println!("  gap: {text}");
     }
     Ok(())
+}
+
+fn footer_line(coverage: &serde_json::Value, snapshot: Option<&str>) -> String {
+    let n = |v: &serde_json::Value| v.as_u64().unwrap_or(0);
+    let mut line = format!(
+        "  coverage: {} · {} certain · {} possible · {} unresolved naming query",
+        coverage["completeness"].as_str().unwrap_or("partial"),
+        n(&coverage["evidence"]["certain"]["results"]),
+        n(&coverage["evidence"]["possible"]["results"]),
+        n(&coverage["evidence"]["unresolved"]["matching_query"]),
+    );
+    if let Some(snapshot) = snapshot {
+        line.push_str(&format!(" · snapshot {snapshot}"));
+    }
+    line
+}
+
+/// Limitations worth a line under this answer. Verbose keeps all of them;
+/// the default keeps only compiler-index state, which changes what the
+/// query could have seen. The generic disclaimers never print by default.
+fn query_gaps(coverage: &serde_json::Value, verbose: bool) -> Vec<&str> {
+    coverage["limitations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .filter(|text| verbose || text.starts_with("compiler index"))
+        .collect()
 }
 
 /// Aggregate member coverage without flattening away which repository owns
@@ -647,26 +705,28 @@ pub fn print_workspace_traversal(
     evidence: TraversalEvidence,
     found: bool,
 ) -> Result<()> {
+    print_workspace_footer(workspace, filter, evidence, found, None)
+}
+
+pub fn print_workspace_footer(
+    workspace: &crate::workspace::Workspace,
+    filter: &EdgeFilter,
+    evidence: TraversalEvidence,
+    found: bool,
+    snapshot: Option<&str>,
+) -> Result<()> {
     let coverage = workspace_json(workspace, filter, evidence, found)?;
-    println!(
-        "  coverage: {} ({} certain, {} possible, {} unresolved matching query; never runtime proof)",
-        coverage["completeness"].as_str().unwrap_or("partial"),
-        coverage["evidence"]["certain"]["results"]
-            .as_u64()
-            .unwrap_or(0),
-        coverage["evidence"]["possible"]["results"]
-            .as_u64()
-            .unwrap_or(0),
-        coverage["evidence"]["unresolved"]["matching_query"]
-            .as_u64()
-            .unwrap_or(0),
-    );
+    let verbose = verbose();
+    println!("{}", footer_line(&coverage, snapshot));
     if let Some(gaps) = coverage["gaps"].as_array() {
         for gap in gaps {
+            let message = gap["message"].as_str().unwrap_or("coverage unavailable");
+            if !verbose && !message.starts_with("compiler index") {
+                continue;
+            }
             println!(
-                "  gap: {}: {}",
+                "  gap: {}: {message}",
                 gap["member"].as_str().unwrap_or("unknown"),
-                gap["message"].as_str().unwrap_or("coverage unavailable")
             );
         }
     }
@@ -683,7 +743,8 @@ mod tests {
     use sinter_store::{EdgeFilter, Store};
 
     use super::{
-        Classifier, TraversalEvidence, UnresolvedCategory, orientation_health_json, traversal_json,
+        Classifier, TraversalEvidence, UnresolvedCategory, footer_line, orientation_health_json,
+        query_gaps, slim_for_traversal, traversal_json,
     };
 
     fn item(name: &str, path: Option<&str>, reason: UnresolvedReason) -> UnresolvedReference {
@@ -831,5 +892,55 @@ mod tests {
         assert_eq!(health["graph"]["actionable_unresolved"], 0);
         assert!(health["compiler_index"].get("projects").is_none());
         assert!(health.get("available_sources").is_none());
+    }
+
+    #[test]
+    fn compact_footer_is_one_line_and_keeps_only_index_gaps() {
+        let coverage = serde_json::json!({
+            "completeness": "partial",
+            "evidence": {
+                "certain": {"results": 10},
+                "possible": {"results": 0},
+                "unresolved": {"matching_query": 2},
+            },
+            "limitations": [
+                "a missing graph edge is not proof that no runtime path exists",
+                "compiler index is stale (3 newer source/config inputs); run `sinter scip`",
+                "one or more files were indexed from partial syntax trees",
+            ],
+        });
+        assert_eq!(
+            footer_line(&coverage, Some("graph-v12-abc")),
+            "  coverage: partial · 10 certain · 0 possible · 2 unresolved naming query · snapshot graph-v12-abc"
+        );
+        assert_eq!(
+            query_gaps(&coverage, false),
+            ["compiler index is stale (3 newer source/config inputs); run `sinter scip`"]
+        );
+        assert_eq!(query_gaps(&coverage, true).len(), 3);
+    }
+
+    #[test]
+    fn traversal_json_slims_projects_and_caps_syntax_error_files() {
+        let files: Vec<String> = (0..8).map(|i| format!("q{i}.sql")).collect();
+        let mut coverage = serde_json::json!({
+            "compiler_index": {
+                "state": "fresh",
+                "stale_inputs": 0,
+                "projects": [{"freshness": "fresh", "languages": ["rust"], "root": "."}],
+            },
+            "graph": {"syntax_error_files": files},
+        });
+        slim_for_traversal(&mut coverage);
+        assert!(coverage["compiler_index"].get("projects").is_none());
+        assert_eq!(coverage["compiler_index"]["state"], "fresh");
+        assert_eq!(
+            coverage["graph"]["syntax_error_files"]
+                .as_array()
+                .unwrap()
+                .len(),
+            5
+        );
+        assert_eq!(coverage["graph"]["syntax_error_files_total"], 8);
     }
 }

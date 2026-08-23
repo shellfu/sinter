@@ -176,6 +176,9 @@ enum Command {
         /// the graph. Never makes new opt-in decisions.
         #[arg(long, short = 'f')]
         fix: bool,
+        /// Emit findings as JSON: {version, graph: [...], integration: [...], summary}
+        #[arg(long)]
+        json: bool,
     },
     /// Install the assistant integration card (embedded, drift-proof)
     Install {
@@ -230,7 +233,7 @@ enum Command {
         #[arg(long, default_value_t = 5)]
         limit: usize,
         /// Corpus roles to search (comma-separated, or `all`)
-        #[arg(long, value_delimiter = ',', default_value = "production,docs")]
+        #[arg(long, value_delimiter = ',', default_value = corpus::DEFAULT_SCOPE)]
         scope: Vec<String>,
         /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`)
         #[arg(long)]
@@ -268,7 +271,8 @@ enum Command {
     /// Find symbols by name or fragment (exact + trigram); for relations
     /// use `show`, `affected`, `deps`, `path`
     Query {
-        /// Symbol name, qualified suffix, or fuzzy fragment (not a relation query)
+        /// Symbol name, qualified suffix, fuzzy fragment, or glob with one `*`
+        /// (`Type::*`, `*::method`, `prefix*`)
         symbol: String,
         /// Repository to query
         #[arg(long, default_value = ".")]
@@ -277,7 +281,7 @@ enum Command {
         #[arg(long, default_value_t = 10)]
         limit: usize,
         /// Corpus roles to search (comma-separated, or `all`)
-        #[arg(long, value_delimiter = ',', default_value = "production,docs")]
+        #[arg(long, value_delimiter = ',', default_value = corpus::DEFAULT_SCOPE)]
         scope: Vec<String>,
         /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`)
         #[arg(long)]
@@ -303,9 +307,9 @@ enum Command {
         #[arg(long, default_value_t = 200)]
         limit: usize,
         /// Corpus roles traversal may enter (comma-separated, or `all`).
-        /// Symbol lookup prefers production,docs when a name is ambiguous;
+        /// Symbol lookup prefers production when a name is ambiguous;
         /// pass an explicit scope or `name@file` to pick another copy
-        #[arg(long, value_delimiter = ',', default_value = "all")]
+        #[arg(long, value_delimiter = ',', default_value = corpus::DEFAULT_SCOPE)]
         scope: Vec<String>,
         /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`; not
         /// available with --workspace)
@@ -333,9 +337,9 @@ enum Command {
         #[arg(long, default_value_t = 200)]
         limit: usize,
         /// Corpus roles traversal may enter (comma-separated, or `all`).
-        /// Symbol lookup prefers production,docs when a name is ambiguous;
+        /// Symbol lookup prefers production when a name is ambiguous;
         /// pass an explicit scope or `name@file` to pick another copy
-        #[arg(long, value_delimiter = ',', default_value = "all")]
+        #[arg(long, value_delimiter = ',', default_value = corpus::DEFAULT_SCOPE)]
         scope: Vec<String>,
         /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`)
         #[arg(long)]
@@ -362,6 +366,9 @@ enum Command {
         /// Maximum references to print
         #[arg(long, default_value_t = 200)]
         limit: usize,
+        /// Also list likely-external and unsupported-syntax references
+        #[arg(long)]
+        all: bool,
         /// Structured output
         #[arg(long)]
         json: bool,
@@ -379,9 +386,9 @@ enum Command {
         #[arg(long)]
         workspace: Option<PathBuf>,
         /// Corpus roles traversal may enter (comma-separated, or `all`).
-        /// Symbol lookup prefers production,docs when a name is ambiguous;
+        /// Symbol lookup prefers production when a name is ambiguous;
         /// pass an explicit scope or `name@file` to pick another copy
-        #[arg(long, value_delimiter = ',', default_value = "all")]
+        #[arg(long, value_delimiter = ',', default_value = corpus::DEFAULT_SCOPE)]
         scope: Vec<String>,
         /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`; not
         /// available with --workspace)
@@ -459,7 +466,7 @@ enum Command {
         #[command(flatten)]
         repo: RepoArg,
         /// Corpus roles to include (comma-separated, or `all`)
-        #[arg(long, value_delimiter = ',', default_value = "production,docs")]
+        #[arg(long, value_delimiter = ',', default_value = corpus::DEFAULT_SCOPE)]
         scope: Vec<String>,
         /// Structured output
         #[arg(long)]
@@ -675,10 +682,11 @@ fn main() -> ExitCode {
             repo,
             workspace,
             fix,
+            json,
         } => {
             let result = match workspace {
-                Some(manifest) => doctor::run_workspace(&manifest, fix),
-                None => doctor::run(repo.path(), fix),
+                Some(manifest) => doctor::run_workspace(&manifest, fix, json),
+                None => doctor::run(repo.path(), fix, json),
             };
             return match result {
                 Ok(true) => ExitCode::SUCCESS,
@@ -841,9 +849,10 @@ fn main() -> ExitCode {
             file,
             name,
             limit,
+            all,
             json,
         } => {
-            let result = unresolved::run(&repo, file.as_deref(), name.as_deref(), limit, json);
+            let result = unresolved::run(&repo, file.as_deref(), name.as_deref(), limit, all, json);
             return if json {
                 grep_exit_json("unresolved", result)
             } else {

@@ -72,8 +72,7 @@ pub fn run(
                     s.refs
                 );
             }
-            println!("  snapshot: {snapshot}");
-            crate::coverage::print_traversal(
+            crate::coverage::print_footer(
                 &root,
                 &store,
                 filter,
@@ -82,6 +81,7 @@ pub fn run(
                     ..Default::default()
                 },
                 true,
+                Some(&snapshot),
             )?;
             return Ok(true);
         }
@@ -233,12 +233,12 @@ pub fn run(
     }
     if unresolved > 0 {
         println!(
-            "  note: {unresolved} unresolved ref(s) also name `{}` — dependents may be missing; `sinter scip` would bind them",
-            node.name
+            "  note: {unresolved} unresolved ref(s) also name `{}` — dependents may be missing; {}",
+            node.name,
+            crate::coverage::unresolved_hint(&root)
         );
     }
-    println!("  snapshot: {snapshot}");
-    crate::coverage::print_traversal(&root, &store, filter, evidence, total > 0)?;
+    crate::coverage::print_footer(&root, &store, filter, evidence, total > 0, Some(&snapshot))?;
     Ok(total > 0)
 }
 
@@ -315,7 +315,6 @@ pub fn run_workspace(
             total,
         );
     }
-    println!("  snapshot: {snapshot}");
-    crate::coverage::print_workspace_traversal(&ws, filter, evidence, total > 0)?;
+    crate::coverage::print_workspace_footer(&ws, filter, evidence, total > 0, Some(&snapshot))?;
     Ok(total > 0)
 }

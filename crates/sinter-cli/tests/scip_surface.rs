@@ -160,7 +160,7 @@ fn negative_path_reports_snapshot_and_coverage_gaps() {
     assert_eq!(coverage["snapshot"]["working_tree_indexed"], true);
     assert_eq!(coverage["compiler_index"]["state"], "missing");
     assert!(
-        coverage["compiler_index"]["indexable_languages"]
+        coverage["compiler_index"]["missing_index_for"]
             .as_array()
             .unwrap()
             .iter()

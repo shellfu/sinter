@@ -158,11 +158,11 @@ pub fn run(
     }
     if unresolved > 0 {
         println!(
-            "  note: {unresolved} unresolved ref(s) inside {} — dependencies may be missing; `sinter scip` would bind them",
-            node.name
+            "  note: {unresolved} unresolved ref(s) inside {} — dependencies may be missing; {}",
+            node.name,
+            crate::coverage::unresolved_hint(&root)
         );
     }
-    println!("  snapshot: {snapshot}");
-    crate::coverage::print_traversal(&root, &store, filter, evidence, total > 0)?;
+    crate::coverage::print_footer(&root, &store, filter, evidence, total > 0, Some(&snapshot))?;
     Ok(total > 0)
 }

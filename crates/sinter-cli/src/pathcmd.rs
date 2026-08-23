@@ -5,7 +5,13 @@ use sinter_resolve::qualified_of;
 
 use sinter_store::EdgeFilter;
 
-use crate::lookup::{ensure_snapshot, ensure_snapshot_token, open_store, unique_symbol_in};
+use crate::lookup::{
+    SymbolLookupError, candidate_label, candidates_in, ensure_snapshot, ensure_snapshot_token,
+    open_store,
+};
+
+/// Ambiguous endpoints are tried pairwise up to this many pairs.
+const MAX_PAIRS: usize = 16;
 
 /// `sinter path`: how one symbol reaches another. Ok(true) when a route
 /// exists (grep-style exit codes).
@@ -19,9 +25,59 @@ pub fn run(
 ) -> Result<bool> {
     let store = open_store(repo)?;
     let snapshot = ensure_snapshot(&store, if_snapshot)?;
-    let from_node = unique_symbol_in(&store, from, filter.scopes.as_ref())?;
-    let to_node = unique_symbol_in(&store, to, filter.scopes.as_ref())?;
-    let path = store.shortest_path(&from_node.id, &to_node.id, filter)?;
+    let froms = candidates_in(&store, from, filter.scopes.as_ref())?;
+    let tos = candidates_in(&store, to, filter.scopes.as_ref())?;
+    let ambiguous = froms.len() > 1 || tos.len() > 1;
+    // Ambiguous endpoints: any connecting pair answers the question.
+    let mut pairs = froms
+        .iter()
+        .flat_map(|f| tos.iter().map(move |t| (f, t)))
+        .take(MAX_PAIRS);
+    let mut found = None;
+    let mut first = None;
+    for (f, t) in &mut pairs {
+        let path = store.shortest_path(&f.id, &t.id, filter)?;
+        if path.is_some() {
+            found = Some((f.clone(), t.clone(), path));
+            break;
+        }
+        first.get_or_insert((f.clone(), t.clone(), path));
+    }
+    let (from_node, to_node, path) = found.or(first).expect("candidate lists are non-empty");
+    if ambiguous && path.is_none() {
+        if json {
+            let (requested, candidates) = if froms.len() > 1 {
+                (from, froms)
+            } else {
+                (to, tos)
+            };
+            return Err(SymbolLookupError::Ambiguous {
+                requested: requested.to_string(),
+                candidates,
+            }
+            .into());
+        }
+        println!("not proven: no path {from} -> {to} observed for any candidate pair");
+        for (name, nodes) in [(from, &froms), (to, &tos)] {
+            if nodes.len() > 1 {
+                println!("  `{name}` candidates:");
+                for n in nodes {
+                    println!("    {}", candidate_label(n));
+                }
+            }
+        }
+        println!("  snapshot: {snapshot}");
+        return Ok(false);
+    }
+    if ambiguous && !json {
+        println!(
+            "from: {}@{}  to: {}@{}",
+            qualified_of(from_node.id.as_str()),
+            from_node.file,
+            qualified_of(to_node.id.as_str()),
+            to_node.file
+        );
+    }
     let scopes = store.file_scopes()?;
     let scope_of_id = |id: &sinter_core::NodeId| {
         let file = id
@@ -84,8 +140,7 @@ pub fn run(
                 &to_node,
                 miss.as_ref().expect("a missing path has miss evidence"),
             );
-            println!("  snapshot: {snapshot}");
-            crate::coverage::print_traversal(&root, &store, filter, evidence, false)?;
+            crate::coverage::print_footer(&root, &store, filter, evidence, false, Some(&snapshot))?;
             Ok(false)
         }
         Some(edges) => {
@@ -104,8 +159,7 @@ pub fn run(
                 );
             }
             println!();
-            println!("  snapshot: {snapshot}");
-            crate::coverage::print_traversal(&root, &store, filter, evidence, true)?;
+            crate::coverage::print_footer(&root, &store, filter, evidence, true, Some(&snapshot))?;
             Ok(true)
         }
     }

@@ -249,7 +249,7 @@ pub fn run(
     }
 
     println!("\n== doctor ==");
-    doctor::run(&repo, false)
+    doctor::run(&repo, false, false)
 }
 
 #[cfg(test)]

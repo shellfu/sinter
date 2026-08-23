@@ -97,17 +97,31 @@ impl std::error::Error for SymbolLookupError {}
 
 fn write_candidates(f: &mut std::fmt::Formatter<'_>, candidates: &[Node]) -> std::fmt::Result {
     for node in candidates {
-        writeln!(
-            f,
-            "  {}@{}  ({}, symbol_key {}, id {})",
-            qualified_of(node.id.as_str()),
-            node.file,
-            node.kind.as_str(),
-            node.symbol_key(),
-            node.id
-        )?;
+        writeln!(f, "  {}", candidate_label(node))?;
     }
     Ok(())
+}
+
+/// `Name@path/to/file.rs (kind)` — the form an agent can paste back as
+/// `Name@file`. No snapshot ids or symbol keys: nobody types those. No
+/// line either: the store carries no repo root, and the MCP server and
+/// CLI must print the same message.
+pub fn candidate_label(node: &Node) -> String {
+    format!(
+        "{}@{} ({})",
+        qualified_of(node.id.as_str()),
+        node.file,
+        node.kind.as_str()
+    )
+}
+
+/// Comma-joined `Name@file` list for one-line notes.
+pub fn short_list(nodes: &[Node]) -> String {
+    nodes
+        .iter()
+        .map(|n| format!("{}@{}", qualified_of(n.id.as_str()), n.file))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub fn open_store(repo: &Path) -> Result<Store> {
@@ -279,35 +293,48 @@ pub fn unique_symbol_in(
     symbol: &str,
     scopes: Option<&BTreeSet<CorpusScope>>,
 ) -> Result<Node> {
+    let mut candidates = candidates_in(store, symbol, scopes)?;
+    if candidates.len() > 1 {
+        return Err(SymbolLookupError::Ambiguous {
+            requested: symbol.to_string(),
+            candidates,
+        }
+        .into());
+    }
+    Ok(candidates.remove(0))
+}
+
+/// The best-tier candidates for a symbol: one node when it resolves, or
+/// the list an `Ambiguous` error would carry. `path` tries every pair of
+/// these before giving up.
+pub fn candidates_in(
+    store: &Store,
+    symbol: &str,
+    scopes: Option<&BTreeSet<CorpusScope>>,
+) -> Result<Vec<Node>> {
     match find_symbol(store, symbol)? {
-        Found::Exact(mut nodes) if nodes.len() == 1 => Ok(nodes.remove(0)),
+        Found::Exact(nodes) if nodes.len() == 1 => Ok(nodes),
         Found::Exact(nodes) => {
             let preferred = scopes
                 .cloned()
                 .unwrap_or_else(|| crate::corpus::ScopeSelection::agent_default().as_set());
             let scope_index = store.scope_index()?;
-            let in_scope = |n: &Node| preferred.contains(&scope_index.scope_of(n));
-            let (keep, excluded): (Vec<Node>, Vec<Node>) =
-                nodes.into_iter().partition(|n| in_scope(n));
-            // Out-of-scope copies only matter when nothing in scope matches.
-            if !keep.is_empty() && !excluded.is_empty() {
-                let labels: Vec<&str> = preferred.iter().map(|s| s.as_str()).collect();
+            let (keep, ignored) = select_tier(nodes, &preferred, |n| scope_index.scope_of(n));
+            if keep.len() == 1 && !ignored.is_empty() {
+                let mut kinds: Vec<&str> = ignored
+                    .iter()
+                    .map(|n| scope_index.scope_of(n).as_str())
+                    .collect();
+                kinds.sort_unstable();
+                kinds.dedup();
                 eprintln!(
-                    "note: {} more `{symbol}` outside scope {} ignored; use `{symbol}@<file>` to pick one of those",
-                    excluded.len(),
-                    labels.join(","),
+                    "note: {} other `{symbol}` ignored ({}): {}",
+                    ignored.len(),
+                    kinds.join("/"),
+                    short_list(&ignored)
                 );
             }
-            let mut candidates = if keep.is_empty() { excluded } else { keep };
-            if candidates.len() > 1 {
-                Err(SymbolLookupError::Ambiguous {
-                    requested: symbol.to_string(),
-                    candidates,
-                }
-                .into())
-            } else {
-                Ok(candidates.remove(0))
-            }
+            Ok(keep)
         }
         Found::Relocated(nodes) => Err(SymbolLookupError::Relocated {
             requested: symbol.to_string(),
@@ -330,6 +357,28 @@ pub fn unique_symbol_in(
             .into())
         }
     }
+}
+
+/// Split same-name candidates into (best tier, the rest). Tiers, first
+/// non-empty wins: preferred production/docs, other preferred scopes,
+/// other hand-written scopes (test/fixture/example), then generated/vendor.
+fn select_tier(
+    nodes: Vec<Node>,
+    preferred: &BTreeSet<CorpusScope>,
+    scope_of: impl Fn(&Node) -> CorpusScope,
+) -> (Vec<Node>, Vec<Node>) {
+    let tier = |n: &Node| {
+        let scope = scope_of(n);
+        let shipped = matches!(scope, CorpusScope::Production | CorpusScope::Docs);
+        match (preferred.contains(&scope), shipped) {
+            (true, true) => 0,
+            (true, false) => 1,
+            (false, _) if matches!(scope, CorpusScope::Generated | CorpusScope::Vendor) => 3,
+            (false, _) => 2,
+        }
+    };
+    let best = nodes.iter().map(&tier).min().unwrap_or(0);
+    nodes.into_iter().partition(|n| tier(n) == best)
 }
 
 /// One place a symbol not defined in this repo is referenced: the
@@ -425,4 +474,65 @@ pub fn relation_set(relations: &[String]) -> Result<Option<BTreeSet<sinter_core:
         });
     }
     Ok(Some(set))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sinter_core::{NodeId, Span};
+
+    fn node(file: &str, kind: SymbolKind) -> Node {
+        Node {
+            id: NodeId::new(format!("{file}#Widget@10")),
+            kind,
+            name: "Widget".into(),
+            file: file.into(),
+            span: Span { start: 10, end: 20 },
+            signature: String::new(),
+            doc: None,
+        }
+    }
+
+    fn pick(files: &[&str]) -> (Vec<String>, Vec<String>) {
+        let nodes = files.iter().map(|f| node(f, SymbolKind::Struct)).collect();
+        let preferred = BTreeSet::from([CorpusScope::Production, CorpusScope::Test]);
+        let (keep, rest) = select_tier(nodes, &preferred, |n| CorpusScope::classify_path(&n.file));
+        let names = |v: Vec<Node>| v.into_iter().map(|n| n.file).collect();
+        (names(keep), names(rest))
+    }
+
+    #[test]
+    fn lone_production_candidate_wins_over_test_copies() {
+        let (keep, rest) = pick(&["src/a.rs", "tests/a.rs", "fixtures/a.rs"]);
+        assert_eq!(keep, ["src/a.rs"]);
+        assert_eq!(rest, ["tests/a.rs", "fixtures/a.rs"]);
+    }
+
+    #[test]
+    fn several_production_candidates_stay_ambiguous_without_test_noise() {
+        let (keep, rest) = pick(&["crates/a/src/lib.rs", "crates/b/src/lib.rs", "tests/x.rs"]);
+        assert_eq!(keep, ["crates/a/src/lib.rs", "crates/b/src/lib.rs"]);
+        assert_eq!(rest, ["tests/x.rs"]);
+    }
+
+    #[test]
+    fn generated_and_vendor_lose_to_hand_written() {
+        let (keep, rest) = pick(&["generated/a.rs", "vendor/a.rs", "tests/a.rs"]);
+        assert_eq!(keep, ["tests/a.rs"]);
+        assert_eq!(rest, ["generated/a.rs", "vendor/a.rs"]);
+        let (keep, _) = pick(&["generated/a.rs", "vendor/a.rs"]);
+        assert_eq!(keep, ["generated/a.rs", "vendor/a.rs"]);
+    }
+
+    #[test]
+    fn ambiguous_listing_is_name_at_file_kind_only() {
+        let err = SymbolLookupError::Ambiguous {
+            requested: "Widget".into(),
+            candidates: vec![node("no/such/a.rs", SymbolKind::Enum)],
+        };
+        let text = err.to_string();
+        assert!(text.contains("  Widget@no/such/a.rs (enum)"), "{text}");
+        assert!(!text.contains("symbol_key"), "{text}");
+        assert!(!text.contains(" id "), "{text}");
+    }
 }

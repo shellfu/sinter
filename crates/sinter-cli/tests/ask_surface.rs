@@ -205,6 +205,47 @@ fn ask_json_is_compact_unless_explanation_is_requested() {
     assert_eq!(explained, compact, "--explain changed semantic decisions");
 }
 
+/// Abstain never hides the candidates: the text list and the JSON hits are
+/// identical to the confident case, only the caveat line differs.
+#[test]
+fn ask_abstain_still_lists_candidates_and_prefers_production() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::create_dir_all(repo.join("tests/fixtures")).unwrap();
+    std::fs::write(
+        repo.join("src/policy.go"),
+        "package policy\n\n// Decide turns a hook request into a policy decision.\nfunc Decide(r Request) Decision { return Decision{} }\n\nfunc Request() int { return 1 }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("tests/fixtures/fake.go"),
+        "package fixtures\n\nfunc Request() int { return 2 }\n\nfunc Decision() int { return 3 }\n",
+    )
+    .unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+    let (ok, out) = sinter(repo, &["ask", "request policy decision", "--scope", "all"]);
+    assert!(ok, "{out}");
+    assert!(out.lines().any(|l| l.starts_with("1. ")), "{out}");
+    assert!(!out.contains("abstain:"), "{out}");
+    let first = out.lines().find(|l| l.starts_with("1. ")).unwrap();
+    assert!(
+        first.contains("Decide"),
+        "fixture outranked production:\n{out}"
+    );
+    let (ok, out) = sinter(
+        repo,
+        &["ask", "request policy decision", "--scope", "all", "--json"],
+    );
+    assert!(ok, "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let topic = &v["topics"][0];
+    assert!(topic["confidence"]["reason"].is_string(), "{out}");
+    assert!(!topic["hits"].as_array().unwrap().is_empty(), "{out}");
+    assert_eq!(topic["hits"][0]["name"], "Decide", "{out}");
+}
+
 #[test]
 fn ask_singleton_abstains_instead_of_claiming_high_confidence() {
     let dir = tempfile::tempdir().unwrap();

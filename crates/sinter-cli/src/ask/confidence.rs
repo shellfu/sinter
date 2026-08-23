@@ -196,11 +196,17 @@ pub(crate) fn advice(assessment: Assessment, family_size: usize) -> Option<Strin
     } else {
         String::new()
     };
+    // Abstain means "candidates listed, no confidence bucket claimed",
+    // never "no answer": the ranked list still follows this line.
     if assessment.abstain {
-        return Some(format!(
-            "abstain: {}{family}; refine the topic or inspect multiple candidates",
-            assessment.reason
-        ));
+        return Some(match assessment.reason {
+            "insufficient_calibration_sample" => format!(
+                "confidence: not calibrated for this margin bucket (holdout n<{MIN_CALIBRATION_SAMPLE}){family}; verify top hit"
+            ),
+            reason => format!(
+                "confidence: unrated ({reason}){family}; verify top hit or inspect multiple candidates"
+            ),
+        });
     }
     if assessment.verify_required {
         let calibration = assessment.calibration;
@@ -266,7 +272,7 @@ mod tests {
         let weak = assess_top(&[500, 300], 1, 4);
         assert_eq!(weak.reason, "weak_term_coverage");
         assert!(weak.abstain);
-        assert!(advice(weak, 1).unwrap().starts_with("abstain:"));
+        assert!(advice(weak, 1).unwrap().starts_with("confidence: unrated"));
     }
 
     #[test]
@@ -276,5 +282,8 @@ mod tests {
         assert!(!assessment.calibration.in_calibration);
         assert_eq!(assessment.reason, "insufficient_calibration_sample");
         assert!(assessment.abstain);
+        let line = advice(assessment, 1).unwrap();
+        assert!(line.starts_with("confidence: not calibrated"), "{line}");
+        assert!(!line.contains("abstain"), "{line}");
     }
 }

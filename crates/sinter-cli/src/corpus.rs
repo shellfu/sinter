@@ -10,11 +10,18 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sinter_core::CorpusScope;
 
-pub const DERIVED_ROOTS: &[&str] = &["graphify-out", "memory", ".memory"];
+/// Derived-state directories, excluded only at the repository top level
+/// (`memory` is a plausible source module name deeper down).
+pub const DERIVED_ROOTS: &[&str] = &["memory", ".memory"];
+/// Derived-state directories excluded at any depth (`apps/graphify-out/`).
+pub const DERIVED_DIRS: &[&str] = &["graphify-out", ".sinter"];
 
 pub fn excluded(rel: &str) -> bool {
-    let first = rel.split('/').next().unwrap_or(rel);
+    let mut segments = rel.split('/');
+    let first = segments.next().unwrap_or(rel);
     DERIVED_ROOTS.contains(&first)
+        || DERIVED_DIRS.contains(&first)
+        || segments.any(|segment| DERIVED_DIRS.contains(&segment))
 }
 
 /// Which persisted file roles a graph operation may return.
@@ -23,11 +30,16 @@ pub struct ScopeSelection {
     scopes: BTreeSet<CorpusScope>,
 }
 
+/// Default `--scope` for every verb; clap defaults and
+/// [`ScopeSelection::agent_default`] both derive from this one string.
+/// Tests count toward blast radius; fixtures, examples, generated, and
+/// vendor code are opt-in (`--scope all` or an explicit list).
+pub const DEFAULT_SCOPE: &str = "production,test,docs";
+
 impl ScopeSelection {
     pub fn agent_default() -> Self {
-        Self {
-            scopes: BTreeSet::from([CorpusScope::Production, CorpusScope::Docs]),
-        }
+        let values: Vec<String> = DEFAULT_SCOPE.split(',').map(str::to_owned).collect();
+        Self::parse(&values, Self::all()).expect("DEFAULT_SCOPE parses")
     }
 
     pub fn all() -> Self {
@@ -194,10 +206,15 @@ mod tests {
     use sinter_core::CorpusScope;
 
     #[test]
-    fn only_top_level_derived_roots_are_excluded() {
+    fn derived_roots_are_excluded_at_any_depth() {
         assert!(super::excluded("graphify-out/graph.json"));
+        assert!(super::excluded("apps/graphify-out/graph.json"));
         assert!(super::excluded("memory/notes.md"));
+        assert!(super::excluded(".sinter/graph.redb"));
+        assert!(super::excluded("crates/foo/.sinter/graph.redb"));
         assert!(!super::excluded("src/memory/store.rs"));
+        assert!(!super::excluded("src/graphify-out.rs"));
+        assert!(!super::excluded("src/sinter/mod.rs"));
     }
 
     #[test]

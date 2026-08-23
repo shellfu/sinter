@@ -337,6 +337,11 @@ fn parse_working_tree_changes(raw: &[u8]) -> Result<Vec<WorkingTreeChange>> {
     Ok(changes)
 }
 
+/// Paths the graph never maps: derived roots plus sinter's own `.sinter/` state.
+fn is_tool_state(path: &str) -> bool {
+    path == ".sinter" || path.starts_with(".sinter/") || crate::corpus::excluded(path)
+}
+
 fn is_untracked(change: &WorkingTreeChange) -> bool {
     change.index_status == "untracked" || change.worktree_status == "untracked"
 }
@@ -365,7 +370,7 @@ fn working_tree_changes(repo: &Path) -> Result<Vec<WorkingTreeChange>> {
         );
     }
     let mut changes = parse_working_tree_changes(&output.stdout)?;
-    changes.retain(|change| !crate::corpus::excluded(&change.path));
+    changes.retain(|change| !is_tool_state(&change.path));
     sort_working_tree_changes(&mut changes);
     Ok(changes)
 }
@@ -411,8 +416,20 @@ fn unmapped(change: &ChangedFile, reason: UnmappedReason) -> UnmappedFile {
     }
 }
 
+/// Only executable symbols can be tests; prose sections, files, fields and
+/// modules match the name/path heuristics below far too easily.
+fn test_capable_kind(node: &Node) -> bool {
+    matches!(
+        node.kind,
+        SymbolKind::Function | SymbolKind::Method | SymbolKind::Class | SymbolKind::Struct
+    )
+}
+
 /// Test detection heuristic: conventional test files and names.
 pub fn is_test(node: &Node) -> bool {
+    if !test_capable_kind(node) {
+        return false;
+    }
     let f = &node.file;
     f.ends_with("_test.go")
         || f.ends_with("_test.py")
@@ -457,7 +474,9 @@ pub(crate) fn affected_tests(
     changed: &[Node],
 ) -> Result<Vec<SymbolRef>> {
     let scope_index = store.scope_index()?;
-    let is_test_node = |n: &Node| scope_index.scope_of(n) == CorpusScope::Test || is_test(n);
+    let is_test_node = |n: &Node| {
+        test_capable_kind(n) && (scope_index.scope_of(n) == CorpusScope::Test || is_test(n))
+    };
     Ok(radius
         .values()
         .chain(changed.iter())
@@ -510,7 +529,7 @@ fn untracked_files(repo: &Path) -> Result<Vec<String>> {
         .split(|byte| *byte == 0)
         .filter(|raw| !raw.is_empty())
         .map(path_string)
-        .filter(|path| !crate::corpus::excluded(path))
+        .filter(|path| !is_tool_state(path))
         .collect())
 }
 
@@ -667,7 +686,9 @@ fn compute_with_store_mode(
 
     let radius = blast_radius(store, filter, &changed)?;
     let scope_index = store.scope_index()?;
-    let is_test_node = |n: &Node| scope_index.scope_of(n) == CorpusScope::Test || is_test(n);
+    let is_test_node = |n: &Node| {
+        test_capable_kind(n) && (scope_index.scope_of(n) == CorpusScope::Test || is_test(n))
+    };
     let affected_tests = affected_tests(store, &radius, &changed)?;
     let changed: Vec<Node> = changed.into_iter().filter(|n| !is_test_node(n)).collect();
 
@@ -1253,6 +1274,34 @@ mod tests {
         assert_eq!(report.analysis_status, AnalysisStatus::Complete);
         assert!(report.working_tree_dirty);
         assert!(report.partial_reasons.is_empty());
+    }
+
+    #[test]
+    fn markdown_section_is_never_an_affected_test() {
+        let mut section = node("docs/testing.md::Testing", "Testing", "docs/testing.md");
+        section.kind = SymbolKind::Section;
+        assert!(!is_test(&section));
+        let mut section = node("tests/README.md::Setup", "Setup", "tests/README.md");
+        section.kind = SymbolKind::Section;
+        assert!(!is_test(&section));
+        assert!(is_test(&node(
+            "tests/a.rs::tests::works",
+            "works",
+            "tests/a.rs"
+        )));
+    }
+
+    #[test]
+    fn sinter_state_is_not_a_working_tree_change() {
+        let repo = repository();
+        write(repo.path(), ".sinter/graph.redb", "");
+        write(repo.path(), "src/new.rs", "pub fn fresh() -> u32 { 4 }\n");
+        let changes = working_tree_changes(repo.path()).expect("git status");
+        assert!(
+            changes.iter().all(|c| !c.path.starts_with(".sinter/")),
+            "{changes:?}"
+        );
+        assert!(changes.iter().any(|c| c.path == "src/new.rs"));
     }
 
     #[test]

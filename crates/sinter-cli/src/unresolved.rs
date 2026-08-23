@@ -52,6 +52,34 @@ pub fn to_json(
     out
 }
 
+/// Rows worth a reader's time by default: the actionable categories plus
+/// refs a compiler index would settle. External names and unsupported
+/// syntax are counted, never listed, unless `--all`.
+fn shown_by_default(category: crate::coverage::UnresolvedCategory) -> bool {
+    category.is_actionable()
+        || category == crate::coverage::UnresolvedCategory::MissingCompilerIndex
+}
+
+/// `to_json` over the default rows only; `total` and `by_category` still
+/// describe every reference so the counts stay honest.
+pub fn to_json_default(
+    repo: &Path,
+    classifier: &Classifier,
+    refs: &[sinter_core::UnresolvedReference],
+    limit: usize,
+) -> serde_json::Value {
+    let shown: Vec<_> = refs
+        .iter()
+        .filter(|u| shown_by_default(classifier.classify(u)))
+        .cloned()
+        .collect();
+    let mut out = to_json(repo, classifier, &shown, limit);
+    out["total"] = serde_json::json!(refs.len());
+    out["by_category"] = serde_json::json!(category_counts(classifier, refs));
+    out["shown"] = serde_json::json!("default");
+    out
+}
+
 fn category_is_actionable(category: &str) -> bool {
     matches!(
         category,
@@ -81,15 +109,23 @@ pub fn run(
     file: Option<&str>,
     name: Option<&str>,
     limit: usize,
+    all: bool,
     json: bool,
 ) -> Result<bool> {
+    // Asking for one name is asking to see its rows, whatever their category.
+    let all = all || name.is_some();
     let store = open_store(repo)?;
     let refs = store.unresolved_details(file, name)?;
     let total = refs.len();
     let repo = crate::pipeline::discover_root(repo);
     let classifier = Classifier::new(&repo, &store, &refs)?;
     if json {
-        crate::agent_protocol::write_json(&to_json(&repo, &classifier, &refs, limit))?;
+        let out = if all {
+            to_json(&repo, &classifier, &refs, limit)
+        } else {
+            to_json_default(&repo, &classifier, &refs, limit)
+        };
+        crate::agent_protocol::write_json(&out)?;
         return Ok(total > 0);
     }
     let by_category = category_counts(&classifier, &refs);
@@ -110,7 +146,12 @@ pub fn run(
         );
     }
     println!();
-    for (u, category) in ordered(&classifier, &refs).into_iter().take(limit) {
+    let rows: Vec<_> = ordered(&classifier, &refs)
+        .into_iter()
+        .filter(|(_, category)| all || shown_by_default(*category))
+        .collect();
+    let shown = rows.len();
+    for (u, category) in rows.into_iter().take(limit) {
         let r = &u.reference;
         let location =
             crate::render::location(&repo, &r.file, line_of(&repo, &r.file, r.span.start));
@@ -136,11 +177,17 @@ pub fn run(
             u.reason.as_str(),
         );
     }
-    if total > limit {
+    if shown > limit {
         println!(
             "{} more below cutoff · `sinter unresolved --limit {}` to widen",
-            total - limit,
-            total,
+            shown - limit,
+            shown,
+        );
+    }
+    if !all && total > shown {
+        println!(
+            "{} external / unsupported-syntax row(s) hidden · `sinter unresolved --all` to list",
+            total - shown
         );
     }
     Ok(total > 0)

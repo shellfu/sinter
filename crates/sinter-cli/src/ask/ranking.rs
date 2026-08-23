@@ -50,8 +50,28 @@ const BODY_RETRIEVAL_CAP: usize = 50;
 const BODY_DF_CEILING_PERMILLE: u64 = 100;
 const HUB_CAP: i64 = 20;
 const FAMILY_MIN_CHILDREN: usize = 2;
-const TEST_PENALTY: (i64, i64) = (1, 3);
-const VENDOR_PENALTY: (i64, i64) = (1, 2);
+/// Scope prior, permille. An agent asking "how does X reach Y" wants the
+/// production symbol; a test fixture named `request()` matches the same
+/// words but is not the answer. Docs sit just under production (prose
+/// about the thing is a fair second), tests at roughly half (they name
+/// the behavior but do not implement it), fixtures/examples lower still
+/// (they imitate production names wholesale), generated/vendor last
+/// (copied or machine-written, rarely what a question is about).
+const PRIOR_PRODUCTION: i64 = 1000;
+const PRIOR_DOCS: i64 = 900;
+const PRIOR_TEST: i64 = 600;
+const PRIOR_FIXTURE: i64 = 400;
+const PRIOR_GENERATED: i64 = 300;
+
+fn scope_prior(scope: CorpusScope) -> i64 {
+    match scope {
+        CorpusScope::Production => PRIOR_PRODUCTION,
+        CorpusScope::Docs => PRIOR_DOCS,
+        CorpusScope::Test => PRIOR_TEST,
+        CorpusScope::Fixture | CorpusScope::Example => PRIOR_FIXTURE,
+        CorpusScope::Generated | CorpusScope::Vendor => PRIOR_GENERATED,
+    }
+}
 
 #[derive(Debug, Default, Serialize)]
 pub(super) struct ScoreBreakdown {
@@ -283,7 +303,10 @@ fn gather(
     let owner = owner_of(&qualified).unwrap_or("").to_owned();
     let name_tokens = identifier_tokens(&node.name);
     let doc = doc_summary(node.doc.as_deref().unwrap_or(""));
-    let signature = node.signature.to_lowercase();
+    // The signature always echoes the name; credit it only for what it
+    // adds (parameters, return type), or a bare name match on a common
+    // word like `request` double-counts and beats a real doc match.
+    let signature = node.signature.to_lowercase().replacen(&name, "", 1);
     let file = node.file.to_lowercase();
     let mut matched_name_tokens = vec![false; name_tokens.len()];
     let evidence = query
@@ -364,13 +387,19 @@ pub(super) fn score_candidates(
         .iter()
         .any(|term| term.variants().iter().any(|variant| variant == "test"));
     let file_scopes = store.file_scopes()?;
-    nodes.retain(|node| {
-        let scope = file_scopes
+    let scope_of = |node: &Node| {
+        file_scopes
             .get(&node.file)
             .copied()
-            .unwrap_or_else(|| CorpusScope::classify_path(&node.file));
+            .unwrap_or_else(|| CorpusScope::classify_path(&node.file))
+    };
+    nodes.retain(|node| {
+        let scope = scope_of(node);
         scopes.contains(scope) || (test_query && scope == CorpusScope::Test)
     });
+    // A question about tests, or a `--scope` that excludes production,
+    // asked for those symbols on purpose: rank them on evidence alone.
+    let flat_prior = test_query || !scopes.contains(CorpusScope::Production);
     nodes.sort_by(|left, right| left.id.cmp(&right.id));
     let candidate_ids = nodes.iter().map(|node| node.id.clone()).collect::<Vec<_>>();
     let incoming = store.in_edges_many(&candidate_ids)?;
@@ -465,17 +494,20 @@ pub(super) fn score_candidates(
         }
 
         let (kind_numerator, kind_denominator) = kind_prior(node.kind, query);
-        let (mut penalty_numerator, mut penalty_denominator) = if !test_query
+        let scope = scope_of(&node);
+        let penalty_numerator = if flat_prior {
+            PRIOR_PRODUCTION
+        } else if scope == CorpusScope::Production && is_vendor_path(&node.file) {
+            PRIOR_GENERATED
+        } else if scope == CorpusScope::Production
             && (is_test_path(&node.file) || is_test_name(qualified_of(node.id.as_str())))
         {
-            TEST_PENALTY
+            // Store classification missed it; the path or name says test.
+            PRIOR_TEST
         } else {
-            (1, 1)
+            scope_prior(scope)
         };
-        if is_vendor_path(&node.file) {
-            penalty_numerator *= VENDOR_PENALTY.0;
-            penalty_denominator *= VENDOR_PENALTY.1;
-        }
+        let penalty_denominator = PRIOR_PRODUCTION;
         let in_edges = incoming
             .get(&node.id)
             .map(Vec::as_slice)
@@ -497,10 +529,7 @@ pub(super) fn score_candidates(
         roles.sort_unstable();
         roles.dedup();
         hits.push(Hit {
-            scope: file_scopes
-                .get(&node.file)
-                .copied()
-                .unwrap_or_else(|| CorpusScope::classify_path(&node.file)),
+            scope,
             node,
             score,
             matched,
@@ -757,7 +786,11 @@ fn apply_family_boost(hits: &mut [Hit]) {
 #[cfg(test)]
 mod tests {
     use super::super::query::{Query, identifier_tokens};
-    use super::{doc_phrase_hits, name_phrase_hits, owner_of, shares_prefix};
+    use super::{
+        PRIOR_PRODUCTION, ScoreBreakdown, combine, doc_phrase_hits, name_phrase_hits, owner_of,
+        scope_prior, shares_prefix,
+    };
+    use sinter_core::CorpusScope;
 
     #[test]
     fn fuzzy_closeness_needs_a_shared_prefix() {
@@ -782,6 +815,44 @@ mod tests {
             0
         );
         assert_eq!(doc_phrase_hits("writes zsh completion to w", &query), 1);
+    }
+
+    #[test]
+    fn scope_prior_prefers_production_over_tests_and_fixtures() {
+        let order = [
+            CorpusScope::Production,
+            CorpusScope::Docs,
+            CorpusScope::Test,
+            CorpusScope::Fixture,
+            CorpusScope::Example,
+            CorpusScope::Generated,
+            CorpusScope::Vendor,
+        ];
+        for pair in order.windows(2) {
+            assert!(scope_prior(pair[0]) >= scope_prior(pair[1]), "{pair:?}");
+        }
+        assert!(scope_prior(CorpusScope::Fixture) < scope_prior(CorpusScope::Test));
+        assert_eq!(scope_prior(CorpusScope::Production), PRIOR_PRODUCTION);
+    }
+
+    #[test]
+    fn equal_evidence_ranks_fixture_below_production() {
+        let scored = |scope: CorpusScope| {
+            let mut breakdown = ScoreBreakdown {
+                name: 100,
+                coverage_numerator: 1,
+                coverage_denominator: 1,
+                kind_numerator: 1,
+                kind_denominator: 1,
+                penalty_numerator: scope_prior(scope),
+                penalty_denominator: PRIOR_PRODUCTION,
+                ..ScoreBreakdown::default()
+            };
+            combine(&mut breakdown)
+        };
+        assert_eq!(scored(CorpusScope::Production), 100);
+        assert!(scored(CorpusScope::Fixture) < scored(CorpusScope::Test));
+        assert!(scored(CorpusScope::Test) < scored(CorpusScope::Production));
     }
 
     #[test]

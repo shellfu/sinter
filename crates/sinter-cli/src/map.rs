@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::Result;
-use sinter_core::{Node, SymbolKind};
+use sinter_core::{CorpusScope, Node, NodeId, Relation, SymbolKind};
 use sinter_resolve::qualified_of;
 
 use crate::corpus::ScopeSelection;
@@ -13,6 +13,8 @@ use crate::lookup::open_store;
 use crate::render::{line_of, location};
 
 const HUBS: usize = 10;
+/// Nodes (by total in-degree) whose cross-module in-degree is measured.
+const CROSS_POOL: usize = 200;
 const DOC_SECTIONS: usize = 6;
 
 #[derive(Default)]
@@ -58,19 +60,96 @@ fn module_tree(nodes: &[Node]) -> BTreeMap<String, ModuleBranch> {
     tree
 }
 
-/// Top hub symbols by non-Contains in-degree; count desc, id asc.
-fn hubs(nodes: &BTreeMap<&str, &Node>, in_degree: &BTreeMap<&str, usize>) -> Vec<(Node, usize)> {
-    let mut ranked: Vec<(&str, usize)> = in_degree
-        .iter()
-        .filter(|(_, n)| **n > 0)
-        .map(|(id, n)| (*id, *n))
-        .collect();
-    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
-    ranked
+/// A symbol ranked as a dependency hub.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Hub {
+    node: Node,
+    /// Non-Contains in-degree.
+    total: usize,
+    /// In-edges whose source lives in a different depth-2 module.
+    cross: usize,
+}
+
+/// Module key of a repo-relative file: the first two directories (the
+/// same depth-2 grain as the modules table, so `crates/a` and `crates/b`
+/// are distinct modules); `.` for root files.
+fn top_of(file: &str) -> &str {
+    match file.rsplit_once('/') {
+        Some((dirs, _)) => {
+            let cut = dirs
+                .match_indices('/')
+                .nth(1)
+                .map_or(dirs.len(), |(i, _)| i);
+            &dirs[..cut]
+        }
+        None => ".",
+    }
+}
+
+/// Nodes that may appear as hubs: real symbols, not aliases, containers,
+/// or generated/vendored code whose fan-in says nothing about design.
+fn hub_candidate(node: &Node, scope: CorpusScope) -> bool {
+    !matches!(
+        node.kind,
+        SymbolKind::TypeAlias | SymbolKind::Module | SymbolKind::File
+    ) && !matches!(scope, CorpusScope::Generated | CorpusScope::Vendor)
+}
+
+/// Rank hubs: cross-module in-degree desc, total desc, id asc; top HUBS.
+fn rank_hubs(mut hubs: Vec<Hub>) -> Vec<Hub> {
+    hubs.sort_by(|a, b| {
+        b.cross
+            .cmp(&a.cross)
+            .then_with(|| b.total.cmp(&a.total))
+            .then_with(|| a.node.id.cmp(&b.node.id))
+    });
+    hubs.truncate(HUBS);
+    hubs
+}
+
+/// Hubs from the store: filter candidates, measure cross-module in-degree,
+/// rank.
+fn hubs(
+    store: &sinter_store::Store,
+    nodes: &BTreeMap<&str, &Node>,
+    scopes: &sinter_store::ScopeIndex,
+) -> Result<Vec<Hub>> {
+    let mut ranked: Vec<(&Node, usize)> = store
+        .in_degrees()?
         .into_iter()
-        .filter_map(|(id, n)| nodes.get(id).map(|node| ((*node).clone(), n)))
-        .take(HUBS)
-        .collect()
+        .filter_map(|(id, n)| nodes.get(id.as_str()).map(|node| (*node, n)))
+        .filter(|(node, _)| hub_candidate(node, scopes.scope_of(node)))
+        .collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.id.cmp(&b.0.id)));
+    // ponytail: cross-degree is measured only for the top CROSS_POOL by
+    // total; a node below that cut with higher cross-degree is missed.
+    // Widen the pool or stream IN_EDGES if that shows up in practice.
+    ranked.truncate(CROSS_POOL);
+    let ids: Vec<NodeId> = ranked.iter().map(|(node, _)| node.id.clone()).collect();
+    let in_edges = store.in_edges_many(&ids)?;
+    let hubs = ranked
+        .into_iter()
+        .map(|(node, total)| {
+            let top = top_of(&node.file);
+            let cross = in_edges
+                .get(&node.id)
+                .map(|edges| {
+                    edges
+                        .iter()
+                        .filter(|e| e.relation != Relation::Contains)
+                        .map(|e| e.src.as_str().split('#').next().unwrap_or(""))
+                        .filter(|src_file| top_of(src_file) != top)
+                        .count()
+                })
+                .unwrap_or(0);
+            Hub {
+                node: node.clone(),
+                total,
+                cross,
+            }
+        })
+        .collect();
+    Ok(rank_hubs(hubs))
 }
 
 /// Level-1 markdown sections of README.md and top-level docs/*.md, in
@@ -137,13 +216,14 @@ pub fn run(repo: &Path, json: bool, scopes: &ScopeSelection) -> Result<()> {
     let hubs = view["hubs"].as_array().cloned().unwrap_or_default();
     if !hubs.is_empty() {
         println!();
-        println!("Dependency hubs (non-containment in-degree)");
+        println!("Dependency hubs (non-containment in-degree; cross = from other modules)");
         for hub in hubs {
             let file = hub["file"].as_str().unwrap_or("");
             let line = hub["line"].as_u64().map(|line| line as usize);
             println!(
-                "  {:>4}  {} {}  {}",
+                "  {:>4} (cross {:>3})  {} {}  {}",
                 hub["in_degree"].as_u64().unwrap_or(0),
+                hub["cross_in_degree"].as_u64().unwrap_or(0),
                 hub["kind"].as_str().unwrap_or("symbol"),
                 hub["name"].as_str().unwrap_or(""),
                 location(&repo, file, line),
@@ -224,11 +304,8 @@ pub(crate) fn response(
         .collect();
     let node_count = nodes.len();
     let by_id: BTreeMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
-    let degrees = store.in_degrees()?;
-    let in_degree: BTreeMap<&str, usize> =
-        degrees.iter().map(|(id, n)| (id.as_str(), *n)).collect();
     let tree = module_tree(&nodes);
-    let hubs = hubs(&by_id, &in_degree);
+    let hubs = hubs(store, &by_id, &persisted_scopes)?;
     let docs = doc_entries(&nodes);
     let health = crate::coverage::orientation_health_json(repo, store)?;
     let name = repo
@@ -255,14 +332,15 @@ pub(crate) fn response(
         .collect();
     let hubs: Vec<serde_json::Value> = hubs
         .iter()
-        .map(|(node, n)| {
+        .map(|Hub { node, total, cross }| {
             serde_json::json!({
                 "name": qualified_of(node.id.as_str()),
                 "kind": node.kind.as_str(),
                 "scope": persisted_scopes.scope_of(node).as_str(),
                 "file": node.file,
                 "line": line_of(repo, &node.file, node.span.start),
-                "in_degree": n,
+                "in_degree": total,
+                "cross_in_degree": cross,
             })
         })
         .collect();
@@ -279,7 +357,8 @@ pub(crate) fn response(
         "orientation": {
             "kind": "repository_inventory",
             "module_depth": 2,
-            "hub_metric": "non_contains_in_degree",
+            "hub_metric": "cross_module_in_degree_then_non_contains_in_degree",
+            "hub_excludes": ["typealias", "module", "file", "generated", "vendor"],
             "hub_limit": HUBS,
             "doc_entry_rule": "level_1_readme_and_top_level_docs",
             "claim_boundary": "structural_evidence_not_runtime_architecture",
@@ -292,4 +371,73 @@ pub(crate) fn response(
         "hubs": hubs,
         "docs": docs,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sinter_core::Span;
+
+    fn node(id: &str, kind: SymbolKind, file: &str) -> Node {
+        Node {
+            id: NodeId::new(id),
+            kind,
+            name: id.to_string(),
+            file: file.to_string(),
+            span: Span { start: 0, end: 0 },
+            signature: String::new(),
+            doc: None,
+        }
+    }
+
+    #[test]
+    fn top_of_uses_first_directory() {
+        assert_eq!(top_of("crates/a/src/x.rs"), "crates/a");
+        assert_eq!(top_of("src/x.rs"), "src");
+        assert_eq!(top_of("README.md"), ".");
+    }
+
+    #[test]
+    fn aliases_containers_and_generated_code_are_not_hubs() {
+        let f = node("f", SymbolKind::Function, "src/a.rs");
+        assert!(hub_candidate(&f, CorpusScope::Production));
+        assert!(hub_candidate(&f, CorpusScope::Test));
+        assert!(!hub_candidate(&f, CorpusScope::Generated));
+        assert!(!hub_candidate(&f, CorpusScope::Vendor));
+        for kind in [SymbolKind::TypeAlias, SymbolKind::Module, SymbolKind::File] {
+            assert!(!hub_candidate(
+                &node("x", kind, "src/a.rs"),
+                CorpusScope::Production
+            ));
+        }
+    }
+
+    #[test]
+    fn hubs_rank_cross_module_before_total() {
+        let hub = |id: &str, total, cross| Hub {
+            node: node(id, SymbolKind::Struct, "src/a.rs"),
+            total,
+            cross,
+        };
+        let ranked = rank_hubs(vec![
+            hub("local", 500, 1),
+            hub("shared", 129, 87),
+            hub("tie_b", 10, 5),
+            hub("tie_a", 10, 5),
+        ]);
+        let ids: Vec<&str> = ranked.iter().map(|h| h.node.id.as_str()).collect();
+        assert_eq!(ids, ["shared", "tie_a", "tie_b", "local"]);
+    }
+
+    #[test]
+    fn hubs_are_capped() {
+        let many = (0..HUBS + 5)
+            .map(|i| Hub {
+                node: node(&format!("n{i}"), SymbolKind::Struct, "src/a.rs"),
+                total: i,
+                cross: i,
+            })
+            .collect();
+        assert_eq!(rank_hubs(many).len(), HUBS);
+    }
 }
