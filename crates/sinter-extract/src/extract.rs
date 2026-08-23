@@ -4,6 +4,10 @@ use sinter_core::{
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node as TsNode, Parser, Query, QueryCursor};
 
+/// Upper bound on a stored doc body; markdown sections and long
+/// docstrings are truncated here, keeping the beginning.
+const DOC_CAP_BYTES: usize = 4096;
+
 use sinter_core::FileFacts;
 
 use crate::language::LanguageSpec;
@@ -173,19 +177,31 @@ impl Extractor {
         }
         entries.sort_by_key(|e| (e.start, usize::MAX - e.end));
         // Explicit @doc captures override sibling-comment docs on the
-        // smallest definition containing them (Python docstrings).
+        // smallest definition containing them (Python docstrings). Several
+        // captures on one definition (markdown section blocks) are joined
+        // with blank lines in document order.
+        let mut doc_set = vec![false; entries.len()];
         for (d_start, d_end, text) in &collected.docs {
             let owner = entries
                 .iter_mut()
-                .filter(|e| e.kind.is_some() && e.start <= *d_start && *d_end <= e.end)
-                .min_by_key(|e| e.end - e.start);
-            if let Some(entry) = owner {
+                .enumerate()
+                .filter(|(_, e)| e.kind.is_some() && e.start <= *d_start && *d_end <= e.end)
+                .min_by_key(|(_, e)| e.end - e.start);
+            if let Some((i, entry)) = owner {
                 let cleaned: Vec<&str> = text.lines().map(str::trim).collect();
                 let trimmed = cleaned.join("\n");
                 let trimmed = trimmed.trim_matches('\n');
-                if !trimmed.is_empty() {
-                    entry.doc = Some(trimmed.to_string());
+                if trimmed.is_empty() {
+                    continue;
                 }
+                entry.doc = match entry.doc.take().filter(|_| doc_set[i]) {
+                    // Whole-section bodies can run long; keep the beginning
+                    // (what ask/show surface) and stop appending past the cap.
+                    Some(prev) if prev.len() >= DOC_CAP_BYTES => Some(prev),
+                    Some(prev) => Some(format!("{prev}\n\n{trimmed}")),
+                    None => Some(trimmed.to_string()),
+                };
+                doc_set[i] = true;
             }
         }
         // Two patterns may claim the same node (e.g. `const f = () => ...`

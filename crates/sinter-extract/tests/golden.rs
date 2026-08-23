@@ -618,10 +618,34 @@ fn golden_markdown_headings() {
     check("markdown-headings");
 }
 
-/// A list or table directly under a heading is the section body.
+/// Every block under a heading (paragraph, list, table, fenced code) is
+/// the section body, joined with blank lines; golden rows only see the
+/// first line, so the full body is asserted here.
 #[test]
 fn golden_markdown_table_list() {
     check("markdown-table-list");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../harness/golden/fixtures/markdown-table-list/docs/arch.md");
+    let source = std::fs::read_to_string(&path).unwrap();
+    let facts = Extractor::new(spec_for_path("docs/arch.md").unwrap())
+        .unwrap()
+        .extract("docs/arch.md", &source)
+        .unwrap();
+    let doc = |name: &str| {
+        facts
+            .nodes
+            .iter()
+            .find(|n| n.name == name)
+            .and_then(|n| n.doc.clone())
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        doc("Key Traits"),
+        "Some intro paragraph.\n\n- Harness: adjudicates events\n- PolicyEngine: compiles Cedar\n\n| a | b |\n|---|---|\n| 1 | 2 |"
+    );
+    assert_eq!(doc("Example"), "```rust\nfn main() {}\n```");
+    // Parent section's doc stops at its first subheading.
+    assert_eq!(doc("Architecture"), "");
 }
 
 /// Inline links (secondary inline grammar): destinations become `uses`

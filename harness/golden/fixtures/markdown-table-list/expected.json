@@ -1,16 +1,72 @@
 {
   "nodes": [
-    ["file", "docs/arch.md", "docs/arch.md"],
-    ["section", "Architecture", "docs/arch.md", ""],
-    ["section", "Architecture::Components", "docs/arch.md", "- extractor: parses files"],
-    ["section", "Architecture::Options", "docs/arch.md", "| Flag | Meaning |"],
-    ["section", "Architecture::Notes", "docs/arch.md", "Plain paragraph body."]
+    [
+      "file",
+      "docs/arch.md",
+      "docs/arch.md"
+    ],
+    [
+      "section",
+      "Architecture",
+      "docs/arch.md",
+      ""
+    ],
+    [
+      "section",
+      "Architecture::Components",
+      "docs/arch.md",
+      "- extractor: parses files"
+    ],
+    [
+      "section",
+      "Architecture::Options",
+      "docs/arch.md",
+      "| Flag | Meaning |"
+    ],
+    [
+      "section",
+      "Architecture::Notes",
+      "docs/arch.md",
+      "Plain paragraph body."
+    ],
+    [
+      "section",
+      "Architecture::Key Traits",
+      "docs/arch.md",
+      "Some intro paragraph."
+    ],
+    [
+      "section",
+      "Architecture::Example",
+      "docs/arch.md",
+      "```rust"
+    ]
   ],
   "contains": [
-    ["docs/arch.md", "Architecture"],
-    ["Architecture", "Architecture::Components"],
-    ["Architecture", "Architecture::Options"],
-    ["Architecture", "Architecture::Notes"]
+    [
+      "docs/arch.md",
+      "Architecture"
+    ],
+    [
+      "Architecture",
+      "Architecture::Components"
+    ],
+    [
+      "Architecture",
+      "Architecture::Options"
+    ],
+    [
+      "Architecture",
+      "Architecture::Notes"
+    ],
+    [
+      "Architecture",
+      "Architecture::Key Traits"
+    ],
+    [
+      "Architecture",
+      "Architecture::Example"
+    ]
   ],
   "references": [],
   "resolved": [],

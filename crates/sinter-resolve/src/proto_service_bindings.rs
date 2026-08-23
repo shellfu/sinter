@@ -8,6 +8,72 @@ use std::collections::HashMap;
 
 use sinter_core::{Edge, Evidence, Node, Relation, SymbolKind, TraitImpl};
 
+/// `(service, snake(rpc))` for a proto rpc node, None for anything else.
+fn rpc_key(n: &Node) -> Option<(&str, String)> {
+    if n.kind != SymbolKind::Method || !n.file.ends_with(".proto") {
+        return None;
+    }
+    let (service, rpc) = n.id.qualified().split_once("::")?;
+    Some((service, snake_case(rpc)))
+}
+
+/// Proto rpcs keyed for client-side call binding: `client.adjudicates(req)`
+/// where `client: HarnessServiceClient<_>` is generated code in OUT_DIR,
+/// so the call can only bind to the rpc declaration itself.
+#[derive(Default)]
+pub struct ProtoRpcs<'a> {
+    by_key: HashMap<(&'a str, String), &'a Node>,
+    /// snake(rpc) -> every service declaring it; corpus-wide uniqueness
+    /// is the fallback evidence when the receiver type is unknown.
+    by_method: HashMap<String, Vec<&'a Node>>,
+}
+
+impl<'a> ProtoRpcs<'a> {
+    pub fn build(nodes: &'a [Node]) -> Self {
+        let mut out = Self::default();
+        for n in nodes {
+            if let Some((service, method)) = rpc_key(n) {
+                out.by_method.entry(method.clone()).or_default().push(n);
+                out.by_key.insert((service, method), n);
+            }
+        }
+        out
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_key.is_empty()
+    }
+
+    /// The rpc an unresolved `<recv>.<method>(..)` call targets. With a
+    /// declared receiver type `SClient` / `s_client::SClient<..>`, the
+    /// service is known. Without one, the method must name exactly one
+    /// rpc corpus-wide and the file must import a `*_client` module or a
+    /// `*Client` name (`file_tokens`: import segments and bindings).
+    pub fn client_call<'t>(
+        &self,
+        method: &str,
+        receiver_type: Option<&str>,
+        file_tokens: impl IntoIterator<Item = &'t str>,
+    ) -> Option<&'a Node> {
+        if let Some(ty) = receiver_type {
+            let leaf = ty.split('<').next().unwrap_or(ty).trim();
+            let leaf = leaf.rsplit("::").next().unwrap_or(leaf);
+            let service = leaf.strip_suffix("Client")?;
+            return self.by_key.get(&(service, method.to_string())).copied();
+        }
+        let [rpc] = self.by_method.get(method)?.as_slice() else {
+            return None;
+        };
+        let service = rpc.id.qualified().split_once("::")?.0;
+        let module = format!("{}_client", snake_case(service));
+        let client = format!("{service}Client");
+        file_tokens
+            .into_iter()
+            .any(|t| t == module || t == client)
+            .then_some(rpc)
+    }
+}
+
 /// Edges for every proto rpc whose tonic counterpart exists in the corpus:
 /// rpc `calls` the impl method, impl method `implements` the rpc; a
 /// generated `SClient::r` / `SServer::r` method `calls` the rpc; a trait
@@ -17,15 +83,10 @@ pub fn proto_service_edges(nodes: &[Node], trait_impls: &[TraitImpl]) -> Vec<Edg
     let mut rpcs: HashMap<(&str, String), &Node> = HashMap::new();
     let mut services: HashMap<&str, &Node> = HashMap::new();
     for n in nodes.iter().filter(|n| n.file.ends_with(".proto")) {
-        let q = n.id.qualified();
-        match (n.kind, q.split_once("::")) {
-            (SymbolKind::Method, Some((service, rpc))) => {
-                rpcs.insert((service, snake_case(rpc)), n);
-            }
-            (SymbolKind::Interface, None) => {
-                services.insert(q, n);
-            }
-            _ => {}
+        if let Some(key) = rpc_key(n) {
+            rpcs.insert(key, n);
+        } else if n.kind == SymbolKind::Interface && !n.id.qualified().contains("::") {
+            services.insert(n.id.qualified(), n);
         }
     }
     if rpcs.is_empty() {
@@ -101,7 +162,45 @@ fn snake_case(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::snake_case;
+    use super::{ProtoRpcs, snake_case};
+    use sinter_core::{Node, NodeId, Span, SymbolKind};
+
+    fn rpc(q: &str) -> Node {
+        Node {
+            id: NodeId::new(format!("proto/h.proto#{q}")),
+            name: q.rsplit("::").next().unwrap().to_string(),
+            kind: SymbolKind::Method,
+            file: "proto/h.proto".into(),
+            span: Span { start: 0, end: 1 },
+            signature: String::new(),
+            doc: None,
+        }
+    }
+
+    #[test]
+    fn client_call_binds_by_receiver_type_or_unique_import_evidence() {
+        let nodes = vec![
+            rpc("HarnessService::Adjudicates"),
+            rpc("Other::Ping"),
+            rpc("Third::Ping"),
+        ];
+        let rpcs = ProtoRpcs::build(&nodes);
+        let hit = |m: &str, ty: Option<&str>, tokens: &[&str]| {
+            rpcs.client_call(m, ty, tokens.iter().copied())
+                .map(|n| n.id.qualified().to_string())
+        };
+        assert_eq!(
+            hit("adjudicates", Some("HarnessServiceClient<Channel>"), &[]).as_deref(),
+            Some("HarnessService::Adjudicates")
+        );
+        assert_eq!(hit("adjudicates", Some("OtherClient"), &[]), None);
+        assert_eq!(
+            hit("adjudicates", None, &["harness_service_client"]).as_deref(),
+            Some("HarnessService::Adjudicates")
+        );
+        assert_eq!(hit("adjudicates", None, &["tonic"]), None);
+        assert_eq!(hit("ping", None, &["other_client"]), None); // ambiguous
+    }
 
     #[test]
     fn snake_case_follows_tonic() {

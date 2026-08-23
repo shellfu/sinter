@@ -8,7 +8,10 @@
     ["struct", "VerdictId", "proto/harness.proto"],
     ["struct", "AdjudicateReply", "proto/harness.proto"],
     ["file", "src/lib.rs", "src/lib.rs"],
+    ["module", "client", "src/lib.rs"],
     ["module", "grpc", "src/lib.rs"],
+    ["file", "src/client.rs", "src/client.rs"],
+    ["function", "adjudicate_remote", "src/client.rs"],
     ["file", "src/grpc.rs", "src/grpc.rs"],
     ["struct", "HarnessGrpcService", "src/grpc.rs"],
     ["function", "HarnessGrpcService::adjudicates", "src/grpc.rs", "", "118", "172"],
@@ -22,7 +25,9 @@
     ["proto/harness.proto", "AdjudicateRequest"],
     ["proto/harness.proto", "VerdictId"],
     ["proto/harness.proto", "AdjudicateReply"],
+    ["src/lib.rs", "client"],
     ["src/lib.rs", "grpc"],
+    ["src/client.rs", "adjudicate_remote"],
     ["src/grpc.rs", "HarnessGrpcService"],
     ["src/grpc.rs", "HarnessGrpcService::adjudicates"],
     ["src/grpc.rs", "HarnessGrpcService::adjudicates"],
@@ -42,13 +47,23 @@
     ["uses", "AdjudicateReply", "src/grpc.rs", "HarnessGrpcService::adjudicates"],
     ["uses", "VerdictId", "src/grpc.rs", "HarnessGrpcService::get_verdict_by_id"],
     ["uses", "AdjudicateReply", "src/grpc.rs", "HarnessGrpcService::get_verdict_by_id"],
-    ["uses", "AdjudicateReply", "src/grpc.rs", "HarnessGrpcService::get_verdict_by_id"]
+    ["uses", "AdjudicateReply", "src/grpc.rs", "HarnessGrpcService::get_verdict_by_id"],
+    ["imports", "crate::pb::harness_service_client::HarnessServiceClient"],
+    ["uses", "AdjudicateRequest", "src/client.rs", "adjudicate_remote"],
+    ["uses", "AdjudicateReply", "src/client.rs", "adjudicate_remote"],
+    ["uses", "HarnessServiceClient", "src/client.rs", "adjudicate_remote"],
+    ["calls", "connect", "src/client.rs", "adjudicate_remote", "HarnessServiceClient::connect"],
+    ["calls", "unwrap", "src/client.rs", "adjudicate_remote"],
+    ["calls", "adjudicates", "src/client.rs", "adjudicate_remote", "client.adjudicates"],
+    ["calls", "unwrap", "src/client.rs", "adjudicate_remote"],
+    ["calls", "into_inner", "src/client.rs", "adjudicate_remote"]
   ],
   "resolved": [
     ["declared", "calls", "HarnessService::Adjudicates", "HarnessGrpcService::adjudicates", "proto/harness.proto", "src/grpc.rs"],
     ["declared", "implements", "HarnessGrpcService::adjudicates", "HarnessService::Adjudicates", "src/grpc.rs", "proto/harness.proto"],
     ["declared", "calls", "HarnessService::GetVerdictByID", "HarnessGrpcService::get_verdict_by_id", "proto/harness.proto", "src/grpc.rs"],
     ["declared", "implements", "HarnessGrpcService::get_verdict_by_id", "HarnessService::GetVerdictByID", "src/grpc.rs", "proto/harness.proto"],
+    ["declared", "calls", "adjudicate_remote", "HarnessService::Adjudicates", "src/client.rs", "proto/harness.proto"],
     ["scope", "uses", "HarnessService::Adjudicates", "AdjudicateRequest"],
     ["scope", "uses", "HarnessService::Adjudicates", "AdjudicateReply"],
     ["scope", "uses", "HarnessService::GetVerdictByID", "VerdictId"],
@@ -56,5 +71,5 @@
     ["scope", "uses", "src/grpc.rs", "HarnessGrpcService"],
     ["scope", "uses", "src/grpc.rs", "HarnessGrpcService"]
   ],
-  "unresolved_count": 8
+  "unresolved_count": 16
 }

@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 
 use sinter_core::{
-    Edge, Embed, Evidence, FieldBinding, LocalBinding, Node, NodeId, Reference, Relation,
-    SymbolKind, TraitImpl,
+    Confidence, Edge, Embed, Evidence, FieldBinding, LocalBinding, Node, NodeId, Reference,
+    Relation, SymbolKind, TraitImpl,
 };
 use sinter_extract::{LanguageSpec, ModuleRoot, spec_for_path};
 
@@ -190,6 +190,8 @@ pub struct Index<'a> {
     embeds: HashMap<&'a str, Vec<&'a str>>,
     /// Discovered package roots (manifest-declared name <-> directory).
     roots: Vec<ModuleRoot>,
+    /// Proto rpcs, for binding calls on generated (OUT_DIR) clients.
+    proto_rpcs: crate::proto_service_bindings::ProtoRpcs<'a>,
 }
 
 /// Module key of a file, manifest-aware: under a discovered package
@@ -301,6 +303,7 @@ fn build_index<'a>(
         fields: HashMap::new(),
         embeds: HashMap::new(),
         roots: roots.to_vec(),
+        proto_rpcs: crate::proto_service_bindings::ProtoRpcs::build(nodes),
     };
     // Pass 1: qualified -> kind per file, for ancestor-kind checks.
     let mut kind_of: HashMap<(&str, &str), SymbolKind> = HashMap::new();
@@ -860,7 +863,13 @@ pub fn resolve(
                             dst: node.id.clone(),
                             relation,
                             evidence,
-                            confidence: evidence.confidence(),
+                            // Convention-bound (proto client) references
+                            // are declared but never compiler-checked.
+                            confidence: if evidence == Evidence::Declared {
+                                Confidence::Inferred
+                            } else {
+                                evidence.confidence()
+                            },
                             site: Some(r.span),
                         },
                         reference: i,
@@ -905,10 +914,67 @@ fn resolve_one<'a>(
     }
 
     if let Some(path) = &r.path {
-        return resolve_qualified_reference(index, spec, r, file_module, imports, path);
+        let (target, evidence, internal) =
+            resolve_qualified_reference(index, spec, r, file_module, imports, path);
+        if target.is_none()
+            && r.relation == Relation::Calls
+            && !index.proto_rpcs.is_empty()
+            && let Some(rpc) = proto_client_call(index, spec, r, file_module, imports, path)
+        {
+            return (Some(rpc), Evidence::Declared, true);
+        }
+        return (target, evidence, internal);
     }
 
     resolve_bare_reference(index, r, file_module, imports)
+}
+
+/// Method call on a tonic-generated client (`client.adjudicates(req)`):
+/// the client type never exists in the corpus, so the call binds to the
+/// proto rpc by convention. Receiver type comes from a typed local or a
+/// declared field; otherwise the file's imports must name the client.
+fn proto_client_call<'a>(
+    index: &Index<'a>,
+    spec: &LanguageSpec,
+    r: &Reference,
+    file_module: &[String],
+    imports: Option<&Vec<Import>>,
+    path: &str,
+) -> Option<&'a Node> {
+    let segments = expand(
+        spec,
+        &index.roots,
+        &r.file,
+        (spec.absolutize)(path, &r.file),
+    );
+    let prefix = segments.get(segments.len().checked_sub(2)?)?;
+    let field_type = || {
+        let enclosing = r.enclosing.as_ref()?;
+        let (type_prefix, _) = qualified_of(enclosing.as_str()).rsplit_once("::")?;
+        let name = type_prefix.rsplit("::").next().unwrap_or(type_prefix);
+        let owner = index
+            .by_file_qualified
+            .get(&(r.file.as_str(), type_prefix))
+            .copied()
+            .or_else(|| index.type_def(&r.file, file_module, name))?;
+        Some(index.field(owner, prefix)?.type_name.as_str())
+    };
+    let receiver_type = if segments.len() >= 3
+        && spec
+            .receivers
+            .contains(&segments[segments.len() - 3].as_str())
+    {
+        field_type()
+    } else {
+        index.local_at(&r.file, prefix, r.span.start).flatten()
+    };
+    let tokens = imports.into_iter().flatten().flat_map(|imp| {
+        imp.segments
+            .iter()
+            .map(String::as_str)
+            .chain([imp.binding.as_str()])
+    });
+    index.proto_rpcs.client_call(&r.name, receiver_type, tokens)
 }
 
 /// Import declarations resolve through exact files first, then absolute
