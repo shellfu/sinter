@@ -5,6 +5,7 @@
 //! and needs to carry outcome/error metadata independently of a tool's data
 //! shape (notably `ask`, whose compatibility payload is an array).
 
+use std::cell::RefCell;
 use std::sync::OnceLock;
 
 use anyhow::{Result, bail};
@@ -23,7 +24,7 @@ pub const MCP_DEFAULT_BUDGET_BYTES: usize = 8000;
 /// excerpt); entries are only dropped once the smallest ceiling still
 /// overflows the budget.
 const TEXT_CEILINGS: [usize; 3] = [400, 160, 60];
-const TEXT_FIELDS: [&str; 5] = ["doc", "signature", "excerpt", "snippet", "text"];
+const TEXT_FIELDS: [&str; 6] = ["doc", "signature", "excerpt", "snippet", "text", "t"];
 /// Coverage/diagnostic envelopes are lowest priority: collapsed before
 /// result entries are dropped.
 const DIAGNOSTIC_FIELDS: [&str; 3] = ["coverage", "health", "compiler_index"];
@@ -41,6 +42,57 @@ static CLI_BUDGET: OnceLock<Budget> = OnceLock::new();
 /// `--json` writer honors it without per-command plumbing.
 pub fn set_cli_budget(budget: Budget) {
     let _ = CLI_BUDGET.set(budget);
+}
+
+// Diagnostic sink for the command in flight. A CLI process serves one
+// command on one thread, and the MCP loop answers one request on one
+// thread, so the buffer lives on that thread: no lock, no poisoning, no
+// context threaded through call sites, no leakage between requests.
+//
+// ponytail: a warning raised on a rayon worker (index build) would never
+// reach the envelope written by the main thread; make this a
+// `Mutex<Vec<String>>` static if a parallel path ever needs to warn.
+thread_local! {
+    static WARNINGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Buffer a diagnostic for the machine envelope. Ambiguity notes, ignored
+/// candidates and degraded-resolution notices are part of the answer, so an
+/// agent must find them in the document it parses rather than beside it.
+///
+/// Outside `--json` no envelope is ever written, so the note goes straight
+/// to stderr with the wording terminals already show.
+///
+/// ponytail: JSON mode is read once off argv; set it explicitly from `main`
+/// if a verb ever gains a JSON switch other than `--json`.
+pub fn warn(message: impl Into<String>) {
+    let message = message.into();
+    if !json_mode() {
+        eprintln!("note: {message}");
+    }
+    WARNINGS.with_borrow_mut(|buffer| buffer.push(message));
+}
+
+fn json_mode() -> bool {
+    static JSON: OnceLock<bool> = OnceLock::new();
+    *JSON.get_or_init(|| std::env::args().any(|arg| arg == "--json"))
+}
+
+/// Drain the sink. Called once per emitted envelope, so a warning is
+/// reported exactly once and never leaks into a later MCP response.
+fn take_warnings() -> Vec<String> {
+    WARNINGS.with_borrow_mut(std::mem::take)
+}
+
+/// Attach buffered warnings to a JSON object, omitting the key when there
+/// are none: an agent pays for every envelope byte on every later turn.
+fn insert_warnings(value: &mut Value, warnings: Vec<String>) {
+    if warnings.is_empty() {
+        return;
+    }
+    if let Some(map) = value.as_object_mut() {
+        map.insert("warnings".to_string(), json!(warnings));
+    }
 }
 
 /// Pull `budget_bytes`/`cursor` out of MCP arguments (so tool dispatch never
@@ -69,6 +121,7 @@ pub fn take_budget(args: &mut Value) -> Result<Budget> {
 pub fn write_json(value: &Value) -> Result<()> {
     let budget = CLI_BUDGET.get().copied().unwrap_or_default();
     let mut value = value.clone();
+    insert_warnings(&mut value, take_warnings());
     fit(&mut value, budget, |data| {
         Ok(serde_json::to_string(data)?.len() + 1)
     })?;
@@ -78,7 +131,7 @@ pub fn write_json(value: &Value) -> Result<()> {
 
 /// Key legend for terse dependent rows, emitted only for keys actually
 /// present so repository (`d`) and workspace (`p`) rows each get theirs.
-const LEGEND: [(&str, &str); 8] = [
+const LEGEND: [(&str, &str); 11] = [
     ("s", "symbol"),
     ("k", "kind"),
     ("f", "file"),
@@ -87,6 +140,9 @@ const LEGEND: [(&str, &str); 8] = [
     ("d", "depth"),
     ("p", "parent"),
     ("site", "file:line"),
+    ("seeds", "reached-from"),
+    ("l", "line"),
+    ("t", "text"),
 ];
 
 /// MCP tool result: `structuredContent` carries the versioned contract and
@@ -95,6 +151,9 @@ const LEGEND: [(&str, &str); 8] = [
 /// measured on the whole tool result. `coverage.compiler_index` is slimmed
 /// here: per-project indexer detail stays on CLI `--json` and `doctor`.
 pub fn mcp_success(operation: &str, payload: &Value, budget: Budget) -> Result<Value> {
+    // Drained once here, not inside `envelope`: `fit` rebuilds the envelope
+    // on every sizing pass.
+    let warnings = take_warnings();
     let envelope = |data: &Value| -> Result<Value> {
         let mut data = data.clone();
         if (budget.cursor == 0 || data.get("truncated").is_some_and(|t| t != false))
@@ -102,9 +161,12 @@ pub fn mcp_success(operation: &str, payload: &Value, budget: Budget) -> Result<V
         {
             data["legend"] = json!(legend);
         }
+        let summary = summary(operation, &data);
+        let mut structured = success(operation, data);
+        insert_warnings(&mut structured, warnings.clone());
         Ok(json!({
-            "content": [{"type": "text", "text": summary(operation, &data)}],
-            "structuredContent": success(operation, data),
+            "content": [{"type": "text", "text": summary}],
+            "structuredContent": structured,
             "isError": false,
         }))
     };
@@ -116,8 +178,8 @@ pub fn mcp_success(operation: &str, payload: &Value, budget: Budget) -> Result<V
     envelope(&data)
 }
 
-/// Legend for the first terse row (an object carrying `s`) reachable from
-/// `data`, `None` when the response has no terse rows.
+/// Legend for the first terse row reachable from `data`, `None` when the
+/// response has no terse rows.
 fn legend(data: &Value) -> Option<String> {
     let keys = first_terse_row(data, 8)?;
     let parts: Vec<String> = LEGEND
@@ -134,7 +196,10 @@ fn first_terse_row(value: &Value, depth: usize) -> Option<&Map<String, Value>> {
     }
     match value {
         Value::Object(map) => {
-            if map.contains_key("s") && map.contains_key("f") {
+            // Graph rows key the symbol `s`; `grep` hits are text locations
+            // with no symbol, and their `l`/`t` pair belongs to no other
+            // verb, so neither shape can mislabel the other.
+            if (map.contains_key("s") || map.contains_key("l")) && map.contains_key("f") {
                 return Some(map);
             }
             map.values().find_map(|v| first_terse_row(v, depth - 1))
@@ -493,6 +558,7 @@ pub fn failure(operation: &str, error: &anyhow::Error) -> Value {
             "candidates": candidates,
         },
     });
+    insert_warnings(&mut failure, take_warnings());
     if let Some((expected, actual)) = lookup.and_then(|error| error.snapshots()) {
         failure["error"]["expected_snapshot"] = json!(expected);
         failure["error"]["actual_snapshot"] = json!(actual);
@@ -705,6 +771,45 @@ mod tests {
     }
 
     #[test]
+    fn warnings_ride_inside_the_envelope() {
+        super::warn("2 other `Foo` ignored");
+        super::warn(String::from("resolution degraded"));
+        let value = failure("show", &anyhow!("boom"));
+        assert_eq!(
+            value["warnings"],
+            json!(["2 other `Foo` ignored", "resolution degraded"])
+        );
+        super::warn("only once");
+        let first =
+            super::mcp_success("query", &json!({"results": []}), Budget::default()).unwrap();
+        assert_eq!(first["structuredContent"]["warnings"], json!(["only once"]));
+        // Drained, so the next envelope of the same process is clean.
+        let second =
+            super::mcp_success("query", &json!({"results": []}), Budget::default()).unwrap();
+        assert!(second["structuredContent"].get("warnings").is_none());
+    }
+
+    #[test]
+    fn envelope_omits_the_warnings_key_when_there_are_none() {
+        super::take_warnings();
+        let mut value = json!({"results": []});
+        super::insert_warnings(&mut value, Vec::new());
+        assert!(value.get("warnings").is_none());
+        super::insert_warnings(&mut value, vec!["note".to_string()]);
+        assert_eq!(value["warnings"], json!(["note"]));
+    }
+
+    #[test]
+    fn plain_text_mode_still_writes_the_note_to_stderr() {
+        // `cargo test` argv carries no `--json`, so this is the plain-text
+        // path: the note is written to stderr and still buffered.
+        assert!(!super::json_mode());
+        super::take_warnings();
+        super::warn("ambiguous");
+        assert_eq!(super::take_warnings(), vec!["ambiguous".to_string()]);
+    }
+
+    #[test]
     fn mcp_envelope_data_is_the_cli_payload() {
         let cli = json!({"exact": true, "results": [{"name": "run"}]});
         let result = mcp_success("query", &cli).unwrap();
@@ -754,6 +859,51 @@ mod tests {
         )
         .unwrap();
         assert!(paged["structuredContent"]["data"].get("legend").is_none());
+    }
+
+    #[test]
+    fn grep_hits_are_shortened_not_dropped_under_a_tight_budget() {
+        let long = "x".repeat(500);
+        let payload = json!({
+            "status": "found",
+            "pattern": "x+",
+            "total": 2,
+            "matches": [
+                {"f": "a.rs", "l": 12, "t": long},
+                {"f": "b.rs", "l": 30, "t": "short hit"},
+            ],
+        });
+        let result = super::mcp_success(
+            "grep",
+            &payload,
+            Budget {
+                bytes: Some(600),
+                cursor: 0,
+            },
+        )
+        .unwrap();
+        let data = &result["structuredContent"]["data"];
+        let matches = data["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 2, "{data}");
+        let text = matches[0]["t"].as_str().unwrap();
+        assert!(text.len() < 500 && text.ends_with('…'), "{text}");
+        assert_eq!(matches[0]["l"], 12);
+        assert_eq!(data["legend"], "f=file l=line t=text");
+    }
+
+    #[test]
+    fn multi_seed_rows_decode_their_provenance_key() {
+        let payload = json!({
+            "dependents": [
+                {"s": "a", "k": "fn", "f": "a.rs", "e": "calls", "c": "certain",
+                 "d": 1, "seeds": ["Foo", "Bar"]}
+            ]
+        });
+        let result = mcp_success("affected", &payload).unwrap();
+        assert_eq!(
+            result["structuredContent"]["data"]["legend"],
+            "s=symbol k=kind f=file e=evidence c=certainty d=depth seeds=reached-from"
+        );
     }
 
     #[test]
