@@ -958,6 +958,7 @@ dependencies = [
  "protobuf",
  "rayon",
  "redb",
+ "regex",
  "scip",
  "serde",
  "serde_json",

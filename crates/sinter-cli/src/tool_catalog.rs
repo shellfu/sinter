@@ -41,6 +41,9 @@ Pass `detail:true` for full node objects.
 [languages]}; run `sinter scip` to refresh. Full per-project detail: CLI `--json` or `doctor`.
 `unresolved` lists references the graph could not bind; check it before reading an empty
 affected/deps/path result as absence.
+Repository-wide coverage fields are sent once per session and then replaced by
+`coverage.ref` (a fingerprint) plus `ref_note`; a changed fingerprint means they are sent
+in full again. Read resource `sinter://coverage` for the referenced block.
 
 ## Budget and paging
 `limit` caps list entries per call (default 50; `impact` 20 per collection, 0 = all).

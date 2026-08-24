@@ -31,6 +31,10 @@ pub fn run_workspace(manifest: &Path) -> Result<()> {
 fn serve(scope: Scope) -> Result<()> {
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
+    // The repository-wide coverage half already sent in this session. One
+    // process serves many calls against one graph state; repeating it is
+    // the largest fixed cost in a small answer.
+    let mut coverage_ref: Option<String> = None;
     for line in stdin.lock().lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -52,7 +56,7 @@ fn serve(scope: Scope) -> Result<()> {
         let Some(id) = id else {
             continue;
         };
-        let response = match handle(&scope, method, &params) {
+        let response = match handle(&scope, method, &params, &mut coverage_ref) {
             Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
             Err(error) => error_response(id, method, &params, &error),
         };
@@ -87,7 +91,12 @@ fn error_response(id: Value, method: &str, params: &Value, error: &anyhow::Error
     })
 }
 
-fn handle(scope: &Scope, method: &str, params: &Value) -> Result<Value> {
+fn handle(
+    scope: &Scope,
+    method: &str,
+    params: &Value,
+    coverage_ref: &mut Option<String>,
+) -> Result<Value> {
     match method {
         "initialize" => Ok(json!({
             "protocolVersion": params
@@ -105,34 +114,56 @@ fn handle(scope: &Scope, method: &str, params: &Value) -> Result<Value> {
             ),
         })),
         "ping" => Ok(json!({})),
-        "resources/list" => Ok(json!({"resources": [{
-            "uri": crate::tool_catalog::GUIDE_URI,
-            "name": "guide",
-            "description": "How to read sinter results: key legend, coverage, batching, paging",
-            "mimeType": "text/markdown",
-        }]})),
+        "resources/list" => {
+            let mut resources = vec![json!({
+                "uri": crate::tool_catalog::GUIDE_URI,
+                "name": "guide",
+                "description": "How to read sinter results: key legend, coverage, batching, paging",
+                "mimeType": "text/markdown",
+            })];
+            if matches!(scope, Scope::Repo { .. }) {
+                resources.push(json!({
+                    "uri": crate::coverage::COVERAGE_URI,
+                    "name": "coverage",
+                    "description":
+                        "Repository-wide coverage: what a collapsed `coverage.ref` in a tool result names",
+                    "mimeType": "application/json",
+                }));
+            }
+            Ok(json!({"resources": resources}))
+        }
         "resources/templates/list" => Ok(json!({"resourceTemplates": []})),
         "resources/read" => {
             let uri = params.get("uri").and_then(Value::as_str).unwrap_or("");
-            if uri != crate::tool_catalog::GUIDE_URI {
-                anyhow::bail!("unknown resource {uri}");
+            match (uri, scope) {
+                (crate::tool_catalog::GUIDE_URI, _) => Ok(json!({"contents": [{
+                    "uri": uri,
+                    "mimeType": "text/markdown",
+                    "text": crate::tool_catalog::GUIDE,
+                }]})),
+                (crate::coverage::COVERAGE_URI, Scope::Repo { repo, freshness }) => {
+                    freshness.sync()?;
+                    let store = crate::lookup::open_current(repo)?;
+                    let coverage = crate::coverage::shared_document(repo, &store)?;
+                    Ok(json!({"contents": [{
+                        "uri": uri,
+                        "mimeType": "application/json",
+                        "text": serde_json::to_string(&coverage)?,
+                    }]}))
+                }
+                _ => anyhow::bail!("unknown resource {uri}"),
             }
-            Ok(json!({"contents": [{
-                "uri": uri,
-                "mimeType": "text/markdown",
-                "text": crate::tool_catalog::GUIDE,
-            }]}))
         }
         "tools/list" => Ok(match scope {
             Scope::Repo { .. } => crate::tool_catalog::repository(),
             Scope::Workspace(_) => crate::tool_catalog::workspace(),
         }),
-        "tools/call" => call_tool(scope, params),
+        "tools/call" => call_tool(scope, params, coverage_ref),
         other => anyhow::bail!("unknown method {other}"),
     }
 }
 
-fn call_tool(scope: &Scope, params: &Value) -> Result<Value> {
+fn call_tool(scope: &Scope, params: &Value, coverage_ref: &mut Option<String>) -> Result<Value> {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let mut args = params
         .get("arguments")
@@ -143,12 +174,16 @@ fn call_tool(scope: &Scope, params: &Value) -> Result<Value> {
 
     // A session-lived store would hold redb's exclusive lock across calls,
     // blocking graph refresh and pinning a stale snapshot.
-    let result = match scope {
+    let mut result = match scope {
         Scope::Repo { repo, freshness } => {
             freshness.sync()?;
             crate::repository_tools::call(repo, name, &args)?
         }
         Scope::Workspace(manifest) => crate::workspace_tools::call(manifest, name, &args)?,
     };
+    let carried = crate::coverage::collapse_repeated(&mut result, coverage_ref.as_deref());
+    if carried.is_some() {
+        *coverage_ref = carried;
+    }
     crate::agent_protocol::mcp_success(name, &result, budget)
 }

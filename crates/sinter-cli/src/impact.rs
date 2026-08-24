@@ -4,7 +4,7 @@
 //! range the working tree is diffed against `HEAD`, untracked files included.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use anyhow::{Context, Result, bail};
@@ -48,6 +48,58 @@ pub struct ImpactReport {
     pub changed_symbols: Vec<SymbolRef>,
     pub blast_radius: Vec<SymbolRef>,
     pub affected_tests: Vec<SymbolRef>,
+    /// One entry per `--expect` symbol: which of its direct dependents this
+    /// change set touched and which it still owes. Absent without `--expect`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub expect: Vec<ExpectReport>,
+    /// Recommended commands that exercise the affected tests. Repository
+    /// instructions win over anything listed here.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub validation: Vec<ValidationStep>,
+    /// Node ids of every symbol the diff touched, tests included. Internal:
+    /// `--expect` diffs its dependents against this, and unlike
+    /// `changed_symbols` it is neither test-filtered nor name-keyed.
+    #[serde(skip)]
+    pub changed_ids: BTreeSet<String>,
+    /// `file:qualified` -> runnable command, for affected tests only.
+    #[serde(skip)]
+    pub test_commands: BTreeMap<String, String>,
+}
+
+/// `--expect <SYMBOL>`: the unfinished-refactor check. Bare impact answers
+/// "what did my edit reach"; this answers "what did the edit still miss".
+#[derive(Serialize)]
+pub struct ExpectReport {
+    /// The requested symbol as resolved in the graph.
+    pub symbol: String,
+    pub file: String,
+    /// Depth-1 dependents only. Transitive dependents would drown the
+    /// signal: a refactor owes its callers, not their callers.
+    pub direct_dependents: usize,
+    pub changed_total: usize,
+    pub untouched_total: usize,
+    /// Direct dependents this change set already touched.
+    pub changed: Vec<ExpectSite>,
+    /// Direct dependents it did not touch: the sites a refactor of `symbol`
+    /// probably still owes.
+    pub untouched: Vec<ExpectSite>,
+}
+
+#[derive(Serialize, Clone, Debug, Eq, PartialEq)]
+pub struct ExpectSite {
+    pub qualified: String,
+    pub kind: &'static str,
+    /// `file:line`; the file alone when the line cannot be read.
+    pub at: String,
+    /// Admitted edges from this dependent into the expected symbol. More
+    /// edges, more a refactor probably owes here — this is the rank.
+    pub sites: usize,
+}
+
+#[derive(Serialize, Clone, Debug, Eq, PartialEq)]
+pub struct ValidationStep {
+    pub command: String,
+    pub reason: String,
 }
 
 #[derive(Serialize, Clone, Copy, Debug, Eq, PartialEq)]
@@ -524,6 +576,221 @@ pub(crate) fn affected_tests(
         .collect())
 }
 
+// --------------------------------------------------- runnable validation
+
+/// Nearest ancestor `Cargo.toml` that declares a `[package]`, as
+/// (package directory relative to `repo`, parsed manifest). A virtual
+/// workspace manifest is not a package: the walk stops there with `None`.
+fn package_of(repo: &Path, file: &Path) -> Option<(PathBuf, toml::Value)> {
+    let mut dir = file.parent()?;
+    loop {
+        if let Ok(text) = std::fs::read_to_string(repo.join(dir).join("Cargo.toml")) {
+            let manifest: toml::Value = text.parse().ok()?;
+            manifest.get("package")?.get("name")?.as_str()?;
+            return Some((dir.to_path_buf(), manifest));
+        }
+        dir = dir.parent()?;
+    }
+}
+
+/// The single binary target of a package, or `None` when the manifest
+/// declares several and the layout cannot pick one.
+fn sole_bin(manifest: &toml::Value, package: &str, pkg_root: &Path) -> Option<String> {
+    match manifest.get("bin").and_then(toml::Value::as_array) {
+        Some(bins) => {
+            let mains: Vec<&toml::Value> = bins
+                .iter()
+                .filter(|bin| {
+                    bin.get("path")
+                        .and_then(toml::Value::as_str)
+                        .is_none_or(|path| path == "src/main.rs")
+                })
+                .collect();
+            match mains.as_slice() {
+                [only] => only.get("name")?.as_str().map(str::to_string),
+                _ => None,
+            }
+        }
+        // No `[[bin]]`: the default binary exists only if `src/main.rs` does,
+        // and it is named after the package.
+        None => pkg_root
+            .join("src/main.rs")
+            .is_file()
+            .then(|| package.to_string()),
+    }
+}
+
+/// Cargo target selector for `rel` (a package-relative path), plus the Rust
+/// module prefix Cargo's test filter needs on top of the graph's qualified
+/// name. `None` whenever the layout does not name exactly one target.
+fn cargo_target(
+    manifest: &toml::Value,
+    package: &str,
+    pkg_root: &Path,
+    rel: &Path,
+) -> Option<(String, String)> {
+    let parts: Vec<&str> = rel
+        .iter()
+        .map(|part| part.to_str())
+        .collect::<Option<_>>()?;
+    let stem = |name: &str| name.strip_suffix(".rs").map(str::to_string);
+    match parts.as_slice() {
+        // `tests/<name>.rs` and `tests/<name>/main.rs` are integration test
+        // crates; anything else under `tests/` is a helper module of one.
+        ["tests", file] => Some((format!("--test {}", stem(file)?), String::new())),
+        ["tests", name, "main.rs"] => Some((format!("--test {name}"), String::new())),
+        ["tests", ..] => None,
+        ["src", "bin", file] => Some((format!("--bin {}", stem(file)?), String::new())),
+        ["src", "bin", name, "main.rs"] => Some((format!("--bin {name}"), String::new())),
+        ["src", "main.rs"] => Some((
+            format!("--bin {}", sole_bin(manifest, package, pkg_root)?),
+            String::new(),
+        )),
+        ["src", "lib.rs"] => Some(("--lib".to_string(), String::new())),
+        ["src", rest @ ..] if !rest.is_empty() => {
+            // Unit tests compile into whichever target roots this module.
+            let target = if pkg_root.join("src/lib.rs").is_file() {
+                "--lib".to_string()
+            } else {
+                format!("--bin {}", sole_bin(manifest, package, pkg_root)?)
+            };
+            let mut module: Vec<String> = Vec::new();
+            for (index, part) in rest.iter().enumerate() {
+                if index + 1 == rest.len() {
+                    if *part != "mod.rs" {
+                        module.push(stem(part)?);
+                    }
+                } else {
+                    module.push((*part).to_string());
+                }
+            }
+            Some((target, module.join("::")))
+        }
+        // benches/, examples/, build.rs: real targets, but not test targets.
+        _ => None,
+    }
+}
+
+/// Runnable test command for one affected test node, e.g.
+/// `cargo test -p sinter-cli --test integration -- module::name`.
+///
+/// `None` rather than a guess: a wrong command costs more than no command.
+/// Doc tests are deliberately absent — they are not graph nodes, so nothing
+/// here could name one without inventing it.
+pub fn test_command(repo: &Path, node: &Node) -> Option<String> {
+    // Rust only. Other ecosystems need their own layout rules, and a
+    // fabricated command is worse than silence.
+    if Path::new(&node.file).extension()? != "rs" {
+        return None;
+    }
+    let file = Path::new(&node.file);
+    let (pkg_dir, manifest) = package_of(repo, file)?;
+    let package = manifest.get("package")?.get("name")?.as_str()?;
+    let pkg_root = repo.join(&pkg_dir);
+    let rel = file.strip_prefix(&pkg_dir).ok()?;
+    let (target, module) = cargo_target(&manifest, package, &pkg_root, rel)?;
+    let qualified = qualified_of(node.id.as_str());
+    let filter = if module.is_empty() {
+        qualified.to_string()
+    } else {
+        format!("{module}::{qualified}")
+    };
+    Some(format!("cargo test -p {package} {target} -- {filter}"))
+}
+
+fn symbol_key(file: &str, qualified: &str) -> String {
+    format!("{file}:{qualified}")
+}
+
+/// One step per cargo *target*, not per test: running a target once beats
+/// invoking cargo a hundred times with a name filter each.
+fn validation_steps(commands: &BTreeMap<String, String>) -> Vec<ValidationStep> {
+    let mut covered: BTreeMap<&str, usize> = BTreeMap::new();
+    for command in commands.values() {
+        let target = command.split(" -- ").next().unwrap_or(command);
+        *covered.entry(target).or_default() += 1;
+    }
+    covered
+        .into_iter()
+        .map(|(command, tests)| ValidationStep {
+            command: command.to_string(),
+            reason: format!("direct affected test target, {tests} affected test(s)"),
+        })
+        .collect()
+}
+
+// ------------------------------------------------------- expected symbols
+
+/// For each `--expect` symbol: its direct dependents, split by whether this
+/// change set touched them. Ranked by edge count into the expected symbol.
+fn expect_reports(
+    repo: &Path,
+    store: &sinter_store::Store,
+    filter: &EdgeFilter,
+    expect: &[String],
+    report: &ImpactReport,
+    limit: usize,
+) -> Result<Vec<ExpectReport>> {
+    // A file node depends on the symbol by importing it. Editing any symbol
+    // in that file is editing the import site, so the file counts as touched
+    // — otherwise every file whose call sites were all updated still reports
+    // its own import as owed.
+    let changed_files: BTreeSet<&str> = report
+        .changed_files
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect();
+    let mut reports = Vec::new();
+    for symbol in expect {
+        let target = crate::lookup::unique_symbol(store, symbol)?;
+        let mut edges: BTreeMap<String, usize> = BTreeMap::new();
+        for edge in store.in_edges(&target.id)? {
+            if filter.admits(&edge) {
+                *edges.entry(edge.src.as_str().to_string()).or_default() += 1;
+            }
+        }
+        let (mut changed, mut untouched) = (Vec::new(), Vec::new());
+        for reached in store.dependents(&target.id, filter, 1)? {
+            let id = reached.node.id.as_str().to_string();
+            let site = ExpectSite {
+                qualified: qualified_of(&id).to_string(),
+                kind: reached.node.kind.as_str(),
+                at: match crate::render::line_of(repo, &reached.node.file, reached.node.span.start)
+                {
+                    Some(line) => format!("{}:{line}", reached.node.file),
+                    None => reached.node.file.clone(),
+                },
+                sites: edges.get(&id).copied().unwrap_or(1),
+            };
+            let touched = report.changed_ids.contains(&id)
+                || (reached.node.kind == SymbolKind::File
+                    && changed_files.contains(reached.node.file.as_str()));
+            if touched {
+                changed.push(site);
+            } else {
+                untouched.push(site);
+            }
+        }
+        let rank =
+            |a: &ExpectSite, b: &ExpectSite| b.sites.cmp(&a.sites).then_with(|| a.at.cmp(&b.at));
+        changed.sort_by(rank);
+        untouched.sort_by(rank);
+        let (changed_total, untouched_total) = (changed.len(), untouched.len());
+        changed.truncate(returned_count(changed_total, limit));
+        untouched.truncate(returned_count(untouched_total, limit));
+        reports.push(ExpectReport {
+            symbol: qualified_of(target.id.as_str()).to_string(),
+            file: target.file.clone(),
+            direct_dependents: changed_total + untouched_total,
+            changed_total,
+            untouched_total,
+            changed,
+            untouched,
+        });
+    }
+    Ok(reports)
+}
+
 pub fn compute(repo: &Path, rev_range: &str) -> Result<ImpactReport> {
     compute_filtered(repo, rev_range, &EdgeFilter::default())
 }
@@ -736,6 +1003,25 @@ fn compute_with_store_mode(
         test_capable_kind(n) && (scope_index.scope_of(n) == CorpusScope::Test || is_test(n))
     };
     let affected_tests = affected_tests(store, &radius, &changed)?;
+    // Node ids before the test filter: `--expect` asks whether a dependent
+    // was edited, and an edited test is an edited dependent.
+    let changed_ids: BTreeSet<String> = changed
+        .iter()
+        .map(|node| node.id.as_str().to_string())
+        .collect();
+    let test_commands: BTreeMap<String, String> = radius
+        .values()
+        .chain(changed.iter())
+        .filter(|node| is_test_node(node))
+        .filter_map(|node| {
+            let command = test_command(repo, node)?;
+            Some((
+                symbol_key(&node.file, qualified_of(node.id.as_str())),
+                command,
+            ))
+        })
+        .collect();
+    let validation = validation_steps(&test_commands);
     let changed: Vec<Node> = changed.into_iter().filter(|n| !is_test_node(n)).collect();
 
     let mut partial_reasons = Vec::new();
@@ -775,6 +1061,10 @@ fn compute_with_store_mode(
         changed_symbols: changed.iter().map(symbol_ref).collect(),
         blast_radius: radius.values().map(symbol_ref).collect(),
         affected_tests,
+        expect: Vec::new(),
+        validation,
+        changed_ids,
+        test_commands,
     })
 }
 
@@ -786,6 +1076,7 @@ pub fn run(
     rev_range: Option<&str>,
     staged: bool,
     manifest: Option<&Path>,
+    expect: &[String],
     evidence: &[String],
     certain: bool,
     limit: usize,
@@ -794,10 +1085,17 @@ pub fn run(
     let filter = crate::lookup::edge_filter(evidence, certain)?;
     let rev_range = rev_range.unwrap_or("HEAD");
     let mut report = {
+        // One store handle for both passes: workspace mode below reopens
+        // member stores, and redb forbids a second open of the same file.
         let repo = repo.canonicalize()?;
         let store = open_store(&repo)?;
-        compute_with_store_mode(&repo, rev_range, staged, &filter, &store)?
+        let mut report = compute_with_store_mode(&repo, rev_range, staged, &filter, &store)?;
+        report.expect = expect_reports(&repo, &store, &filter, expect, &report, limit)?;
+        report
     };
+    report
+        .validation
+        .truncate(returned_count(report.validation.len(), limit));
     // Workspace mode: follow boundary links out of the changed member and
     // continue the blast radius inside the other members.
     if let Some(manifest) = manifest {
@@ -867,6 +1165,22 @@ pub fn run(
             report.working_tree_changes.len()
         );
     }
+    for expected in &report.expect {
+        println!(
+            "expect {} ({}): {} direct dependents; {} changed, {} expected but untouched",
+            expected.symbol,
+            expected.file,
+            expected.direct_dependents,
+            expected.changed_total,
+            expected.untouched_total
+        );
+        print_expect_sites(
+            "  expected but untouched",
+            &expected.untouched,
+            expected.untouched_total,
+        );
+        print_expect_sites("  changed", &expected.changed, expected.changed_total);
+    }
     println!("changed files:");
     for file in &report.changed_files {
         if let Some(old) = &file.old_path {
@@ -896,8 +1210,29 @@ pub fn run(
     } else {
         print_symbols("blast radius", &report.blast_radius, limit);
     }
-    print_symbols("affected tests", &report.affected_tests, limit);
+    print_symbols_with_commands(
+        "affected tests",
+        &report.affected_tests,
+        limit,
+        &report.test_commands,
+    );
+    if !report.validation.is_empty() {
+        println!("validation (recommended; repository instructions take precedence):");
+        for step in &report.validation {
+            println!("  {}  — {}", step.command, step.reason);
+        }
+    }
     Ok(())
+}
+
+fn print_expect_sites(label: &str, sites: &[ExpectSite], total: usize) {
+    println!("{label}: {} shown, {total} total", sites.len());
+    for site in sites {
+        println!(
+            "    {}x {} {}  {}",
+            site.sites, site.kind, site.qualified, site.at
+        );
+    }
 }
 
 fn returned_count(total: usize, limit: usize) -> usize {
@@ -906,6 +1241,27 @@ fn returned_count(total: usize, limit: usize) -> usize {
 
 fn truncated_count(total: usize, limit: usize) -> usize {
     total - returned_count(total, limit)
+}
+
+/// `print_symbols` plus the runnable command for each symbol that has one.
+fn print_symbols_with_commands(
+    label: &str,
+    symbols: &[SymbolRef],
+    limit: usize,
+    commands: &BTreeMap<String, String>,
+) {
+    let returned = returned_count(symbols.len(), limit);
+    println!(
+        "{label}: {returned} shown, {} total, {} truncated",
+        symbols.len(),
+        symbols.len() - returned
+    );
+    for symbol in symbols.iter().take(returned) {
+        match commands.get(&symbol_key(&symbol.file, &symbol.qualified)) {
+            Some(command) => println!("  {command}"),
+            None => println!("  {} {}  {}", symbol.kind, symbol.qualified, symbol.file),
+        }
+    }
 }
 
 fn print_symbols(label: &str, symbols: &[SymbolRef], limit: usize) {
@@ -967,7 +1323,7 @@ mod tests {
     use super::{
         AnalysisStatus, ChangedFile, FileChangeKind, ImpactReport, SymbolRef, UnmappedFile,
         UnmappedReason, WorkingTreeChange, changed_files, compute, compute_with_store_mode,
-        is_test, to_json, working_tree_changes,
+        expect_reports, is_test, test_command, to_json, working_tree_changes,
     };
     use sinter_core::{Node, NodeId, Span, SymbolKind};
     use tempfile::TempDir;
@@ -1073,6 +1429,10 @@ mod tests {
             changed_symbols: symbols("changed", 3),
             blast_radius: symbols("blast", 4),
             affected_tests: symbols("test", 1),
+            expect: Vec::new(),
+            validation: Vec::new(),
+            changed_ids: Default::default(),
+            test_commands: Default::default(),
         }
     }
 
@@ -1447,6 +1807,300 @@ mod tests {
             staged
                 .partial_reasons
                 .contains(&"untracked_files_are_not_included_in_git_diff")
+        );
+    }
+
+    // ------------------------------------------------------ --expect diff
+
+    /// A library symbol with three callers, one of which the working tree
+    /// has already edited.
+    fn expect_repository() -> TempDir {
+        let repo = repository();
+        write(
+            repo.path(),
+            "src/lib.rs",
+            "pub mod a;\npub mod b;\npub mod c;\npub fn target() -> u32 { 1 }\n",
+        );
+        for module in ["a", "b", "c"] {
+            write(
+                repo.path(),
+                &format!("src/{module}.rs"),
+                &format!("pub fn call_{module}() -> u32 {{ crate::target() }}\n"),
+            );
+        }
+        git(repo.path(), &["add", "-A"]);
+        git(repo.path(), &["commit", "-qm", "callers"]);
+        repo
+    }
+
+    fn expect_for(repo: &Path, symbol: &str) -> super::ExpectReport {
+        crate::pipeline::build(repo, None).expect("build fixture graph");
+        let store = crate::lookup::open_store(repo).expect("open store");
+        let filter = sinter_store::EdgeFilter::default();
+        let report = compute_with_store_mode(repo, "HEAD", false, &filter, &store)
+            .expect("compute working-tree impact");
+        expect_reports(repo, &store, &filter, &[symbol.to_string()], &report, 0)
+            .expect("expect report")
+            .pop()
+            .expect("one expect entry")
+    }
+
+    #[test]
+    fn expect_reports_direct_dependents_the_change_set_never_touched() {
+        let repo = expect_repository();
+        write(
+            repo.path(),
+            "src/a.rs",
+            "pub fn call_a() -> u32 { crate::target() + 1 }\n",
+        );
+
+        let expected = expect_for(repo.path(), "target");
+
+        assert_eq!(expected.direct_dependents, 3);
+        assert_eq!(expected.changed_total, 1);
+        assert_eq!(expected.untouched_total, 2);
+        let changed: Vec<&str> = expected
+            .changed
+            .iter()
+            .map(|site| site.qualified.as_str())
+            .collect();
+        assert_eq!(changed, ["call_a"]);
+        let untouched: Vec<&str> = expected
+            .untouched
+            .iter()
+            .map(|site| site.qualified.as_str())
+            .collect();
+        assert_eq!(untouched, ["call_b", "call_c"]);
+        assert!(
+            expected.untouched.iter().all(|site| site.at.contains(':')),
+            "every untouched site carries file:line: {:?}",
+            expected.untouched
+        );
+    }
+
+    #[test]
+    fn expect_reports_nothing_untouched_once_every_dependent_is_edited() {
+        let repo = expect_repository();
+        for module in ["a", "b", "c"] {
+            write(
+                repo.path(),
+                &format!("src/{module}.rs"),
+                &format!("pub fn call_{module}() -> u32 {{ crate::target() + 1 }}\n"),
+            );
+        }
+
+        let expected = expect_for(repo.path(), "target");
+
+        assert_eq!(expected.changed_total, 3);
+        assert_eq!(expected.untouched_total, 0);
+        assert!(expected.untouched.is_empty());
+    }
+
+    #[test]
+    fn expect_is_absent_from_json_until_requested() {
+        let value = to_json(&report_for_budget(), 0);
+        assert!(value.get("expect").is_none());
+        assert!(value.get("validation").is_none());
+    }
+
+    #[test]
+    fn validation_collapses_per_test_commands_onto_their_cargo_target() {
+        let commands: std::collections::BTreeMap<String, String> = [
+            ("a", "cargo test -p one --lib -- x::a"),
+            ("b", "cargo test -p one --lib -- x::b"),
+            ("c", "cargo test -p one --test surface -- c"),
+        ]
+        .into_iter()
+        .map(|(key, command)| (key.to_string(), command.to_string()))
+        .collect();
+
+        let steps = super::validation_steps(&commands);
+
+        assert_eq!(
+            steps
+                .iter()
+                .map(|step| (step.command.as_str(), step.reason.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "cargo test -p one --lib",
+                    "direct affected test target, 2 affected test(s)"
+                ),
+                (
+                    "cargo test -p one --test surface",
+                    "direct affected test target, 1 affected test(s)"
+                ),
+            ]
+        );
+    }
+
+    // -------------------------------------------------- runnable commands
+
+    fn cargo_repo(manifest: &str, files: &[&str]) -> TempDir {
+        let repo = TempDir::new().expect("temp repo");
+        write(repo.path(), "Cargo.toml", manifest);
+        for file in files {
+            write(repo.path(), file, "\n");
+        }
+        repo
+    }
+
+    const LIB_MANIFEST: &str = "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n";
+
+    #[test]
+    fn test_command_derives_lib_bin_and_integration_targets() {
+        let repo = cargo_repo(
+            LIB_MANIFEST,
+            &[
+                "src/lib.rs",
+                "src/impact.rs",
+                "src/ask/mod.rs",
+                "src/ask/rank.rs",
+            ],
+        );
+        for (id, file, expected) in [
+            (
+                "src/impact.rs#tests::works",
+                "src/impact.rs",
+                "cargo test -p fixture --lib -- impact::tests::works",
+            ),
+            (
+                "src/ask/mod.rs#tests::works",
+                "src/ask/mod.rs",
+                "cargo test -p fixture --lib -- ask::tests::works",
+            ),
+            (
+                "src/ask/rank.rs#tests::works",
+                "src/ask/rank.rs",
+                "cargo test -p fixture --lib -- ask::rank::tests::works",
+            ),
+            (
+                "src/lib.rs#tests::works",
+                "src/lib.rs",
+                "cargo test -p fixture --lib -- tests::works",
+            ),
+        ] {
+            assert_eq!(
+                test_command(repo.path(), &node(id, "works", file)).as_deref(),
+                Some(expected),
+                "{file}"
+            );
+        }
+
+        let repo = cargo_repo(LIB_MANIFEST, &["src/lib.rs", "tests/surface.rs"]);
+        assert_eq!(
+            test_command(
+                repo.path(),
+                &node("tests/surface.rs#works", "works", "tests/surface.rs")
+            )
+            .as_deref(),
+            Some("cargo test -p fixture --test surface -- works")
+        );
+
+        // A binary-only package with a renamed `[[bin]]`: unit tests belong
+        // to that binary, not to a lib that does not exist.
+        let repo = cargo_repo(
+            "[package]\nname = \"sinter-io\"\nversion = \"0.1.0\"\n\n[[bin]]\nname = \"sinter\"\npath = \"src/main.rs\"\n",
+            &["src/main.rs", "src/impact.rs"],
+        );
+        assert_eq!(
+            test_command(
+                repo.path(),
+                &node("src/impact.rs#tests::works", "works", "src/impact.rs")
+            )
+            .as_deref(),
+            Some("cargo test -p sinter-io --bin sinter -- impact::tests::works")
+        );
+    }
+
+    #[test]
+    fn test_command_finds_the_owning_workspace_member() {
+        let repo = cargo_repo(
+            "[workspace]\nmembers = [\"crates/one\"]\n",
+            &["crates/one/src/lib.rs", "crates/one/src/deep/nest.rs"],
+        );
+        write(
+            repo.path(),
+            "crates/one/Cargo.toml",
+            "[package]\nname = \"one\"\nversion = \"0.1.0\"\n",
+        );
+        assert_eq!(
+            test_command(
+                repo.path(),
+                &node(
+                    "crates/one/src/deep/nest.rs#tests::works",
+                    "works",
+                    "crates/one/src/deep/nest.rs"
+                )
+            )
+            .as_deref(),
+            Some("cargo test -p one --lib -- deep::nest::tests::works")
+        );
+    }
+
+    #[test]
+    fn test_command_is_none_when_the_layout_does_not_name_one_target() {
+        // No manifest anywhere above the file.
+        let bare = TempDir::new().expect("temp repo");
+        write(bare.path(), "src/lib.rs", "\n");
+        assert_eq!(
+            test_command(bare.path(), &node("src/lib.rs#tests::x", "x", "src/lib.rs")),
+            None
+        );
+
+        // A virtual workspace root is not a package.
+        let virtual_root = cargo_repo("[workspace]\nmembers = []\n", &["src/lib.rs"]);
+        assert_eq!(
+            test_command(
+                virtual_root.path(),
+                &node("src/lib.rs#tests::x", "x", "src/lib.rs")
+            ),
+            None
+        );
+
+        let repo = cargo_repo(
+            LIB_MANIFEST,
+            &[
+                "src/lib.rs",
+                "tests/common/mod.rs",
+                "benches/bench.rs",
+                "notes.md",
+            ],
+        );
+        for (id, file) in [
+            // A helper module of an integration crate, not a target itself.
+            ("tests/common/mod.rs#helper", "tests/common/mod.rs"),
+            ("benches/bench.rs#bench", "benches/bench.rs"),
+            // Not Rust: the layout says nothing about how to run it.
+            ("notes.md::Testing", "notes.md"),
+        ] {
+            assert_eq!(
+                test_command(repo.path(), &node(id, "x", file)),
+                None,
+                "{file}"
+            );
+        }
+
+        // Two binaries and no lib: nothing picks one.
+        let ambiguous = cargo_repo(
+            "[package]\nname = \"two\"\nversion = \"0.1.0\"\n\n[[bin]]\nname = \"a\"\n\n[[bin]]\nname = \"b\"\n",
+            &["src/bin/a.rs", "src/bin/b.rs", "src/shared.rs"],
+        );
+        assert_eq!(
+            test_command(
+                ambiguous.path(),
+                &node("src/shared.rs#tests::x", "x", "src/shared.rs")
+            ),
+            None
+        );
+        // ...but a `src/bin/<name>.rs` names its own target.
+        assert_eq!(
+            test_command(
+                ambiguous.path(),
+                &node("src/bin/a.rs#tests::x", "x", "src/bin/a.rs")
+            )
+            .as_deref(),
+            Some("cargo test -p two --bin a -- tests::x")
         );
     }
 }

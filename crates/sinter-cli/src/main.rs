@@ -9,6 +9,7 @@ mod deps;
 mod doctor;
 mod freshness;
 mod graph_tool;
+mod grep;
 mod hooks;
 mod impact;
 mod init;
@@ -307,8 +308,11 @@ enum Command {
     },
     /// Reverse blast radius of a symbol
     Affected {
-        /// Symbol: name, qualified suffix, or node id
-        symbol: String,
+        /// Symbols: name, qualified suffix, or node id. Repeatable; results
+        /// are unioned and deduplicated, each row naming the seeds that
+        /// reached it.
+        #[arg(required = true, num_args = 1.., value_name = "SYMBOL")]
+        symbols: Vec<String>,
         /// Repository to query
         #[arg(long, default_value = ".")]
         repo: PathBuf,
@@ -441,8 +445,41 @@ enum Command {
         /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`)
         #[arg(long)]
         json: bool,
+        /// Refactor completeness: report direct dependents of these symbols
+        /// that the diff did NOT touch. Repeatable.
+        #[arg(long = "expect", value_name = "SYMBOL")]
+        expect: Vec<String>,
         #[command(flatten)]
         filter: FilterArgs,
+    },
+    /// Text search bounded by a graph traversal: `sinter grep '<pat>'
+    /// --within 'affected(Decision)'`
+    Grep {
+        /// Regular expression to search for
+        pattern: String,
+        /// Traversal that bounds the search: `affected(SYM)`, `deps(SYM)`,
+        /// `file(PATH)`. Repeatable; the bounded file sets are unioned.
+        #[arg(long = "within", required = true, value_name = "TRAVERSAL")]
+        within: Vec<String>,
+        /// Repository to query
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// Maximum traversal depth for affected()/deps()
+        #[arg(long, default_value_t = 10)]
+        max_depth: usize,
+        /// Maximum matches to print
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        /// Corpus roles traversal may enter (comma-separated, or `all`)
+        #[arg(long, value_delimiter = ',', default_value = corpus::DEFAULT_SCOPE)]
+        scope: Vec<String>,
+        /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`)
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        filter: FilterArgs,
+        #[command(flatten)]
+        relations: RelationsArg,
     },
     /// Map several in-flight changes (open PRs) onto the graph and rank
     /// pairwise merge risk (direct/radius/file tiers)
@@ -811,7 +848,7 @@ fn main() -> ExitCode {
             };
         }
         Command::Affected {
-            symbol,
+            symbols,
             repo,
             workspace,
             max_depth,
@@ -826,7 +863,7 @@ fn main() -> ExitCode {
                 traversal_filter(&filter, &relations, &scope).and_then(|f| match workspace {
                     Some(manifest) => affected::run_workspace(
                         &manifest,
-                        &symbol,
+                        &symbols,
                         &f,
                         max_depth,
                         limit,
@@ -834,7 +871,7 @@ fn main() -> ExitCode {
                     ),
                     None => affected::run(
                         &repo,
-                        &symbol,
+                        &symbols,
                         &f,
                         max_depth,
                         limit,
@@ -915,6 +952,25 @@ fn main() -> ExitCode {
                 grep_exit(result)
             };
         }
+        Command::Grep {
+            pattern,
+            within,
+            repo,
+            max_depth,
+            limit,
+            scope,
+            json,
+            filter,
+            relations,
+        } => {
+            let result = traversal_filter(&filter, &relations, &scope)
+                .and_then(|f| grep::run(&repo, &pattern, &within, &f, max_depth, limit, json));
+            return if json {
+                grep_exit_json("grep", result)
+            } else {
+                grep_exit(result)
+            };
+        }
         Command::Impact {
             rev_range,
             staged,
@@ -922,6 +978,7 @@ fn main() -> ExitCode {
             workspace,
             limit,
             json,
+            expect,
             filter,
         } => {
             let result = impact::run(
@@ -929,6 +986,7 @@ fn main() -> ExitCode {
                 rev_range.as_deref(),
                 staged,
                 workspace.as_deref(),
+                &expect,
                 &filter.evidence,
                 filter.certain,
                 limit,

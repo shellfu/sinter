@@ -28,6 +28,7 @@ libc = "0.2"
 toml = "0.8"
 redb.workspace = true
 postcard.workspace = true
+regex = "1"
 
 [dev-dependencies]
 tempfile.workspace = true

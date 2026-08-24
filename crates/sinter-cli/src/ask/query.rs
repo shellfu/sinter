@@ -650,6 +650,13 @@ fn add_verb_stems(variants: &mut Vec<String>, stem: &str) {
     );
 }
 
+/// English filler with no chance of naming a symbol worth resolving.
+/// `context` reuses the question parser's vocabulary instead of keeping a
+/// second copy of it.
+pub(crate) fn is_stopword(word: &str) -> bool {
+    STOPWORDS.contains(&word) || SOFT_STOPWORDS.contains(&word)
+}
+
 /// Identifier → lowercase word tokens: `parse_low` → [parse, low],
 /// `GenZshCompletion` → [gen, zsh, completion], `HTTPException` →
 /// [http, exception].

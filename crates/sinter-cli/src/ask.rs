@@ -16,7 +16,7 @@ use crate::lookup::open_store;
 use crate::render::{ellipsize, line_of, location};
 
 pub(crate) mod confidence;
-mod query;
+pub(crate) mod query;
 mod ranking;
 
 use query::{Query, clauses_of};

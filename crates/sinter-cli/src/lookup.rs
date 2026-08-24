@@ -163,13 +163,6 @@ pub fn candidate_labels(nodes: &[Node]) -> Vec<String> {
         .collect()
 }
 
-/// One candidate outside list context. Prefer [`candidate_labels`] wherever
-/// a whole set is printed: a lone label cannot know what it must be told
-/// apart from.
-pub fn candidate_label(node: &Node) -> String {
-    candidate_labels(std::slice::from_ref(node)).remove(0)
-}
-
 /// Comma-joined `Name@file` list for one-line notes, disambiguated within
 /// the list the same way [`candidate_labels`] is.
 pub fn short_list(nodes: &[Node]) -> String {

@@ -229,13 +229,70 @@ fn affected_is_terse_capped_and_batchable() {
     assert!(v["miss"]["reached_by"].is_array(), "{v}");
     assert!(v["miss"]["excluded_by_filter"].is_u64(), "{v}");
     assert_eq!(v["coverage"]["status"], "not_proven", "{v}");
-    assert_eq!(v["coverage"]["completeness"], "partial", "{v}");
-    assert_eq!(v["coverage"]["conclusive"], false, "{v}");
     assert_eq!(
         v["coverage"]["filters"]["relations"]["mode"], "all_dependencies",
         "{v}"
     );
-    assert_eq!(v["coverage"]["compiler_index"]["state"], "missing", "{v}");
+    // The repository-wide half was already sent by the first answer in this
+    // session, so the fourth carries only the reference to it.
+    let first = body(&responses[0]);
+    assert_eq!(first["coverage"]["completeness"], "partial", "{first}");
+    assert_eq!(
+        first["coverage"]["compiler_index"]["state"], "missing",
+        "{first}"
+    );
+    assert_eq!(v["coverage"]["ref"], first["coverage"]["ref"], "{v}");
+    assert!(v["coverage"]["completeness"].is_null(), "{v}");
+    assert!(v["coverage"]["compiler_index"].is_null(), "{v}");
+    assert!(
+        v["coverage"]["ref_note"]
+            .as_str()
+            .is_some_and(|note| note.contains("sinter://coverage")),
+        "{v}"
+    );
+}
+
+/// The collapsed `coverage.ref` is resolvable: `sinter://coverage` serves
+/// exactly the repository-wide half the reference names.
+#[test]
+fn coverage_reference_resolves_to_a_resource() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = build_repo(dir.path());
+    let read = serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "resources/read",
+        "params": {"uri": "sinter://coverage"},
+    })
+    .to_string();
+    let list = serde_json::json!({
+        "jsonrpc": "2.0", "id": 3, "method": "resources/list", "params": {},
+    })
+    .to_string();
+    let responses = serve(
+        &repo,
+        &[call(1, serde_json::json!({"symbol": "Base"})), read, list],
+    );
+
+    let carried = body(&responses[0])["coverage"]["ref"].clone();
+    assert!(
+        carried.as_str().is_some_and(|r| r.starts_with("cov-")),
+        "{carried}"
+    );
+    let text = responses[1]["result"]["contents"][0]["text"]
+        .as_str()
+        .unwrap();
+    let document: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(document["ref"], carried, "{document}");
+    assert_eq!(document["completeness"], "partial", "{document}");
+    assert!(document["limitations"].is_array(), "{document}");
+    assert!(
+        responses[2]["result"]["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["uri"] == "sinter://coverage"),
+        "{}",
+        responses[2]
+    );
 }
 
 /// The repo surface lists map and overlap; map is a real inventory card;

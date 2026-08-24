@@ -6,12 +6,15 @@ use sinter_resolve::qualified_of;
 use sinter_store::EdgeFilter;
 
 use crate::lookup::{
-    SymbolLookupError, candidate_label, candidates_in, ensure_snapshot, ensure_snapshot_token,
+    SymbolLookupError, candidate_labels, candidates_in, ensure_snapshot, ensure_snapshot_token,
     open_store,
 };
 
 /// Ambiguous endpoints are tried pairwise up to this many pairs.
 const MAX_PAIRS: usize = 16;
+
+/// Frontier rows reported on a miss.
+const MAX_FRONTIER: usize = 5;
 
 /// `sinter path`: how one symbol reaches another. Ok(true) when a route
 /// exists (grep-style exit codes).
@@ -61,12 +64,16 @@ pub fn run(
         for (name, nodes) in [(from, &froms), (to, &tos)] {
             if nodes.len() > 1 {
                 println!("  `{name}` candidates:");
-                for n in nodes {
-                    println!("    {}", candidate_label(n));
+                // Rendered as a list: each label is unique within it, so
+                // one can be pasted straight back as the next selector.
+                for label in candidate_labels(nodes) {
+                    println!("    {label}");
                 }
             }
         }
         println!("  snapshot: {snapshot}");
+        let root = crate::pipeline::discover_root(repo);
+        print_actionable(&root, &explain_miss(&store, &from_node, &to_node, filter)?);
         return Ok(false);
     }
     if ambiguous && !json {
@@ -230,6 +237,113 @@ pub struct Miss {
     pub reached_by: Vec<sinter_core::Edge>,
     pub excluded_by_filter: usize,
     pub unresolved_matching_target: usize,
+    /// Where the forward search actually stopped, nearest the target
+    /// first (shared file-path prefix, then depth). Bounded.
+    pub closest_frontier: Vec<sinter_store::Reached>,
+    /// Incoming edges the filter refused, counted per refusing attribute.
+    pub excluded_edges: std::collections::BTreeMap<&'static str, usize>,
+    /// Runnable next operations implied by the two above. Never
+    /// speculative: each one is only emitted when the miss data proves it
+    /// would change the answer.
+    pub suggested_retries: Vec<Retry>,
+}
+
+/// One runnable follow-up operation. `remove` drops a flag from the
+/// original invocation, `add` adds one; both are absent for a retry that
+/// only changes the endpoints.
+pub struct Retry {
+    pub arguments: [String; 2],
+    pub remove: Option<&'static str>,
+    pub add: Option<String>,
+    pub note: Option<&'static str>,
+}
+
+/// How many leading path segments two files share — the only "closeness"
+/// measure available without a second traversal.
+fn shared_prefix(a: &str, b: &str) -> usize {
+    a.split('/')
+        .zip(b.split('/'))
+        .take_while(|(x, y)| x == y)
+        .count()
+}
+
+/// Which restriction refused this edge: the attribute the filter objected
+/// to, and the flag that carries it. `scope_blocked` is the target's own
+/// corpus scope sitting outside `--scope`, which blocks the final hop
+/// whatever the edge looks like. Evidence kind `scope` is reported as
+/// `scope-evidence` so it never merges with the corpus-scope bucket.
+fn refusal(
+    filter: &EdgeFilter,
+    edge: &sinter_core::Edge,
+    scope_blocked: bool,
+) -> Option<(&'static str, &'static str)> {
+    if filter
+        .relations
+        .as_ref()
+        .is_some_and(|allowed| !allowed.contains(&edge.relation))
+    {
+        return Some((edge.relation.as_str(), "relations"));
+    }
+    if filter
+        .evidence
+        .as_ref()
+        .is_some_and(|allowed| !allowed.contains(&edge.evidence))
+    {
+        let reason = match edge.evidence {
+            sinter_core::Evidence::Scope => "scope-evidence",
+            other => other.as_str(),
+        };
+        return Some((reason, "evidence"));
+    }
+    if filter.min_confidence == Some(sinter_core::Confidence::Certain)
+        && edge.confidence != sinter_core::Confidence::Certain
+    {
+        return Some(("inferred", "certain"));
+    }
+    scope_blocked.then_some(("scope", "scope"))
+}
+
+/// Retries implied by the miss. `blocking` holds the flags that refused an
+/// incoming edge of the target: every route in runs through one of those
+/// edges, so lifting the flag is the one retry that can admit it.
+/// `frontier` is a reached symbol inside the target's own file — the
+/// search got to the boundary but not through it.
+fn derive_retries(
+    from: &str,
+    to: &str,
+    blocking: &std::collections::BTreeSet<&'static str>,
+    target_scope: sinter_core::CorpusScope,
+    frontier: Option<&str>,
+) -> Vec<Retry> {
+    let pair = || [from.to_string(), to.to_string()];
+    let mut out = Vec::new();
+    for flag in ["certain", "evidence", "relations"] {
+        if blocking.contains(flag) {
+            out.push(Retry {
+                arguments: pair(),
+                remove: Some(flag),
+                add: None,
+                note: None,
+            });
+        }
+    }
+    if blocking.contains("scope") {
+        out.push(Retry {
+            arguments: pair(),
+            remove: None,
+            add: Some(format!("--scope {}", target_scope.as_str())),
+            note: Some("target is out of the selected scope"),
+        });
+    }
+    if let Some(frontier) = frontier {
+        out.push(Retry {
+            arguments: [from.to_string(), frontier.to_string()],
+            remove: None,
+            add: None,
+            note: Some("reached the target's file, not the target"),
+        });
+    }
+    out
 }
 
 pub fn explain_miss(
@@ -264,22 +378,59 @@ pub fn explain_miss(
         .filter(|e| e.relation != sinter_core::Relation::Contains)
         .collect();
     let excluded_by_filter = candidates.iter().filter(|e| !filter.admits(e)).count();
+    // The traversal filters entered nodes by scope, so a target outside
+    // the selection is unreachable however its incoming edges look.
+    let target_scope = store.scope_index()?.scope_of(to);
+    let scope_blocked = !filter.admits_scope(target_scope);
+    let mut excluded_edges = std::collections::BTreeMap::new();
+    let mut blocking = std::collections::BTreeSet::new();
+    for edge in &candidates {
+        let Some((reason, flag)) = refusal(filter, edge, scope_blocked) else {
+            continue;
+        };
+        *excluded_edges.entry(reason).or_default() += 1;
+        // A refused incoming edge is an edge into the target: lifting the
+        // flag that refused it is the only thing that can admit that hop.
+        blocking.insert(flag);
+    }
     let reached_by = candidates
         .into_iter()
         .filter(|e| filter.admits(e))
         .cloned()
         .collect();
+    let mut forward = forward;
+    forward.sort_by(|a, b| {
+        shared_prefix(&b.node.file, &to.file)
+            .cmp(&shared_prefix(&a.node.file, &to.file))
+            .then(a.depth.cmp(&b.depth))
+            .then(a.node.name.cmp(&b.node.name))
+    });
+    forward.truncate(MAX_FRONTIER);
+    let frontier = forward
+        .first()
+        .filter(|reached| reached.node.file == to.file)
+        .map(|reached| qualified_of(reached.node.id.as_str()));
+    let suggested_retries = derive_retries(
+        qualified_of(from.id.as_str()),
+        qualified_of(to.id.as_str()),
+        &blocking,
+        target_scope,
+        frontier,
+    );
     Ok(Miss {
         forward_reached,
         reached_by,
         excluded_by_filter,
         unresolved_matching_target,
+        closest_frontier: forward,
+        excluded_edges,
+        suggested_retries,
     })
 }
 
 /// Same shape for `--json` and the MCP `path` tool.
 pub fn miss_json(root: &Path, miss: &Miss) -> serde_json::Value {
-    serde_json::json!({
+    let mut out = serde_json::json!({
         "forward_reached": miss.forward_reached,
         "reached_by": miss.reached_by.iter().map(|e| serde_json::json!({
             "from": qualified_of(e.src.as_str()),
@@ -289,7 +440,49 @@ pub fn miss_json(root: &Path, miss: &Miss) -> serde_json::Value {
         })).collect::<Vec<_>>(),
         "excluded_by_filter": miss.excluded_by_filter,
         "unresolved_matching_target": miss.unresolved_matching_target,
-    })
+    });
+    if !miss.closest_frontier.is_empty() {
+        out["closest_frontier"] = miss
+            .closest_frontier
+            .iter()
+            .map(|reached| {
+                serde_json::json!({
+                    "symbol": qualified_of(reached.node.id.as_str()),
+                    "site": match crate::render::line_of(root, &reached.node.file, reached.node.span.start) {
+                        Some(line) => format!("{}:{line}", reached.node.file),
+                        None => reached.node.file.clone(),
+                    },
+                    "depth": reached.depth,
+                })
+            })
+            .collect();
+    }
+    if !miss.excluded_edges.is_empty() {
+        out["excluded_edges"] = serde_json::json!(miss.excluded_edges);
+    }
+    if !miss.suggested_retries.is_empty() {
+        out["suggested_retries"] = miss
+            .suggested_retries
+            .iter()
+            .map(|retry| {
+                let mut entry = serde_json::json!({
+                    "operation": "path",
+                    "arguments": retry.arguments,
+                });
+                if let Some(remove) = retry.remove {
+                    entry["remove"] = serde_json::json!([remove]);
+                }
+                if let Some(add) = &retry.add {
+                    entry["add"] = serde_json::json!([add]);
+                }
+                if let Some(note) = retry.note {
+                    entry["note"] = serde_json::json!(note);
+                }
+                entry
+            })
+            .collect();
+    }
+    out
 }
 
 fn print_miss(root: &Path, from: &sinter_core::Node, to: &sinter_core::Node, miss: &Miss) {
@@ -336,10 +529,230 @@ fn print_miss(root: &Path, from: &sinter_core::Node, to: &sinter_core::Node, mis
             miss.unresolved_matching_target, to.name,
         );
     }
+    print_actionable(root, miss);
+}
+
+/// The machine-shaped half of a miss: where the search stopped, what the
+/// filter refused, and what to run next.
+fn print_actionable(root: &Path, miss: &Miss) {
+    if !miss.closest_frontier.is_empty() {
+        println!("  closest frontier ({}):", miss.closest_frontier.len());
+        for reached in &miss.closest_frontier {
+            let line = crate::render::line_of(root, &reached.node.file, reached.node.span.start);
+            println!(
+                "    {} [d{}] at {}",
+                qualified_of(reached.node.id.as_str()),
+                reached.depth,
+                crate::render::location(root, &reached.node.file, line)
+            );
+        }
+    }
+    if !miss.excluded_edges.is_empty() {
+        let counts: Vec<String> = miss
+            .excluded_edges
+            .iter()
+            .map(|(reason, count)| format!("{reason}={count}"))
+            .collect();
+        println!("  excluded edges: {}", counts.join(" "));
+    }
+    for retry in &miss.suggested_retries {
+        let flag = match (retry.remove, &retry.add) {
+            (Some(remove), _) => format!("  drop={remove}"),
+            (None, Some(add)) => format!("  add={add}"),
+            (None, None) => String::new(),
+        };
+        let note = retry
+            .note
+            .map(|note| format!("  # {note}"))
+            .unwrap_or_default();
+        println!(
+            "  retry: path {} {}{flag}{note}",
+            retry.arguments[0], retry.arguments[1]
+        );
+    }
 }
 
 fn name_tail_matches(written: &str, name: &str) -> bool {
     let tail = written.rsplit("::").next().unwrap_or(written);
     let tail = tail.rsplit(['/', '.']).next().unwrap_or(tail);
     tail == name
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use sinter_core::{Confidence, CorpusScope, Edge, Evidence, NodeId, Relation};
+    use sinter_store::EdgeFilter;
+
+    use super::{Retry, derive_retries, refusal, shared_prefix};
+
+    fn edge(evidence: Evidence, relation: Relation) -> Edge {
+        Edge {
+            src: NodeId::new("a.rs#a@0"),
+            dst: NodeId::new("b.rs#b@0"),
+            relation,
+            evidence,
+            confidence: evidence.confidence(),
+            site: None,
+        }
+    }
+
+    fn blocking(flags: &[&'static str]) -> BTreeSet<&'static str> {
+        flags.iter().copied().collect()
+    }
+
+    fn shapes(retries: &[Retry]) -> Vec<(String, String, Option<&'static str>, Option<String>)> {
+        retries
+            .iter()
+            .map(|r| {
+                (
+                    r.arguments[0].clone(),
+                    r.arguments[1].clone(),
+                    r.remove,
+                    r.add.clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn nothing_implied_suggests_nothing() {
+        let retries = derive_retries("A", "B", &blocking(&[]), CorpusScope::Production, None);
+        assert!(retries.is_empty());
+    }
+
+    #[test]
+    fn certain_refusing_an_incoming_edge_suggests_dropping_certain() {
+        let retries = derive_retries(
+            "A",
+            "B",
+            &blocking(&["certain"]),
+            CorpusScope::Production,
+            None,
+        );
+        assert_eq!(
+            shapes(&retries),
+            vec![("A".into(), "B".into(), Some("certain"), None)]
+        );
+    }
+
+    #[test]
+    fn out_of_scope_target_suggests_widening_to_its_scope() {
+        let retries = derive_retries("A", "B", &blocking(&["scope"]), CorpusScope::Test, None);
+        assert_eq!(
+            shapes(&retries),
+            vec![(
+                "A".into(),
+                "B".into(),
+                None,
+                Some("--scope test".to_string())
+            )]
+        );
+    }
+
+    #[test]
+    fn frontier_in_the_target_file_suggests_the_shorter_path() {
+        let retries = derive_retries(
+            "A",
+            "B",
+            &blocking(&[]),
+            CorpusScope::Production,
+            Some("Frontier"),
+        );
+        assert_eq!(
+            shapes(&retries),
+            vec![("A".into(), "Frontier".into(), None, None)]
+        );
+        assert!(retries[0].note.is_some());
+    }
+
+    #[test]
+    fn every_blocking_flag_yields_its_own_retry() {
+        let retries = derive_retries(
+            "A",
+            "B",
+            &blocking(&["certain", "evidence", "relations", "scope"]),
+            CorpusScope::Vendor,
+            Some("F"),
+        );
+        assert_eq!(retries.len(), 5);
+    }
+
+    #[test]
+    fn certain_refuses_inferred_edges_by_confidence() {
+        let filter = EdgeFilter {
+            min_confidence: Some(Confidence::Certain),
+            ..Default::default()
+        };
+        assert_eq!(
+            refusal(&filter, &edge(Evidence::Dynamic, Relation::Calls), false),
+            Some(("inferred", "certain"))
+        );
+        assert_eq!(
+            refusal(&filter, &edge(Evidence::Scip, Relation::Calls), false),
+            None
+        );
+    }
+
+    #[test]
+    fn evidence_and_relation_refusals_name_the_edge_attribute() {
+        let filter = EdgeFilter {
+            evidence: Some(BTreeSet::from([Evidence::Structural])),
+            ..Default::default()
+        };
+        assert_eq!(
+            refusal(&filter, &edge(Evidence::Dynamic, Relation::Calls), false),
+            Some(("dynamic", "evidence"))
+        );
+        // Evidence kind `scope` never merges with the corpus-scope bucket.
+        assert_eq!(
+            refusal(&filter, &edge(Evidence::Scope, Relation::Calls), false),
+            Some(("scope-evidence", "evidence"))
+        );
+        let filter = EdgeFilter {
+            relations: Some(BTreeSet::from([Relation::Calls])),
+            ..Default::default()
+        };
+        assert_eq!(
+            refusal(&filter, &edge(Evidence::Scip, Relation::Implements), false),
+            Some(("implements", "relations"))
+        );
+    }
+
+    #[test]
+    fn an_admitted_edge_into_an_out_of_scope_target_is_refused_by_scope() {
+        let filter = EdgeFilter::default();
+        assert_eq!(
+            refusal(&filter, &edge(Evidence::Scip, Relation::Calls), true),
+            Some(("scope", "scope"))
+        );
+    }
+
+    #[test]
+    fn frontier_ranks_by_shared_file_prefix() {
+        let target = "crates/a/src/x.rs";
+        let mut files = ["crates/b/src/y.rs", "crates/a/src/z.rs", "other.rs"];
+        files.sort_by_key(|f| std::cmp::Reverse(shared_prefix(f, target)));
+        assert_eq!(files[0], "crates/a/src/z.rs");
+    }
+
+    #[test]
+    fn excluded_counts_key_on_the_refusing_attribute() {
+        let filter = EdgeFilter {
+            min_confidence: Some(Confidence::Certain),
+            ..Default::default()
+        };
+        let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+        for e in [
+            edge(Evidence::Dynamic, Relation::Calls),
+            edge(Evidence::Import, Relation::Uses),
+            edge(Evidence::Scip, Relation::Calls),
+        ] {
+            if let Some((reason, _)) = refusal(&filter, &e, false) {
+                *counts.entry(reason).or_default() += 1;
+            }
+        }
+        assert_eq!(counts, BTreeMap::from([("inferred", 2)]));
+    }
 }

@@ -536,6 +536,107 @@ pub fn verbose() -> bool {
     std::env::var_os("SINTER_VERBOSE_COVERAGE").is_some()
 }
 
+/// Resource URI serving the repository-wide half of a coverage envelope,
+/// so a collapsed `ref` can be resolved back to what it names.
+pub(crate) const COVERAGE_URI: &str = "sinter://coverage";
+
+/// The half of a traversal envelope that describes the repository rather
+/// than the query. Identical for every answer computed from one graph
+/// state, and therefore what a long-lived MCP session pays for again on
+/// every call.
+const SHARED_FIELDS: [&str; 7] = [
+    "completeness",
+    "conclusive",
+    "snapshot",
+    "compiler_index",
+    "graph",
+    "available_sources",
+    "limitations",
+];
+
+/// Fingerprint of the repository-wide half, `None` when `coverage` is not a
+/// traversal envelope. Session-scoped identity only: it must change when
+/// the shared half changes, never survive the process.
+fn shared_fingerprint(coverage: &serde_json::Value) -> Option<String> {
+    use std::hash::{Hash, Hasher};
+
+    let object = coverage.as_object()?;
+    if !object.contains_key("completeness") {
+        return None;
+    }
+    let shared: BTreeMap<&str, &serde_json::Value> = SHARED_FIELDS
+        .iter()
+        .filter_map(|field| object.get(*field).map(|value| (*field, value)))
+        .collect();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_string(&shared).ok()?.hash(&mut hasher);
+    Some(format!("cov-{:016x}", hasher.finish()))
+}
+
+/// Stamp every coverage envelope in `data` with its `ref`, and replace the
+/// repository-wide half with that reference alone when the caller has
+/// already been given it. Returns the fingerprint the answer carries, so a
+/// session can decide what the next answer owes.
+pub(crate) fn collapse_repeated(
+    data: &mut serde_json::Value,
+    known: Option<&str>,
+) -> Option<String> {
+    let mut carried = None;
+    collapse_into(data, known, &mut carried);
+    carried
+}
+
+fn collapse_into(value: &mut serde_json::Value, known: Option<&str>, carried: &mut Option<String>) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collapse_into(item, known, carried);
+            }
+        }
+        serde_json::Value::Object(object) => {
+            if let Some(coverage) = object.get_mut("coverage")
+                && let Some(fingerprint) = shared_fingerprint(coverage)
+                && let Some(envelope) = coverage.as_object_mut()
+            {
+                if carried.is_none() {
+                    *carried = Some(fingerprint.clone());
+                }
+                if known == Some(fingerprint.as_str()) {
+                    envelope.retain(|field, _| !SHARED_FIELDS.contains(&field.as_str()));
+                    envelope.insert(
+                        "ref_note".to_string(),
+                        serde_json::json!(format!(
+                            "repository-wide coverage unchanged since the last full block \
+                             in this session; read resource {COVERAGE_URI} for it"
+                        )),
+                    );
+                }
+                envelope.insert("ref".to_string(), serde_json::json!(fingerprint));
+            }
+            for (_, child) in object.iter_mut() {
+                collapse_into(child, known, carried);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The repository-wide half on its own, shaped exactly as a traversal
+/// envelope carries it: what a collapsed `ref` names.
+pub(crate) fn shared_document(repo: &Path, store: &Store) -> Result<serde_json::Value> {
+    let mut coverage = repository_coverage(repo, store)?;
+    if !verbose() {
+        slim_for_traversal(&mut coverage);
+    }
+    if let Some(object) = coverage.as_object_mut() {
+        object.retain(|field, _| SHARED_FIELDS.contains(&field.as_str()));
+    }
+    if let Some(fingerprint) = shared_fingerprint(&coverage) {
+        coverage["ref"] = serde_json::json!(fingerprint);
+    }
+    Ok(coverage)
+}
+
 const SYNTAX_ERROR_FILES_SHOWN: usize = 5;
 
 /// Per-query envelope: repository-wide detail (every indexing project,

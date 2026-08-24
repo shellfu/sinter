@@ -10,7 +10,7 @@ fn build_repo(root: &Path) -> PathBuf {
     write("go.mod", "module example.com/fixture\n\ngo 1.22\n");
     write(
         "lib.go",
-        "package main\n\n// Base is the root of the blast radius.\nfunc Base() int {\n\treturn 1\n}\n\n// A1 calls Base.\nfunc A1() int { return Base() }\n\n// A2 calls Base.\nfunc A2() int { return Base() }\n",
+        "package main\n\n// Base is the root of the blast radius.\nfunc Base() int {\n\treturn 1\n}\n\n// A1 calls Base.\nfunc A1() int { return Base() }\n\n// A2 calls Base.\nfunc A2() int { return Base() }\n\n// NewThreadField is lexical bait: its name is the task's English.\nfunc NewThreadField() int { return 2 }\n",
     );
     write(
         "lib_test.go",
@@ -126,12 +126,21 @@ fn mcp_context_matches_cli_json() {
     let response = mcp(&repo, task, Some(0));
     let structured = &response["result"]["structuredContent"];
     assert_eq!(structured["operation"], "context");
-    // MCP adds a terse-key `legend` and slims `coverage.compiler_index`;
-    // everything else is the CLI packet byte for byte.
+    // MCP adds a terse-key `legend`, stamps `coverage.ref` so a session can
+    // collapse the repeated repository-wide half, and slims
+    // `coverage.compiler_index`; everything else is the CLI packet byte for
+    // byte.
     let mut data = structured["data"].clone();
     let mut packet = packet;
     assert!(data["legend"].is_string(), "{data}");
     data.as_object_mut().unwrap().remove("legend");
+    assert!(
+        data["coverage"]["ref"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("cov-")),
+        "{data}"
+    );
+    data["coverage"].as_object_mut().unwrap().remove("ref");
     for side in [&mut data, &mut packet] {
         side["coverage"]["compiler_index"] = serde_json::Value::Null;
     }
@@ -167,4 +176,42 @@ fn abstaining_ask_still_yields_a_packet_with_fallbacks() {
             .iter()
             .any(|a| a.as_str().unwrap().starts_with("sinter impact"))
     );
+}
+
+#[test]
+fn resolved_identifiers_anchor_the_packet_over_lexical_bait() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = build_repo(dir.path());
+    // `NewThreadField` matches "new thread field" lexically; `Base` is the
+    // only token in the task that names a real node.
+    let (_, packet) = cli(&repo, "add a new thread field to Base", &[]);
+    assert_eq!(packet["outcome"], "ranked", "{packet}");
+    let anchors = packet["anchors"].as_array().unwrap();
+    assert_eq!(anchors.len(), 1, "{packet}");
+    assert_eq!(anchors[0]["term"], "Base");
+    assert_eq!(anchors[0]["qualified"], "Base");
+    let candidates = packet["candidates"].as_array().unwrap();
+    assert_eq!(candidates[0]["anchor"], "Base", "{packet}");
+    assert_eq!(candidates[0]["rank"], 1);
+    for c in &candidates[1..] {
+        assert_eq!(
+            c["focus"], false,
+            "lexical hit expanded past an anchor: {c}"
+        );
+    }
+    let intents: Vec<&str> = packet["unresolved_intents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(intents.contains(&"thread"), "{intents:?}");
+    assert!(!intents.contains(&"Base"), "{intents:?}");
+    // Tests come from the anchor's blast radius and carry a command.
+    let tests = packet["tests"].as_array().unwrap();
+    assert!(
+        tests.iter().any(|t| t["qualified"] == "TestBase"),
+        "{tests:?}"
+    );
+    assert!(tests.iter().all(|t| t.get("cmd").is_some()), "{tests:?}");
 }

@@ -30,7 +30,7 @@ points or domain ownership. Then use the graph for focused work:
   probability; `ask` is a navigator, not a semantic answer engine.
 - **Symbol orientation** — `sinter show` turns a selected symbol into a compact
   card with its definition and graph neighborhood.
-- **Cross-repo workspaces** — federated graphs over many repos for
+- **[Cross-repo workspaces](docs/workspaces.md)** — federated graphs over many repos for
   distributed systems: blast radius, paths, and PR impact across service
   boundaries (`--workspace`).
 
@@ -204,8 +204,8 @@ silently rebinding.
 | `sinter impact <rev-range>` | Changed symbols → blast radius → affected tests |
 | `sinter serve` | MCP server over stdio (`--repo` for one repo, `--workspace <manifest>` for a cross-repo scope) |
 | `sinter overlap <range>...` | Map open PRs onto the graph; rank pairwise merge risk (direct/radius/file) |
-| `sinter workspace <manifest>` | Build all members of a cross-repo workspace + refresh boundary links |
-| `sinter init --workspace` | Write a starter workspace manifest (never overwrites) |
+| [`sinter workspace <manifest>`](docs/workspaces.md) | Build all members of a cross-repo workspace + refresh boundary links |
+| [`sinter init --workspace`](docs/workspaces.md) | Write a starter workspace manifest (never overwrites) |
 | `sinter install [targets]` | Write agent cards (claude, cursor, agents/AGENTS.md, enforce (`--strict` available), all); `--mcp` registers the server for Claude Code, Cursor, and Codex |
 | `sinter scip [repo]` | Run every matching compiler indexer, merge into `.sinter/index.scip`, rebuild; no-op when fresh (`--force` reindexes); `scip check` is the CI freshness guard |
 | `sinter doctor [repo]` | Diagnose installation + graph (including an MCP handshake and lock-held reporting); every finding names its fix; `--fix` applies the safe ones |
