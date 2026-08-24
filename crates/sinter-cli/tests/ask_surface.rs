@@ -836,6 +836,7 @@ fn install_writes_skill_card() {
 fn doctor_diagnoses_and_clears() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path();
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
     std::fs::write(repo.join("a.rs"), "pub fn f() {}\n").unwrap();
 
     let (ok, out) = sinter(repo, &["doctor"]);
@@ -1078,20 +1079,23 @@ fn version_subcommand_matches_flag() {
 /// environment.
 #[test]
 fn init_onboards_repo() {
-    let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
-    let repo = dir.path();
+    // Reproduce the real failure: an existing graph at ~/.sinter must not
+    // capture a first-time init of a nested Git repository.
+    std::fs::create_dir_all(home.path().join(".sinter")).unwrap();
+    let repo = home.path().join("work/brg-runtime-gateway");
+    std::fs::create_dir_all(&repo).unwrap();
     std::fs::write(repo.join("a.rs"), "pub fn f() {}\n").unwrap();
     Command::new("git")
         .args(["init", "-q"])
-        .current_dir(repo)
+        .current_dir(&repo)
         .output()
         .unwrap();
 
     let init = |args: &[&str]| {
         let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
             .args(args)
-            .current_dir(repo)
+            .current_dir(&repo)
             .env("HOME", home.path())
             .env("USERPROFILE", home.path())
             .env("PATH", path_with_sinter())
@@ -1119,6 +1123,10 @@ fn init_onboards_repo() {
     assert!(out.contains("pass --global"), "{out}");
     assert!(out.contains("symbols,"), "{out}");
     assert!(repo.join(".sinter/graph.redb").exists(), "{out}");
+    assert!(
+        !home.path().join(".sinter/graph.redb").exists(),
+        "init built the ancestor home graph: {out}"
+    );
     assert!(
         std::fs::read_to_string(repo.join(".git/hooks/post-commit"))
             .unwrap()
@@ -1285,6 +1293,7 @@ const OTHER_HOOK_FILE: &str = if cfg!(windows) {
 #[test]
 fn install_enforce_is_idempotent_and_preserving() {
     let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".git")).unwrap();
     std::fs::create_dir_all(home.path().join(".claude")).unwrap();
     std::fs::write(
         home.path().join(".claude/settings.json"),
@@ -1884,6 +1893,7 @@ fn hook_scripts_never_emit_allow() {
 #[test]
 fn install_enforce_strict_switches_slots() {
     let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".git")).unwrap();
     // Doctor exits nonzero here (no graph in the temp home) — only the
     // enforcement finding matters, so success is asserted per call site.
     let run = |args: &[&str], must_succeed: bool| {

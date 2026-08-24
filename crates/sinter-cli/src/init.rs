@@ -2,17 +2,32 @@
 //! state; `init` is the explicit full installation that also writes hooks and
 //! agent integrations.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
 use crate::{doctor, hooks, install, pipeline};
 
+/// Resolve an onboarding target independently of every ancestor graph. The
+/// path printed in the plan is the path `init` and `ensure` establish.
+fn onboarding_root(repo: &Path) -> Result<PathBuf> {
+    Ok(repo.canonicalize()?)
+}
+
+/// Establish the selected root before the first build so later read commands
+/// can discover this repository's graph without consulting any ancestor.
+fn establish_graph_root(repo: &Path) -> Result<()> {
+    std::fs::create_dir_all(repo.join(".sinter"))?;
+    Ok(())
+}
+
 /// Make the repository graph available without changing repository policy or
 /// client configuration. This is the safe setup operation for agents: the
 /// only persistent writes belong under `.sinter/`.
 pub fn ensure(repo: &Path) -> Result<()> {
-    crate::build::run(repo)
+    let repo = onboarding_root(repo)?;
+    establish_graph_root(&repo)?;
+    crate::build::run(&repo)
 }
 
 /// `sinter init --workspace`: write a starter manifest. Never clobbers —
@@ -162,7 +177,7 @@ pub fn run(
     assume_yes: bool,
 ) -> Result<bool> {
     use std::io::IsTerminal;
-    let repo = repo.canonicalize()?;
+    let repo = onboarding_root(repo)?;
     // Cursor is auto-configured when the repo already carries Cursor state;
     // --cursor still forces it on a fresh checkout.
     let cursor = cursor || repo.join(".cursor").exists();
@@ -196,6 +211,7 @@ pub fn run(
     }
     println!();
 
+    establish_graph_root(&repo)?;
     let progress = crate::progress::Progress::stderr();
     let report = pipeline::build_with(&repo, None, &mut |phase| {
         crate::progress::render(&progress, phase)
@@ -282,5 +298,38 @@ mod tests {
                 "ensure must not create {absent}"
             );
         }
+    }
+
+    #[test]
+    fn ensure_pins_the_requested_root_beneath_an_ancestor_graph() {
+        let parent = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(parent.path().join(".sinter")).unwrap();
+        let repo = parent.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("a.rs"), "pub fn local() {}\n").unwrap();
+
+        ensure(&repo).unwrap();
+
+        assert!(repo.join(".sinter/graph.redb").exists());
+        assert!(
+            !parent.path().join(".sinter/graph.redb").exists(),
+            "ensure wrote the ancestor graph instead of the requested repository"
+        );
+    }
+
+    #[test]
+    fn ensure_uses_the_exact_requested_subdirectory() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let nested = repo.join("src/deep");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(repo.join("a.rs"), "pub fn root() {}\n").unwrap();
+        std::fs::write(nested.join("local.rs"), "pub fn local() {}\n").unwrap();
+
+        ensure(&nested).unwrap();
+
+        assert!(nested.join(".sinter/graph.redb").exists());
+        assert!(!repo.join(".sinter").exists());
     }
 }

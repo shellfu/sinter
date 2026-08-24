@@ -86,24 +86,30 @@ pub fn db_path(repo: &Path) -> PathBuf {
     repo.join(".sinter").join("graph.redb")
 }
 
-/// Resolve the graph root for a path the way git resolves `.git`: the
-/// path itself when it already has `.sinter`, else the nearest ancestor
-/// that does. A path with no graph anywhere resolves to itself (a first
-/// `sinter build` creates the graph right there).
+/// Resolve the graph root for a path without crossing repository ownership.
+/// Inside Git, the nearest `.sinter` on the way to the repository boundary
+/// wins; otherwise the `.git` directory or worktree file is the root for a
+/// first build. Outside Git, only the requested path can own the graph: an
+/// unrelated ancestor marker must never capture it.
 pub fn discover_root(path: &Path) -> PathBuf {
     let Ok(canon) = path.canonicalize() else {
         return path.to_path_buf();
     };
-    let mut current = canon.as_path();
-    loop {
+    if canon.join(".sinter").is_dir() {
+        return canon;
+    }
+    let Some(git_root) = canon.ancestors().find(|dir| dir.join(".git").exists()) else {
+        return canon;
+    };
+    for current in canon.ancestors() {
         if current.join(".sinter").is_dir() {
             return current.to_path_buf();
         }
-        match current.parent() {
-            Some(parent) => current = parent,
-            None => return canon,
+        if current == git_root {
+            return git_root.to_path_buf();
         }
     }
+    canon
 }
 
 /// The SCIP index to ingest, if any: `sinter scip` writes .sinter/index.scip;
@@ -333,7 +339,6 @@ pub fn build_with(
     on: &mut dyn FnMut(Phase),
 ) -> Result<BuildReport> {
     let started = Instant::now();
-    let repo = discover_root(repo);
     let repo = repo
         .canonicalize()
         .with_context(|| format!("repo path {}", repo.display()))?;
@@ -1052,6 +1057,45 @@ mod source_path_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graph_discovery_stops_at_git_boundaries() {
+        for git_is_file in [false, true] {
+            let parent = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(parent.path().join(".sinter")).unwrap();
+            let repo = parent.path().join(if git_is_file {
+                "worktree-repo"
+            } else {
+                "ordinary-repo"
+            });
+            let nested = repo.join("src/deep");
+            std::fs::create_dir_all(&nested).unwrap();
+            if git_is_file {
+                std::fs::write(repo.join(".git"), "gitdir: ../worktrees/repo\n").unwrap();
+            } else {
+                std::fs::create_dir_all(repo.join(".git")).unwrap();
+            }
+
+            assert_eq!(
+                discover_root(&nested),
+                repo.canonicalize().unwrap(),
+                "discovery crossed a {} .git boundary into the parent graph",
+                if git_is_file { "file" } else { "directory" }
+            );
+        }
+    }
+
+    #[test]
+    fn graph_discovery_still_finds_the_current_repository_from_a_subdirectory() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::create_dir_all(repo.join(".sinter")).unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let nested = repo.join("src/deep");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        assert_eq!(discover_root(&nested), repo.canonicalize().unwrap());
+    }
 
     /// Compaction is maintenance, not construction: the graph must be
     /// reported complete before it starts. Reporting after it is what
