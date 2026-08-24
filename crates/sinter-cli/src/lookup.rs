@@ -98,32 +98,99 @@ impl std::fmt::Display for SymbolLookupError {
 impl std::error::Error for SymbolLookupError {}
 
 fn write_candidates(f: &mut std::fmt::Formatter<'_>, candidates: &[Node]) -> std::fmt::Result {
-    for node in candidates {
-        writeln!(f, "  {}", candidate_label(node))?;
+    for label in candidate_labels(candidates) {
+        writeln!(f, "  {label}")?;
     }
     Ok(())
 }
 
-/// `Name@path/to/file.rs (kind)` — the form an agent can paste back as
-/// `Name@file`. No snapshot ids or symbol keys: nobody types those. No
-/// line either: the store carries no repo root, and the MCP server and
-/// CLI must print the same message.
-pub fn candidate_label(node: &Node) -> String {
-    format!(
-        "{}@{} ({})",
-        qualified_of(node.id.as_str()),
-        node.file,
-        node.kind.as_str()
-    )
+/// The narrowest handle that tells each candidate apart from every other
+/// candidate in its own list. Rungs, first one unique across the whole list
+/// wins per candidate:
+///
+/// 0. `Name` — the bare qualified name;
+/// 1. `Name@file`;
+/// 2. `Name@file:line` — two candidates in one file;
+/// 3. the snapshot id — no line available (see [`line_of`]).
+///
+/// `first` is the lowest rung a caller will print: candidate listings start
+/// at 1 because a candidate line that omits its file is useless to the
+/// reader even when the name alone is unambiguous.
+///
+/// Every rung is a form [`find_symbol`] parses back. The returned selectors
+/// are unique by construction: rung shapes are disjoint (rungs 1-2 add an
+/// `@`, rung 3 an `#`, and qualified names carry neither), a rung is only
+/// taken when no sibling produces the same string at it, and rung 3 is the
+/// store's primary key, so the last rung always terminates the ladder.
+fn selectors_from(
+    nodes: &[Node],
+    first: u8,
+    line_of: impl Fn(&Node) -> Option<usize>,
+) -> Vec<String> {
+    let lines: Vec<Option<usize>> = nodes.iter().map(line_of).collect();
+    let rung = |i: usize, n: u8| -> Option<String> {
+        let node = &nodes[i];
+        let qualified = qualified_of(node.id.as_str());
+        match n {
+            0 => Some(qualified.to_string()),
+            1 => Some(format!("{qualified}@{}", node.file)),
+            2 => lines[i].map(|line| format!("{qualified}@{}:{line}", node.file)),
+            _ => Some(node.id.as_str().to_string()),
+        }
+    };
+    (0..nodes.len())
+        .map(|i| {
+            (first..=3)
+                .find_map(|n| {
+                    let selector = rung(i, n)?;
+                    (0..nodes.len())
+                        .all(|j| j == i || rung(j, n).as_deref() != Some(selector.as_str()))
+                        .then_some(selector)
+                })
+                .unwrap_or_else(|| nodes[i].id.as_str().to_string())
+        })
+        .collect()
 }
 
-/// Comma-joined `Name@file` list for one-line notes.
+/// `Name@path/to/file.rs (kind)` per candidate — the form an agent pastes
+/// back, narrowed by [`selectors_from`] so no two lines of one listing carry
+/// the same handle. No symbol keys: nobody types those.
+pub fn candidate_labels(nodes: &[Node]) -> Vec<String> {
+    selectors_from(nodes, 1, line_of)
+        .into_iter()
+        .zip(nodes)
+        .map(|(selector, node)| format!("{selector} ({})", node.kind.as_str()))
+        .collect()
+}
+
+/// One candidate outside list context. Prefer [`candidate_labels`] wherever
+/// a whole set is printed: a lone label cannot know what it must be told
+/// apart from.
+pub fn candidate_label(node: &Node) -> String {
+    candidate_labels(std::slice::from_ref(node)).remove(0)
+}
+
+/// Comma-joined `Name@file` list for one-line notes, disambiguated within
+/// the list the same way [`candidate_labels`] is.
 pub fn short_list(nodes: &[Node]) -> String {
-    nodes
-        .iter()
-        .map(|n| format!("{}@{}", qualified_of(n.id.as_str()), n.file))
-        .collect::<Vec<_>>()
-        .join(", ")
+    selectors_from(nodes, 1, line_of).join(", ")
+}
+
+/// 1-based start line of a node, when the repository is reachable.
+///
+/// The store carries no repo root and candidate rendering runs inside a
+/// `Display` impl with nowhere to pass one, so the root is discovered from
+/// the process working directory and trusted only when it actually holds a
+/// graph.
+///
+/// ponytail: cwd-derived root. A process querying a graph outside its own
+/// working directory reads no line and its selectors fall back to the
+/// snapshot id — still unique, just longer. Thread a root through
+/// `SymbolLookupError` if that case ever needs lines.
+fn line_of(node: &Node) -> Option<usize> {
+    let root = pipeline::discover_root(&std::env::current_dir().ok()?);
+    pipeline::db_path(&root).exists().then_some(())?;
+    crate::render::line_of(&root, &node.file, node.span.start)
 }
 
 pub fn open_store(repo: &Path) -> Result<Store> {
@@ -209,10 +276,7 @@ pub fn find_symbol(store: &Store, symbol: &str) -> Result<Found> {
         }
         return Ok(Found::Suggestions(Vec::new()));
     }
-    let (symbol, file) = match symbol.rsplit_once('@') {
-        Some((s, f)) if !s.is_empty() && !f.is_empty() => (s, Some(f)),
-        _ => (symbol, None),
-    };
+    let (symbol, file, line) = split_handle(symbol);
     let name = symbol.rsplit("::").next().unwrap_or(symbol);
     let mut matches: Vec<Node> = store
         .nodes_named(name)?
@@ -231,12 +295,70 @@ pub fn find_symbol(store: &Store, symbol: &str) -> Result<Found> {
     {
         matches.retain(|n| qualified_of(n.id.as_str()) == symbol);
     }
+    if let Some(line) = line
+        && matches.len() > 1
+    {
+        matches = narrow_to_line(matches, line, line_of);
+    }
     matches.sort_by(|a, b| a.id.cmp(&b.id));
     if matches.is_empty() {
         Ok(Found::Suggestions(store.search(symbol, 10)?))
     } else {
         Ok(Found::Exact(matches))
     }
+}
+
+/// A symbol argument split into (symbol, file suffix, line). `Name@file`
+/// parses exactly as it always did; `:line` is only ever read off the file
+/// part, so a qualified name's `::`, a Windows drive letter (`C:\src\x.rs`)
+/// and a node id's own `@offset` are never mistaken for one. Node ids are
+/// answered before this is reached — they carry a `#`.
+fn split_handle(handle: &str) -> (&str, Option<&str>, Option<usize>) {
+    match handle.rsplit_once('@') {
+        Some((symbol, file)) if !symbol.is_empty() && !file.is_empty() => {
+            let (file, line) = split_line(file);
+            (symbol, Some(file), line)
+        }
+        _ => (handle, None, None),
+    }
+}
+
+/// `src/client.rs:709` → (`src/client.rs`, 709). A colon that is not
+/// followed by digits belongs to the path.
+fn split_line(file: &str) -> (&str, Option<usize>) {
+    match file.rsplit_once(':') {
+        Some((path, line)) if !path.is_empty() => match line.parse() {
+            Ok(line) => (path, Some(line)),
+            Err(_) => (file, None),
+        },
+        _ => (file, None),
+    }
+}
+
+/// Narrow same-file candidates to the one starting at, or nearest below,
+/// `want`; when every candidate starts after it, the nearest above. A set
+/// with no readable lines is returned untouched — `Name@file` behaviour.
+fn narrow_to_line(
+    matches: Vec<Node>,
+    want: usize,
+    line_of: impl Fn(&Node) -> Option<usize>,
+) -> Vec<Node> {
+    let lines: Vec<Option<usize>> = matches.iter().map(line_of).collect();
+    let Some(best) = lines
+        .iter()
+        .flatten()
+        .filter(|line| **line <= want)
+        .max()
+        .or_else(|| lines.iter().flatten().min())
+        .copied()
+    else {
+        return matches;
+    };
+    matches
+        .into_iter()
+        .zip(lines)
+        .filter_map(|(node, line)| (line == Some(best)).then_some(node))
+        .collect()
 }
 
 fn relocation_candidates(store: &Store, id: &str) -> Result<Vec<Node>> {
@@ -352,11 +474,11 @@ pub fn candidates_in(
                 }
             }
             if keep.len() == 1 && !ignored.is_empty() {
-                eprintln!(
-                    "note: {} other `{symbol}` ignored ({reason}): {}",
+                crate::agent_protocol::warn(format!(
+                    "{} other `{symbol}` ignored ({reason}): {}",
                     ignored.len(),
                     short_list(&ignored)
-                );
+                ));
             }
             Ok(keep)
         }
@@ -370,9 +492,9 @@ pub fn candidates_in(
         ))
         .into()),
         Found::Suggestions(nodes) => {
-            let list: Vec<String> = nodes
-                .iter()
-                .map(|n| format!("  {}", qualified_of(n.id.as_str())))
+            let list: Vec<String> = selectors_from(&nodes, 0, line_of)
+                .into_iter()
+                .map(|selector| format!("  {selector}"))
                 .collect();
             Err(NoMatch(format!(
                 "no exact match for `{symbol}`; close names:\n{}",
@@ -659,6 +781,137 @@ mod tests {
             ("tests/z.rs".to_string(), CorpusScope::Test),
         ]);
         assert_eq!(dominant_language(&scopes).as_deref(), Some("proto"));
+    }
+
+    fn node_at(file: &str, offset: u64) -> Node {
+        Node {
+            id: NodeId::new(format!("{file}#Widget@{offset}")),
+            kind: SymbolKind::Method,
+            name: "Widget".into(),
+            file: file.into(),
+            span: Span {
+                start: offset,
+                end: offset + 10,
+            },
+            signature: String::new(),
+            doc: None,
+        }
+    }
+
+    /// Stand-in for a repository read: one line per ten bytes.
+    fn tenths(node: &Node) -> Option<usize> {
+        Some(node.span.start as usize / 10)
+    }
+
+    #[test]
+    fn handle_grammar_keeps_the_legacy_file_form() {
+        assert_eq!(split_handle("Client::run"), ("Client::run", None, None));
+        assert_eq!(
+            split_handle("Client::run@src/client.rs"),
+            ("Client::run", Some("src/client.rs"), None)
+        );
+        assert_eq!(
+            split_handle("Client::run@src/client.rs:709"),
+            ("Client::run", Some("src/client.rs"), Some(709))
+        );
+        // A drive letter, a colon with no digits, and a bare `@` are paths
+        // and names, not line numbers.
+        assert_eq!(
+            split_handle(r"run@C:\src\client.rs"),
+            ("run", Some(r"C:\src\client.rs"), None)
+        );
+        assert_eq!(split_line("src/client.rs:"), ("src/client.rs:", None));
+        assert_eq!(
+            split_line("src/client.rs:head"),
+            ("src/client.rs:head", None)
+        );
+        assert_eq!(split_handle("@src/x.rs"), ("@src/x.rs", None, None));
+    }
+
+    #[test]
+    fn rendered_line_selector_parses_back_to_its_own_candidate() {
+        let nodes = vec![node_at("src/client.rs", 100), node_at("src/client.rs", 400)];
+        let rendered = selectors_from(&nodes, 1, tenths);
+        assert_eq!(
+            rendered,
+            ["Widget@src/client.rs:10", "Widget@src/client.rs:40"]
+        );
+        assert_eq!(
+            split_handle(&rendered[1]),
+            ("Widget", Some("src/client.rs"), Some(40))
+        );
+        let (_, _, line) = split_handle(&rendered[1]);
+        assert_eq!(
+            narrow_to_line(nodes, line.unwrap(), tenths)
+                .into_iter()
+                .map(|n| n.span.start)
+                .collect::<Vec<_>>(),
+            [400]
+        );
+    }
+
+    #[test]
+    fn selectors_stop_at_the_narrowest_disambiguating_rung() {
+        let across = vec![node_at("src/a.rs", 10), node_at("src/b.rs", 10)];
+        // Distinct files: never reach for the line even though one is known.
+        assert_eq!(
+            selectors_from(&across, 1, tenths),
+            ["Widget@src/a.rs", "Widget@src/b.rs"]
+        );
+        // Rung 0 is only offered to callers that ask for it.
+        assert_eq!(selectors_from(&across, 0, tenths).len(), 2);
+        // No lines readable: fall through to the snapshot ids.
+        let same = vec![node_at("src/a.rs", 10), node_at("src/a.rs", 900)];
+        assert_eq!(
+            selectors_from(&same, 1, |_| None),
+            ["src/a.rs#Widget@10", "src/a.rs#Widget@900"]
+        );
+    }
+
+    #[test]
+    fn no_two_candidates_in_one_list_share_a_selector() {
+        let lists = [
+            vec![node_at("src/a.rs", 10), node_at("src/b.rs", 10)],
+            vec![node_at("src/a.rs", 10), node_at("src/a.rs", 900)],
+            vec![
+                node_at("src/a.rs", 10),
+                node_at("src/a.rs", 20),
+                node_at("src/b.rs", 10),
+            ],
+        ];
+        for nodes in lists {
+            for rendered in [
+                selectors_from(&nodes, 0, |_| None),
+                selectors_from(&nodes, 1, |_| None),
+                selectors_from(&nodes, 0, tenths),
+                selectors_from(&nodes, 1, tenths),
+                candidate_labels(&nodes),
+            ] {
+                let distinct: BTreeSet<&String> = rendered.iter().collect();
+                assert_eq!(distinct.len(), rendered.len(), "{rendered:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn line_narrows_to_the_candidate_at_or_nearest_below() {
+        let candidates = || {
+            vec![
+                node_at("src/a.rs", 100),
+                node_at("src/a.rs", 700),
+                node_at("src/a.rs", 1200),
+            ]
+        };
+        let starts = |v: Vec<Node>| v.into_iter().map(|n| n.span.start).collect::<Vec<_>>();
+        assert_eq!(starts(narrow_to_line(candidates(), 70, tenths)), [700]);
+        assert_eq!(starts(narrow_to_line(candidates(), 75, tenths)), [700]);
+        // Every candidate below the asked-for line: take the nearest.
+        assert_eq!(starts(narrow_to_line(candidates(), 3, tenths)), [100]);
+        // Repository unreadable: no narrowing, `Name@file` behaviour.
+        assert_eq!(
+            starts(narrow_to_line(candidates(), 70, |_| None)),
+            [100, 700, 1200]
+        );
     }
 
     #[test]
