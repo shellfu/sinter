@@ -274,6 +274,12 @@ enum Command {
         /// Fail if the graph changed since this snapshot token was returned
         #[arg(long)]
         if_snapshot: Option<String>,
+        /// Include a bounded source excerpt for the symbol
+        #[arg(long)]
+        body: bool,
+        /// Lines of the excerpt to print with --body
+        #[arg(long, default_value_t = show::DEFAULT_BODY_LINES, requires = "body")]
+        context_lines: usize,
         #[command(flatten)]
         relations: RelationsArg,
     },
@@ -763,10 +769,23 @@ fn main() -> ExitCode {
             scope,
             json,
             if_snapshot,
+            body,
+            context_lines,
             relations,
         } => {
-            let result = traversal_filter(&FilterArgs::default(), &relations, &scope)
-                .and_then(|f| show::run(&repo, &symbol, &f, limit, json, if_snapshot.as_deref()));
+            let excerpt = body.then_some(context_lines);
+            let result =
+                traversal_filter(&FilterArgs::default(), &relations, &scope).and_then(|f| {
+                    show::run(
+                        &repo,
+                        &symbol,
+                        &f,
+                        limit,
+                        json,
+                        if_snapshot.as_deref(),
+                        excerpt,
+                    )
+                });
             return if json {
                 grep_exit_json("show", result)
             } else {

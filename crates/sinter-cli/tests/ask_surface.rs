@@ -607,8 +607,47 @@ fn show_card_and_ambiguity() {
     assert!(ok, "{out}");
     assert!(out.contains("class PlayerCharacterV2"), "{out}");
     assert!(out.contains("contains (1)"), "{out}");
-    assert!(out.contains("unresolved refs in this file:"), "{out}");
+    // `sinter unresolved` owns that question; the card no longer pays for it.
+    assert!(!out.contains("unresolved refs in this file:"), "{out}");
     assert!(out.contains("Next: sinter affected"), "{out}");
+    // No excerpt without --body.
+    assert!(!out.contains("  | "), "{out}");
+
+    // --body: bounded excerpt of the definition, fenced with `  | `.
+    let (ok, body) = sinter(repo, &["show", "PlayerCharacterV2", "--body"]);
+    assert!(ok, "{body}");
+    let excerpt: Vec<&str> = body.lines().filter(|l| l.starts_with("  | ")).collect();
+    assert!(!excerpt.is_empty(), "no excerpt in --body card\n{body}");
+    assert!(excerpt.len() <= 10, "excerpt unbounded\n{body}");
+    assert!(
+        excerpt[0].contains("class PlayerCharacterV2"),
+        "excerpt is not the definition source\n{body}"
+    );
+    // --context-lines caps it further.
+    let (ok, two) = sinter(
+        repo,
+        &[
+            "show",
+            "PlayerCharacterV2",
+            "--body",
+            "--context-lines",
+            "2",
+        ],
+    );
+    assert!(ok, "{two}");
+    assert_eq!(
+        two.lines().filter(|l| l.starts_with("  | ")).count(),
+        2,
+        "{two}"
+    );
+
+    // JSON: `excerpt` only with --body.
+    let (ok, plain) = sinter(repo, &["show", "PlayerCharacterV2", "--json"]);
+    assert!(ok, "{plain}");
+    assert!(!plain.contains("\"excerpt\""), "{plain}");
+    let (ok, with_body) = sinter(repo, &["show", "PlayerCharacterV2", "--json", "--body"]);
+    assert!(ok, "{with_body}");
+    assert!(with_body.contains("\"excerpt\""), "{with_body}");
 
     // File-node card.
     let (ok, out) = sinter(repo, &["show", "player/traversal/climb.ts"]);

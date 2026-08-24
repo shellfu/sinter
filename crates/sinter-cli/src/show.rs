@@ -16,6 +16,20 @@ use crate::render::{ellipsize, line_of, location, node_json, site_json, site_loc
 /// Rows shown per relation group before collapsing to `… (+N)`.
 pub const DEFAULT_LIMIT: usize = 20;
 
+/// Lines of source printed by `--body` when `--context-lines` is absent.
+pub const DEFAULT_BODY_LINES: usize = 10;
+
+/// First `lines` lines of the exact source at `file[start..end]`.
+/// Any failure — missing file, out-of-range or non-UTF8 span — degrades
+/// to `None` rather than panicking. Same approach as `context::excerpt`.
+fn excerpt(repo: &Path, file: &str, start: u64, end: u64, lines: usize) -> Option<String> {
+    let source = std::fs::read_to_string(repo.join(file)).ok()?;
+    let start = (start as usize).min(source.len());
+    let end = (end as usize).min(source.len()).max(start);
+    let body = source.get(start..end)?;
+    Some(body.lines().take(lines).collect::<Vec<_>>().join("\n"))
+}
+
 /// The symbol's edges after `--relations` / `--scope`: outgoing first,
 /// incoming second. Scope applies to the far end of each edge; contains
 /// edges survive only when no relation restriction was given.
@@ -134,12 +148,15 @@ pub fn run(
     limit: usize,
     json: bool,
     if_snapshot: Option<&str>,
+    excerpt_lines: Option<usize>,
 ) -> Result<bool> {
     let repo = repo.canonicalize()?;
     let store = open_store(&repo)?;
     let snapshot = ensure_snapshot(&store, if_snapshot)?;
     let node = unique_symbol_in(&store, symbol, filter.scopes.as_ref())?;
     let scope = store.file_scope(&node.file)?;
+    let body =
+        excerpt_lines.and_then(|n| excerpt(&repo, &node.file, node.span.start, node.span.end, n));
     if json {
         // Same shape as the MCP `show` tool.
         let mut out = edges_json(&repo, &store, &node, filter, limit)?;
@@ -147,6 +164,9 @@ pub fn run(
         symbol_json["scope"] = json!(scope.as_str());
         out["symbol"] = symbol_json;
         out["snapshot"] = json!(snapshot);
+        if let Some(body) = &body {
+            out["excerpt"] = json!(body);
+        }
         crate::agent_protocol::write_json(&out)?;
         return Ok(true);
     }
@@ -167,6 +187,11 @@ pub fn run(
     }
     if !node.signature.is_empty() {
         println!("  {}", ellipsize(&node.signature, 110));
+    }
+    if let Some(body) = &body {
+        for l in body.lines() {
+            println!("  | {l}");
+        }
     }
     println!();
 
@@ -311,12 +336,44 @@ pub fn run(
         );
     }
 
-    let unresolved = store.references_in(&node.file)?.len();
-    println!("unresolved refs in this file: {unresolved}");
     println!();
     println!(
         "Next: sinter affected {} --max-depth 3",
         qualified_of(node.id.as_str())
     );
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::excerpt;
+
+    fn fixture(body: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), body).unwrap();
+        dir
+    }
+
+    #[test]
+    fn excerpt_caps_lines_and_slices_the_span() {
+        let dir = fixture("fn a() {\n1\n2\n3\n}\n");
+        let got = excerpt(dir.path(), "a.rs", 0, 15, 2).unwrap();
+        assert_eq!(got, "fn a() {\n1");
+    }
+
+    #[test]
+    fn excerpt_clamps_out_of_range_spans() {
+        let dir = fixture("fn a() {}\n");
+        assert_eq!(excerpt(dir.path(), "a.rs", 3, 9_999, 10).unwrap(), "a() {}");
+        // Reversed span clamps to empty instead of panicking.
+        assert_eq!(excerpt(dir.path(), "a.rs", 8, 2, 10).unwrap(), "");
+    }
+
+    #[test]
+    fn excerpt_degrades_on_missing_file_and_char_boundaries() {
+        let dir = fixture("// \u{e9}\n");
+        assert!(excerpt(dir.path(), "missing.rs", 0, 4, 10).is_none());
+        // Byte 4 lands inside the two-byte \u{e9}.
+        assert!(excerpt(dir.path(), "a.rs", 0, 4, 10).is_none());
+    }
 }
