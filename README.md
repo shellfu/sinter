@@ -16,7 +16,11 @@ points or domain ownership. Then use the graph for focused work:
   cross-file and cross-language (`sinter affected`).
 - **Paths** — how one symbol reaches another (`sinter path`).
 - **Diff impact** — which symbols and tests a changeset can affect
-  (`sinter impact`).
+  (`sinter impact`), plus `--expect <symbol>` for the unfinished-refactor
+  check: direct dependents of a symbol the diff did not touch.
+- **Bounded text search** — a regex search whose corpus is a graph traversal
+  (`sinter grep '<regex>' --within 'affected(<sym>)'`), replacing the
+  run-affected-then-grep-the-files pipeline.
 - **Polyglot, zero setup** — syntax-only graphs work without an LSP. When the
   syntax provides the necessary type information, sinter resolves self
   receivers, locally typed receivers, typed fields, and explicit static/class
@@ -29,7 +33,12 @@ points or domain ownership. Then use the graph for focused work:
   explicit verify-or-abstain guidance. The bucket is not a per-result
   probability; `ask` is a navigator, not a semantic answer engine.
 - **Symbol orientation** — `sinter show` turns a selected symbol into a compact
-  card with its definition and graph neighborhood.
+  card with its definition and graph neighborhood; `--body` adds a bounded
+  source excerpt so locating a symbol needs no follow-up file read.
+- **Task evidence packet** — `sinter context "<task>"` resolves identifiers in
+  the task against real node names and seeds from them, returning edit
+  candidates, anchors, unresolved intents, and affected tests as runnable
+  commands.
 - **[Cross-repo workspaces](docs/workspaces.md)** — federated graphs over many repos for
   distributed systems: blast radius, paths, and PR impact across service
   boundaries (`--workspace`).
@@ -181,7 +190,8 @@ Agent-facing node `id` values are stable symbol keys and survive unrelated
 offset shifts. `snapshot_id` retains the byte-exact locator for the reported
 snapshot. Handle-consuming operations accept `if_snapshot` and return typed
 stale-snapshot, relocated-handle, or ambiguous-candidate outcomes instead of
-silently rebinding.
+silently rebinding. A symbol whose bare name is ambiguous can be addressed as
+`Name@file` or `Name@file:line` (`run@doctor.rs:175`).
 
 ## Commands
 
@@ -195,13 +205,15 @@ silently rebinding.
 | `sinter watch [repo]` | Keep the graph fresh from filesystem events |
 | `sinter hooks install` | Git hooks that refresh after commit/checkout/merge |
 | `sinter ask "<question>"` | Calibrated lexical starting points for a vague question, with verify/abstain guidance |
-| `sinter show <symbol>` | One-screen orientation card for a symbol or file |
+| `sinter show <symbol>` | One-screen orientation card for a symbol or file (`--body [--context-lines N]` adds a bounded source excerpt) |
 | `sinter query <symbol>` | Exact + fuzzy symbol search |
-| `sinter affected <symbol>` | Reverse blast radius, evidence-filterable |
+| `sinter affected <symbol>...` | Reverse blast radius, evidence-filterable; multiple seeds are unioned and deduplicated, each row naming the seeds that reached it |
 | `sinter deps <symbol>` | Forward blast radius: everything a symbol transitively depends on |
 | `sinter unresolved` | List unresolved references — the graph's honest gaps (`--file`, `--name`) |
-| `sinter path <from> <to>` | Shortest dependency path with per-step evidence |
-| `sinter impact <rev-range>` | Changed symbols → blast radius → affected tests |
+| `sinter path <from> <to>` | Shortest dependency path with per-step evidence; an unproven answer reports `closest_frontier`, `excluded_edges`, and `suggested_retries` |
+| `sinter grep <regex> --within <traversal>` | Text search bounded by a graph traversal: `affected(SYM)`, `deps(SYM)`, `file(PATH)`, repeatable and unioned |
+| `sinter context "<task>"` | Evidence packet for a coding task: edit candidates, deps/dependents, relevant tests, gaps, next commands |
+| `sinter impact <rev-range>` | Changed symbols → blast radius → affected tests (`--expect <symbol>` reports direct dependents the diff did not touch) |
 | `sinter serve` | MCP server over stdio (`--repo` for one repo, `--workspace <manifest>` for a cross-repo scope) |
 | `sinter overlap <range>...` | Map open PRs onto the graph; rank pairwise merge risk (direct/radius/file) |
 | [`sinter workspace <manifest>`](docs/workspaces.md) | Build all members of a cross-repo workspace + refresh boundary links |
@@ -222,12 +234,13 @@ handshake.
 and `--certain` to restrict traversal to stronger evidence tiers, and
 `--relations calls,uses,imports,implements,extends` to restrict which edge
 relations are followed (e.g. drop file-level import edges from a blast
-radius); their MCP counterparts take the same filters as `evidence` (array),
+radius); `sinter grep` accepts the same traversal filters for its `--within`
+bound; their MCP counterparts take the same filters as `evidence` (array),
 `min_confidence: "certain"`, and `relations` (array) parameters.
 
 Discovery commands default to the `production,docs` corpus. Use `--scope` or
 the MCP `scope` array to include tests, fixtures, examples, generated files, or
-vendor code. Exact `show` remains unfiltered. Repositories can exclude paths in
+vendor code; the MCP `scope` argument itself defaults to `all`. Exact `show` remains unfiltered. Repositories can exclude paths in
 `.sinterignore` and apply ordered classification overrides in `.sinter.toml`
 with `[[scope.override]]` entries.
 

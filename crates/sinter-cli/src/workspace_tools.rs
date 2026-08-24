@@ -25,7 +25,7 @@ pub(crate) fn call(manifest: &Path, name: &str, args: &Value) -> Result<Value> {
         crate::workspace::refresh(&workspace)?;
     }
 
-    let snapshot = matches!(name, "show" | "query" | "affected" | "path")
+    let snapshot = matches!(name, "show" | "query" | "affected" | "deps" | "path")
         .then(|| crate::workspace::snapshot_token(&workspace))
         .transpose()?;
     if let Some(snapshot) = snapshot.as_deref() {
@@ -39,9 +39,10 @@ pub(crate) fn call(manifest: &Path, name: &str, args: &Value) -> Result<Value> {
         "unresolved" => unresolved(&workspace, args),
         "query" => query(&workspace, args),
         "affected" => affected(&workspace, args),
+        "deps" => dependencies(&workspace, args),
         "path" => path(&workspace, args),
         other => anyhow::bail!(
-            "unknown tool {other} (workspace scope serves: ask, show, query, affected, path, impact)"
+            "unknown tool {other} (workspace scope serves: ask, show, query, affected, deps, path, impact)"
         ),
     }?;
     if let Some(snapshot) = snapshot {
@@ -328,6 +329,62 @@ fn affected(workspace: &crate::workspace::Workspace, args: &Value) -> Result<Val
     } else {
         "found"
     });
+    out["coverage"] =
+        crate::coverage::workspace_json(workspace, &filter, evidence, !reached.is_empty())?;
+    Ok(out)
+}
+
+/// Workspace `deps`: forward blast radius across members. Same payload
+/// shape as the repository `deps` tool, with member-qualified symbols and
+/// the reaching parent instead of a depth.
+fn dependencies(workspace: &crate::workspace::Workspace, args: &Value) -> Result<Value> {
+    let filter = traversal_filter(args)?;
+    let depth = args.get("max_depth").and_then(Value::as_u64).unwrap_or(10) as usize;
+    let limit = limit(args, 50);
+    let (member, node) =
+        crate::workspace::find_symbol(workspace, &required_string(args, "symbol")?)?;
+    let reached = crate::workspace::dependencies(workspace, &member, &node.id, &filter, depth)?;
+    let scopes = member_scopes(workspace)?;
+    let store = sinter_store::Store::open(crate::pipeline::db_path(&workspace.members[&member]))?;
+    let unresolved = store
+        .references_in(&node.file)?
+        .iter()
+        .filter(|reference| reference.enclosing.as_ref() == Some(&node.id))
+        .count();
+    let evidence = crate::coverage::TraversalEvidence::from_confidences(
+        reached.iter().map(|item| item.evidence.confidence()),
+        unresolved,
+    );
+    let entries: Vec<Value> = reached
+        .iter()
+        .take(limit)
+        .map(|reached| {
+            json!({
+                "s": format!("{}:{}", reached.member, qualified_of(reached.node.id.as_str())),
+                "k": reached.node.kind.as_str(),
+                "f": reached.node.file,
+                "scope": scope_of(&scopes, &reached.member, &reached.node).as_str(),
+                "e": format!("{}/{}", reached.relation.as_str(), reached.evidence.as_str()),
+                "c": match reached.evidence.confidence() {
+                    sinter_core::Confidence::Certain => "certain",
+                    sinter_core::Confidence::Inferred => "possible",
+                },
+                "p": format!("{}:{}", reached.parent.0, qualified_of(&reached.parent.1)),
+            })
+        })
+        .collect();
+    let mut out = json!({
+        "status": if reached.is_empty() { "not_proven" } else { "found" },
+        "symbol": member_node(&node, &member, scope_of(&scopes, &member, &node)),
+        "total": reached.len(),
+        "unresolved_refs_in_symbol": unresolved,
+        "by_file": by_file(reached.iter().map(|reached| reached.node.file.clone())),
+        "dependencies": entries,
+    });
+    if reached.len() > limit {
+        out["truncated"] = json!(reached.len() - limit);
+    }
+    drop(store);
     out["coverage"] =
         crate::coverage::workspace_json(workspace, &filter, evidence, !reached.is_empty())?;
     Ok(out)

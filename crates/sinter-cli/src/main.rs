@@ -349,6 +349,9 @@ enum Command {
         /// Repository to query
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        /// Traverse across the workspace (path to manifest)
+        #[arg(long)]
+        workspace: Option<PathBuf>,
         /// Maximum traversal depth
         #[arg(long, default_value_t = 10)]
         max_depth: usize,
@@ -360,10 +363,11 @@ enum Command {
         /// pass an explicit scope or `name@file` to pick another copy
         #[arg(long, value_delimiter = ',', default_value = corpus::DEFAULT_SCOPE)]
         scope: Vec<String>,
-        /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`)
-        #[arg(long)]
+        /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`; not
+        /// available with --workspace)
+        #[arg(long, conflicts_with = "workspace")]
         json: bool,
-        /// Fail if the graph changed since this snapshot token was returned
+        /// Fail if the repository/workspace graph changed since this token
         #[arg(long)]
         if_snapshot: Option<String>,
         #[command(flatten)]
@@ -888,6 +892,7 @@ fn main() -> ExitCode {
         Command::Deps {
             symbol,
             repo,
+            workspace,
             max_depth,
             limit,
             scope,
@@ -896,17 +901,26 @@ fn main() -> ExitCode {
             filter,
             relations,
         } => {
-            let result = traversal_filter(&filter, &relations, &scope).and_then(|f| {
-                deps::run(
-                    &repo,
-                    &symbol,
-                    &f,
-                    max_depth,
-                    limit,
-                    json,
-                    if_snapshot.as_deref(),
-                )
-            });
+            let result =
+                traversal_filter(&filter, &relations, &scope).and_then(|f| match workspace {
+                    Some(manifest) => deps::run_workspace(
+                        &manifest,
+                        &symbol,
+                        &f,
+                        max_depth,
+                        limit,
+                        if_snapshot.as_deref(),
+                    ),
+                    None => deps::run(
+                        &repo,
+                        &symbol,
+                        &f,
+                        max_depth,
+                        limit,
+                        json,
+                        if_snapshot.as_deref(),
+                    ),
+                });
             return if json {
                 grep_exit_json("deps", result)
             } else {

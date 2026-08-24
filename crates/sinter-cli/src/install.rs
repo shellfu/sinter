@@ -46,20 +46,23 @@ This repo has a code knowledge graph at `.sinter/` (derived state — never
 commit or edit it). When `.sinter/graph.redb` exists, query sinter BEFORE
 any broad filesystem search for symbol location, callers, dependency
 impact, structural paths, or diff impact. Fall back to grep only when
-sinter returns no usable evidence; read source directly for
-function-body behavior.
+sinter returns no usable evidence — and when the text search is bounded
+by structure, `sinter grep --within` is that search, not rg.
 
 | Question | Command |
 |---|---|
 | First look in an unfamiliar repo (module inventory, dependency hubs, docs, graph health) | `sinter map` |
 | Vague/conceptual discovery (calibrated lexical search) | `sinter ask "<question>"` (`--explain` adds ranking diagnostics) |
 | Exact or fuzzy symbol lookup | `sinter query <symbol>` |
-| Inspect one symbol (signature, docs, callers) | `sinter show <symbol>` |
-| What depends on X / blast radius | `sinter affected <symbol>` |
+| Inspect one symbol (signature, docs, callers) | `sinter show <symbol>` (`--body [--context-lines N]` adds a bounded source excerpt instead of a file read) |
+| What depends on X / blast radius | `sinter affected <symbol>...` (seeds repeatable; unioned and deduplicated, each row naming the seeds that reached it) |
 | What does X depend on (forward) | `sinter deps <symbol>` |
 | How does A reach B | `sinter path <A> <B>` |
+| Find text only inside a blast radius | `sinter grep '<regex>' --within 'affected(<sym>)'` (`--within` also takes `deps(SYM)`/`file(PATH)`, is repeatable, unions the bounds) |
 | Check gaps before a negative proof | `sinter unresolved [--file <f>] [--name <n>]` |
 | What does this commit/diff/PR affect downstream | `sinter impact <rev-range>` (default is capped; `--limit 0` returns all) |
+| Did the refactor finish (unfinished-refactor check) | `sinter impact --expect <symbol>` — direct dependents the diff did NOT touch |
+| Evidence packet before starting a task | `sinter context "<task>"` — name real symbols in the task; returns anchors, unresolved intents, and affected tests as runnable commands |
 | Where do proposed changes overlap | `sinter overlap <rangeA> <rangeB> ...` |
 | Build a cross-repo graph | `sinter workspace <manifest.toml>`; then add `--workspace <manifest.toml>` to reads |
 | Create missing derived graph state | `sinter ensure <repo>` |
@@ -76,17 +79,23 @@ function-body behavior.
 - `not_proven`, unresolved references, and candidate lists are real answers —
   refine and rerun, never report zero or guess a binding. Receiver-typed call
   coverage may require `sinter scip`; `sinter unresolved` lists the gaps.
-  Ambiguous symbol? Rerun as `name@file-suffix` (e.g. `run@init.rs`).
+  Ambiguous symbol? Rerun as `name@file-suffix` or `name@file:line`
+  (e.g. `run@init.rs`, `run@doctor.rs:175`).
+- A `not_proven` `path` carries `closest_frontier`, `excluded_edges`, and
+  `suggested_retries` — rerun a suggestion before claiming no path exists.
 - Spawning subagents? Their prompts must mandate sinter for structure
   claims (callers, dependencies, blast radius, "no usages" proofs) and
-  reserve grep/rg for content-only searches.
+  reserve grep/rg for unbounded content-only searches.
 - Cross-repo symbols may be `member:Symbol`.
 - `sinter ensure <repo>` creates only derived `.sinter/` state. Run
   `sinter init <repo>` only when full hook and client integration installation
   was explicitly requested.
 - MCP registered? `mcp__sinter__*` tools (ask/show/query/affected/deps/
-  path/unresolved/impact/overlap/map) answer the same questions as the
-  CLI verbs above — either route is fine.
+  path/grep/unresolved/impact/overlap/map) answer the same questions as the
+  CLI verbs above — either route is fine. Arguments mirror the flags:
+  `grep{pattern, within[]}`, `show{body, context_lines}`,
+  `impact{expect[]}`. MCP `scope` defaults to `all`, not the CLI corpus
+  default; a `--workspace` server has no `grep`.
 - Anything else: `sinter --help`; graph problems: `sinter doctor`.
 "#;
 

@@ -186,6 +186,36 @@ fn workspace_end_to_end() {
     assert!(json["verify_required"].is_boolean());
     assert!(json["returned"].as_u64().unwrap() <= 5);
 
+    // Forward direction crosses the boundary the other way: auth's Login
+    // depends on common's Backoff, and nothing in auth depends on billing.
+    let (ok, out) = sinter(root, &["deps", "auth:Login", "--workspace", m]);
+    assert!(ok, "{out}");
+    assert!(out.contains("common:"), "deps must leave the member: {out}");
+    assert!(out.contains("Backoff"), "{out}");
+    assert!(out.contains("snapshot workspace-"), "{out}");
+    assert!(out.contains("coverage: partial"), "{out}");
+    // Direction is not symmetric: Backoff's dependencies do not include the
+    // members that depend on it. A reversed traversal would list them.
+    let (ok, out) = sinter(root, &["deps", "common:Backoff", "--workspace", m]);
+    assert!(!ok, "{out}");
+    assert!(!out.contains("auth:Login"), "deps walked backwards: {out}");
+    assert!(
+        !out.contains("billing:Charge"),
+        "deps walked backwards: {out}"
+    );
+    // Declared links are forward-traversable from their declared source.
+    let (ok, out) = sinter(root, &["deps", "billing:ConsumeSettled", "--workspace", m]);
+    assert!(ok, "{out}");
+    assert!(out.contains("auth:PublishSettled"), "{out}");
+    assert!(out.contains("declared"), "{out}");
+    // ... and not from the destination.
+    let (ok, out) = sinter(root, &["deps", "auth:PublishSettled", "--workspace", m]);
+    assert!(!ok, "{out}");
+    assert!(
+        !out.contains("ConsumeSettled"),
+        "declared link reversed: {out}"
+    );
+
     // Determinism: byte-identical across runs.
     let (_, again) = sinter(root, &["affected", "Backoff", "--workspace", m]);
     let (_, first_run) = sinter(root, &["affected", "Backoff", "--workspace", m]);
@@ -338,6 +368,7 @@ fn workspace_stale_and_declared_errors() {
 fn json_conflicts_with_workspace() {
     for argv in [
         vec!["affected", "Backoff", "--workspace", "ws.toml", "--json"],
+        vec!["deps", "Backoff", "--workspace", "ws.toml", "--json"],
         vec!["path", "A", "B", "--workspace", "ws.toml", "--json"],
     ] {
         let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
@@ -454,6 +485,11 @@ fn serve_workspace_answers_across_members() {
             r#"{{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{{"name":"path","arguments":{{"from":"billing:Charge","to":"common:Backoff"}}}}}}"#
         )
         .unwrap();
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{{"name":"deps","arguments":{{"symbol":"auth:Login","budget_bytes":0}}}}}}"#
+        )
+        .unwrap();
     }
     drop(child.stdin.take());
     let output = child.wait_with_output().unwrap();
@@ -474,6 +510,7 @@ fn serve_workspace_answers_across_members() {
             "show",
             "query",
             "affected",
+            "deps",
             "path",
             "unresolved",
             "impact"
@@ -571,4 +608,27 @@ fn serve_workspace_answers_across_members() {
     assert_eq!(parsed["found"], true, "{body}");
     assert_eq!(parsed["coverage"]["status"], "found", "{body}");
     assert!(parsed["steps"][0]["confidence"].is_string(), "{body}");
+
+    // deps is the forward pair of affected and crosses members too.
+    let deps: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    let parsed = deps["result"]["structuredContent"]["data"].clone();
+    let body = parsed.to_string();
+    assert!(parsed.is_object(), "deps tool failed: {deps}");
+    assert_eq!(parsed["symbol"]["member"], "auth", "{body}");
+    assert!(parsed["total"].as_u64().unwrap() >= 1, "{body}");
+    assert!(
+        parsed["dependencies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["s"].as_str().unwrap().starts_with("common:")),
+        "terse dependencies must cross into other members: {body}"
+    );
+    assert!(
+        parsed["snapshot"]
+            .as_str()
+            .is_some_and(|snapshot| snapshot.starts_with("workspace-")),
+        "{body}"
+    );
+    assert_eq!(parsed["coverage"]["status"], "found", "{body}");
 }

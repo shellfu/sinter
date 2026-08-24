@@ -34,6 +34,14 @@ d=depth (repo)  p=parent (workspace)  site=file:line of the referencing site.
 List-bearing responses carry a `legend` field on the first page and when truncated.
 Pass `detail:true` for full node objects.
 
+## Bounded text search, excerpts, refactor checks
+`grep` is a regex over file *text* restricted to what a traversal reached, so a search never
+leaves the graph: `within: [affected(SYM)]`, `[deps(SYM)]`, or `[file(PATH)]`, repeatable
+and unioned; rows are f=file l=line t=text and `total` counts every match above `limit`.
+`show` takes `body: true` (with `context_lines`) for a bounded source excerpt in `excerpt`.
+`impact` takes `expect: [SYM]` and answers the unfinished-refactor question: per symbol, the
+direct dependents this diff changed and the ones it still owes (`expect[].untouched`).
+
 ## Coverage semantics
 `coverage.status` found|not_proven; `coverage.completeness` complete|partial;
 `coverage.conclusive` is always false: a static graph is never runtime-exhaustive.
@@ -129,6 +137,8 @@ pub(crate) fn repository() -> Value {
                 "relations": filters["relations"],
                 "scope": scope_filter(&["all"]),
                 "if_snapshot": snapshot_precondition(),
+                "body": {"type": "boolean", "description": "add a source excerpt"},
+                "context_lines": {"type": "integer"},
             }, "required": ["symbol"]},
         },
         {
@@ -172,6 +182,21 @@ pub(crate) fn repository() -> Value {
             }, "required": ["symbol"]},
         },
         {
+            "name": "grep",
+            "description": "Regex over file text, bounded to a traversal not the tree; rows f/l/t. e.g. {pattern:\"retry\",within:[\"affected(Store::open)\"]}",
+            "inputSchema": {"type": "object", "properties": {
+                "pattern": {"type": "string"},
+                "within": {"type": "array", "items": {"type": "string"}, "minItems": 1,
+                    "description": "affected(SYM)|deps(SYM)|file(PATH)"},
+                "max_depth": {"type": "integer"},
+                "limit": limit(),
+                "evidence": filters["evidence"],
+                "min_confidence": filters["min_confidence"],
+                "relations": filters["relations"],
+                "scope": scope_filter(&["all"]),
+            }, "required": ["pattern", "within"]},
+        },
+        {
             "name": "path",
             "description": "Shortest dependency path between two symbols, with evidence per step; found:false is not absence. e.g. {from:\"main\",to:\"Store::open\"}",
             "inputSchema": {"type": "object", "properties": {
@@ -200,6 +225,8 @@ pub(crate) fn repository() -> Value {
                 "rev_range": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 0, "default": 20,
                     "description": "per collection; 0 = all"},
+                "expect": {"type": "array", "items": {"type": "string"},
+                    "description": "symbols the diff should cover"},
             }, "required": ["rev_range"]},
         },
         {
@@ -263,6 +290,20 @@ pub(crate) fn workspace() -> Value {
             }, "required": ["symbol"]},
         },
         {
+            "name": "deps",
+            "description": "What a symbol transitively calls/uses/imports across members, by file. e.g. {symbol:\"auth:Login\"}",
+            "inputSchema": {"type": "object", "properties": {
+                "symbol": symbol(),
+                "max_depth": {"type": "integer"},
+                "limit": limit(),
+                "evidence": filters["evidence"],
+                "min_confidence": filters["min_confidence"],
+                "relations": filters["relations"],
+                "scope": scope_filter(&["all"]),
+                "if_snapshot": snapshot_precondition(),
+            }, "required": ["symbol"]},
+        },
+        {
             "name": "path",
             "description": "Shortest dependency path between two symbols across member boundaries. e.g. {from:\"auth:login\",to:\"common:Backoff\"}",
             "inputSchema": {"type": "object", "properties": {
@@ -316,7 +357,11 @@ mod tests {
     #[test]
     fn catalog_stays_within_the_context_tax_budget() {
         for catalog in [repository(), workspace()] {
-            assert!(serde_json::to_string(&catalog).unwrap().len() <= 9000);
+            // One new verb is one new tax line: 8934 -> 10236 when `grep`
+            // joined the repository surface. Tight on purpose — raise it
+            // only for a verb, never for prose.
+            let size = serde_json::to_string(&catalog).unwrap().len();
+            assert!(size <= 10300, "catalog is {size} bytes");
             for tool in catalog["tools"].as_array().unwrap() {
                 let description = tool["description"].as_str().unwrap();
                 assert!(description.len() <= 160, "{}: {description}", tool["name"]);
@@ -339,7 +384,7 @@ mod tests {
         let workspace_names = names(&workspace);
         assert!(repository_names.contains(&"deps"));
         assert!(repository_names.contains(&"map"));
-        assert!(!workspace_names.contains(&"deps"));
+        assert!(workspace_names.contains(&"deps"));
         assert!(!workspace_names.contains(&"map"));
         for tool in repository["tools"]
             .as_array()

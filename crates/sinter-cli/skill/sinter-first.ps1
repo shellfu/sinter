@@ -30,10 +30,10 @@ while ($d) {
 }
 if (-not $root) { exit 0 }
 
-$Nudge = 'sinter graph: unfamiliar repo -> map; vague discovery -> ask; exact symbol -> query/show; relations -> affected/deps/path; negative proof -> unresolved, with incomplete coverage reported as not_proven. Grep remains for content/function bodies.'
+$Nudge = 'sinter graph: unfamiliar repo -> map; vague discovery -> ask; exact symbol -> query/show; relations -> affected/deps/path; text inside a blast radius -> grep --within affected(SYM); negative proof -> unresolved, with incomplete coverage reported as not_proven. Grep remains for repo-wide content; for function bodies use show --body.'
 $GitNudge = 'sinter graph: use impact <rev-range> for changed symbols, downstream effects, and tests; use overlap for collision risk; add --workspace for cross-repo analysis.'
 
-$DenyReason = 'This repo has a sinter graph. Run sinter map first if unfamiliar; use sinter ask for vague discovery, sinter query/show for exact symbols, sinter affected/deps/path for relations, sinter unresolved for negative proofs (incomplete coverage is not_proven), or sinter impact for diffs. If insufficient, rerun this exact search.'
+$DenyReason = 'This repo has a sinter graph. Run sinter map first if unfamiliar; use sinter ask for vague discovery, sinter query/show for exact symbols, sinter affected/deps/path for relations, sinter grep --within affected(SYM) to search text inside a blast radius, sinter unresolved for negative proofs (incomplete coverage is not_proven), or sinter impact for diffs. If insufficient, rerun this exact search.'
 
 function Emit([string]$Text) {
     Write-Output ('{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"' + $Text + '"}}')
@@ -86,7 +86,7 @@ switch ($Mode) {
         $raw = ''
         try { $raw = [Console]::In.ReadToEnd() } catch { $raw = '' }
         if ((New-SessionMarker 'prompt' $raw) -eq $false) { exit 0 }
-        Write-Output 'This repo has a sinter graph. Unfamiliar repo: sinter map first. Then use ask for vague discovery; query/show for exact symbols; affected/deps/path for relations; unresolved for negative proofs (incomplete coverage is not_proven); impact/overlap for changes; workspace/--workspace across repos. Use ensure/doctor/scip for setup or repair; read source for function bodies.'
+        Write-Output 'This repo has a sinter graph. Unfamiliar repo: sinter map first. Then use ask for vague discovery; query/show for exact symbols; affected/deps/path for relations; grep --within affected(SYM) for text inside a blast radius; impact --expect SYM for unfinished refactors; unresolved for negative proofs (incomplete coverage is not_proven); impact/overlap for changes; workspace/--workspace across repos. Use ensure/doctor/scip for setup or repair; show --body for function bodies.'
     }
     { $_ -in 'grep', 'grep-strict' } {
         $raw = ''

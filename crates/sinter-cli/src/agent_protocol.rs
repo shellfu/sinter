@@ -569,15 +569,41 @@ pub fn failure(operation: &str, error: &anyhow::Error) -> Value {
 /// Reject keys outside the advertised closed input schema. This is kept
 /// beside the schema contract so transport declarations and runtime
 /// enforcement cannot drift independently.
-pub fn validate_arguments(operation: &str, args: &Value, workspace: bool) -> Result<()> {
-    let Some(object) = args.as_object() else {
-        bail!("arguments for `{operation}` must be a JSON object");
-    };
-    let allowed: &[&str] = match (workspace, operation) {
+/// Every argument one tool accepts in one server scope, or `None` when the
+/// scope does not serve that tool.
+///
+/// This list and the tool's `inputSchema` in `tool_catalog` are one contract
+/// maintained in two places: an advertised argument that is rejected here
+/// leaves an agent no way to discover the truth except by failing.
+/// `catalog_and_validator_accept_the_same_arguments` holds them together.
+/// `budget_bytes` and `cursor` are injected into every schema by
+/// `complete_tool_schemas` and accepted below, so they appear in neither list.
+fn allowed_arguments(operation: &str, workspace: bool) -> Option<&'static [&'static str]> {
+    Some(match (workspace, operation) {
         (_, "ask") => &["question", "limit", "scope", "explain"],
         (false, "context") => &["task"],
-        (_, "show") => &["symbol", "if_snapshot"],
-        (_, "query") => &["symbol", "limit", "scope", "if_snapshot"],
+        (false, "show") => &[
+            "symbol",
+            "limit",
+            "relations",
+            "scope",
+            "if_snapshot",
+            "body",
+            "context_lines",
+        ],
+        (true, "show") => &["symbol", "limit", "relations", "scope", "if_snapshot"],
+        (false, "grep") => &[
+            "pattern",
+            "within",
+            "max_depth",
+            "limit",
+            "evidence",
+            "min_confidence",
+            "relations",
+            "scope",
+        ],
+        (false, "query") => &["symbol", "limit", "scope", "if_snapshot"],
+        (true, "query") => &["symbol", "scope", "if_snapshot"],
         (false, "affected") => &[
             "symbol",
             "symbols",
@@ -601,7 +627,7 @@ pub fn validate_arguments(operation: &str, args: &Value, workspace: bool) -> Res
             "scope",
             "if_snapshot",
         ],
-        (false, "deps") => &[
+        (_, "deps") => &[
             "symbol",
             "max_depth",
             "limit",
@@ -622,11 +648,20 @@ pub fn validate_arguments(operation: &str, args: &Value, workspace: bool) -> Res
         ],
         (false, "unresolved") => &["file", "name", "limit"],
         (true, "unresolved") => &["member", "file", "name", "limit"],
-        (false, "impact") => &["rev_range", "limit"],
+        (false, "impact") => &["rev_range", "limit", "expect"],
         (true, "impact") => &["member", "rev_range", "limit"],
         (false, "overlap") => &["ranges"],
         (false, "map") => &["scope"],
-        _ => bail!("unknown tool `{operation}` for this server scope"),
+        _ => return None,
+    })
+}
+
+pub fn validate_arguments(operation: &str, args: &Value, workspace: bool) -> Result<()> {
+    let Some(object) = args.as_object() else {
+        bail!("arguments for `{operation}` must be a JSON object");
+    };
+    let Some(allowed) = allowed_arguments(operation, workspace) else {
+        bail!("unknown tool `{operation}` for this server scope");
     };
     if let Some(key) = object.keys().find(|key| {
         !allowed.contains(&key.as_str()) && !matches!(key.as_str(), "budget_bytes" | "cursor")
@@ -768,6 +803,70 @@ mod tests {
         payload: &serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
         super::mcp_success(operation, payload, Budget::default())
+    }
+
+    /// The catalog and the validator are one contract in two places. Every
+    /// advertised argument must validate, and nothing may validate that is
+    /// not advertised — an accepted argument no schema mentions is a knob an
+    /// agent can only find by accident, and is usually one nothing reads.
+    ///
+    /// `budget_bytes` and `cursor` are injected into every schema rather than
+    /// declared, so they are excluded from the comparison; both are asserted
+    /// separately below.
+    #[test]
+    fn catalog_and_validator_accept_the_same_arguments() {
+        let injected = ["budget_bytes", "cursor"];
+        for (workspace, catalog) in [
+            (false, crate::tool_catalog::repository()),
+            (true, crate::tool_catalog::workspace()),
+        ] {
+            let scope = if workspace { "workspace" } else { "repository" };
+            for tool in catalog["tools"].as_array().unwrap() {
+                let name = tool["name"].as_str().unwrap();
+                let advertised: std::collections::BTreeSet<&str> =
+                    tool["inputSchema"]["properties"]
+                        .as_object()
+                        .unwrap()
+                        .keys()
+                        .map(String::as_str)
+                        .filter(|key| !injected.contains(key))
+                        .collect();
+                let accepted: std::collections::BTreeSet<&str> =
+                    super::allowed_arguments(name, workspace)
+                        .unwrap_or_else(|| {
+                            panic!("{scope} advertises `{name}`, validator rejects it")
+                        })
+                        .iter()
+                        .copied()
+                        .collect();
+                assert_eq!(
+                    advertised,
+                    accepted,
+                    "{scope} `{name}`: advertised-only {:?}, accepted-only {:?}",
+                    advertised.difference(&accepted).collect::<Vec<_>>(),
+                    accepted.difference(&advertised).collect::<Vec<_>>(),
+                );
+                // The set equality above is structural; this is the behaviour
+                // an agent actually hits when it sends what it was told to.
+                for key in &advertised {
+                    validate_arguments(name, &json!({*key: serde_json::Value::Null}), workspace)
+                        .unwrap_or_else(|error| {
+                            panic!("{scope} `{name}` advertises `{key}` but rejects it: {error}")
+                        });
+                }
+                for key in injected {
+                    validate_arguments(name, &json!({key: serde_json::Value::Null}), workspace)
+                        .unwrap_or_else(|error| {
+                            panic!("{scope} `{name}` rejects `{key}`: {error}")
+                        });
+                }
+                assert!(
+                    validate_arguments(name, &json!({"not_a_real_argument": 1}), workspace)
+                        .is_err(),
+                    "{scope} `{name}` accepts an argument it never advertised"
+                );
+            }
+        }
     }
 
     #[test]

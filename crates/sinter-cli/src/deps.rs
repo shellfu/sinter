@@ -166,3 +166,79 @@ pub fn run(
     crate::coverage::print_footer(&root, &store, filter, evidence, total > 0, Some(&snapshot))?;
     Ok(total > 0)
 }
+
+/// `sinter deps --workspace`: cross-repo forward blast radius over member
+/// stores plus boundary links. Single-seed, matching the CLI's one-symbol
+/// `deps` argument; text only, since `--json` conflicts with `--workspace`.
+pub fn run_workspace(
+    manifest: &Path,
+    symbol: &str,
+    filter: &EdgeFilter,
+    max_depth: usize,
+    limit: usize,
+    if_snapshot: Option<&str>,
+) -> Result<bool> {
+    let ws = crate::workspace::load(manifest)?;
+    let snapshot = crate::workspace::snapshot_token(&ws)?;
+    crate::lookup::ensure_snapshot_token(if_snapshot, &snapshot)?;
+    let (member, node) = crate::workspace::find_symbol(&ws, symbol)?;
+    let mut reached = crate::workspace::dependencies(&ws, &member, &node.id, filter, max_depth)?;
+    let total = reached.len();
+    let evidence = crate::coverage::TraversalEvidence::from_confidences(
+        reached.iter().map(|item| item.evidence.confidence()),
+        0,
+    );
+    reached.truncate(limit);
+    let label = format!(
+        "{member}:{} ({})",
+        qualified_of(node.id.as_str()),
+        node.file
+    );
+    if total == 0 {
+        println!("not proven: 0 dependencies observed for {label}");
+    } else {
+        println!("{total} dependencies of {label}");
+    }
+    // Same parent-keyed tree as `affected --workspace`: BFS order alone
+    // misattributes children.
+    let mut children: std::collections::HashMap<(&str, &str), Vec<&crate::workspace::WsReached>> =
+        std::collections::HashMap::new();
+    for item in &reached {
+        children
+            .entry((item.parent.0.as_str(), item.parent.1.as_str()))
+            .or_default()
+            .push(item);
+    }
+    let mut stack: Vec<(&crate::workspace::WsReached, usize)> = Vec::new();
+    if let Some(roots) = children.get(&(member.as_str(), node.id.as_str())) {
+        for item in roots.iter().rev() {
+            stack.push((item, 1));
+        }
+    }
+    while let Some((item, depth)) = stack.pop() {
+        println!(
+            "  {}{}:{} {}  {}  [{}/{}]",
+            "  ".repeat(depth - 1),
+            item.member,
+            qualified_of(item.node.id.as_str()),
+            item.node.kind.as_str(),
+            item.node.file,
+            item.relation.as_str(),
+            item.evidence.as_str(),
+        );
+        if let Some(kids) = children.get(&(item.member.as_str(), item.node.id.as_str())) {
+            for kid in kids.iter().rev() {
+                stack.push((kid, depth + 1));
+            }
+        }
+    }
+    if total > limit {
+        println!(
+            "{} more dependencies below cutoff · `sinter deps --limit {}` to widen",
+            total - limit,
+            total,
+        );
+    }
+    crate::coverage::print_workspace_footer(&ws, filter, evidence, total > 0, Some(&snapshot))?;
+    Ok(total > 0)
+}

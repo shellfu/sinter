@@ -801,10 +801,22 @@ pub fn compute_filtered(repo: &Path, rev_range: &str, filter: &EdgeFilter) -> Re
     compute_with_store(&repo, rev_range, filter, &store)
 }
 
-pub(crate) fn compute_current(repo: &Path, rev_range: &str) -> Result<ImpactReport> {
+/// The MCP `impact` computation. One store handle covers both the diff pass
+/// and `--expect`, the way `run` does it for the CLI: redb forbids a second
+/// open of the same file, and the two passes must see one snapshot. An empty
+/// `expect` leaves `ImpactReport::expect` empty, which serializes to nothing.
+pub(crate) fn compute_current_with_expect(
+    repo: &Path,
+    rev_range: &str,
+    expect: &[String],
+    limit: usize,
+) -> Result<ImpactReport> {
     let repo = repo.canonicalize()?;
     let store = open_current(&repo)?;
-    compute_with_store(&repo, rev_range, &EdgeFilter::default(), &store)
+    let filter = EdgeFilter::default();
+    let mut report = compute_with_store(&repo, rev_range, &filter, &store)?;
+    report.expect = expect_reports(&repo, &store, &filter, expect, &report, limit)?;
+    Ok(report)
 }
 
 pub(crate) fn compute_with_store(

@@ -20,8 +20,13 @@ use crate::lookup::{
 
 pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
     if name == "impact" {
-        let report = crate::impact::compute_current(repo, &required_string(args, "rev_range")?)?;
         let limit = limit(args, crate::impact::DEFAULT_LIMIT);
+        let report = crate::impact::compute_current_with_expect(
+            repo,
+            &required_string(args, "rev_range")?,
+            &strings(args, "expect"),
+            limit,
+        )?;
         return Ok(crate::impact::to_json(&report, limit));
     }
     if name == "ask" {
@@ -43,18 +48,7 @@ pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
         );
     }
     if name == "overlap" {
-        let ranges: Vec<String> = args
-            .get("ranges")
-            .and_then(Value::as_array)
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
-        let (maps, pairs) = crate::overlap::compute_current(repo, &ranges)?;
+        let (maps, pairs) = crate::overlap::compute_current(repo, &strings(args, "ranges"))?;
         return Ok(crate::overlap::to_json(&maps, &pairs));
     }
 
@@ -87,6 +81,20 @@ pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
             let limit = limit(args, crate::show::DEFAULT_LIMIT);
             let mut out = crate::show::edges_json(repo, store, &node, &filter, limit)?;
             out["symbol"] = scoped_node_json(&node, &scopes);
+            if args.get("body").and_then(Value::as_bool).unwrap_or(false) {
+                let lines = args
+                    .get("context_lines")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(crate::show::DEFAULT_BODY_LINES as u64)
+                    as usize;
+                // Same producer as CLI `--body`, so the excerpt is the same
+                // bytes; absent (unreadable file) it stays absent, not empty.
+                if let Some(body) =
+                    crate::show::excerpt(repo, &node.file, node.span.start, node.span.end, lines)
+                {
+                    out["excerpt"] = json!(body);
+                }
+            }
             Ok(out)
         }
         "query" => {
@@ -111,6 +119,23 @@ pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
             }))
         }
         "context" => crate::context::response(repo, store, &required_string(args, "task")?),
+        "grep" => {
+            let within = strings(args, "within");
+            if within.is_empty() {
+                anyhow::bail!(
+                    "missing required parameter `within` (e.g. [\"affected(Store::open)\"])"
+                );
+            }
+            crate::grep::json(
+                store,
+                repo,
+                &required_string(args, "pattern")?,
+                &within,
+                &traversal_filter(args)?,
+                args.get("max_depth").and_then(Value::as_u64).unwrap_or(10) as usize,
+                limit(args, 100),
+            )
+        }
         "affected" => affected(repo, store, args),
         "deps" => dependencies(repo, store, args),
         "path" => path(repo, store, args),
@@ -133,6 +158,20 @@ pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
         result["snapshot"] = json!(snapshot);
     }
     Ok(result)
+}
+
+/// A string-array argument, absent or malformed entries dropped.
+fn strings(args: &Value, key: &str) -> Vec<String> {
+    args.get(key)
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn affected(repo: &Path, store: &sinter_store::Store, args: &Value) -> Result<Value> {

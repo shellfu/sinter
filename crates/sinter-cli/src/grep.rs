@@ -119,20 +119,10 @@ fn scan(
     Some(total)
 }
 
-/// `sinter grep`: regex search over the files a graph traversal reached.
-/// Ok(true) when anything matched (grep-style exit codes).
-pub fn run(
-    repo: &Path,
-    pattern: &str,
-    within: &[String],
-    filter: &EdgeFilter,
-    max_depth: usize,
-    limit: usize,
-    json: bool,
-) -> Result<bool> {
-    // One line, not regex's multi-line diagnostic: the JSON failure envelope
-    // splits a multi-line message into a candidate list.
-    let compiled = Regex::new(pattern).map_err(|error| {
+/// One line, not regex's multi-line diagnostic: the JSON failure envelope
+/// splits a multi-line message into a candidate list.
+fn compile(pattern: &str) -> Result<Regex> {
+    Regex::new(pattern).map_err(|error| {
         let text = error.to_string();
         let detail = text
             .lines()
@@ -142,17 +132,35 @@ pub fn run(
             .trim()
             .trim_start_matches("error: ");
         anyhow::anyhow!("invalid regex `{pattern}`: {detail}")
-    })?;
+    })
+}
+
+/// The `sinter grep` payload: what CLI `--json` prints and what the MCP
+/// `grep` tool returns, produced once so the two cannot drift.
+///
+/// The store handle belongs to the caller. `serve` opens one per call with
+/// `open_current` after its own freshness pass; a reader opened here would
+/// outlive nothing but would bypass that ownership, and a session-lived one
+/// holds redb's lock against the next rebuild.
+pub(crate) fn json(
+    store: &Store,
+    repo: &Path,
+    pattern: &str,
+    within: &[String],
+    filter: &EdgeFilter,
+    max_depth: usize,
+    limit: usize,
+) -> Result<serde_json::Value> {
+    let compiled = compile(pattern)?;
     let bounds: Vec<Within> = within
         .iter()
         .map(|w| parse_within(w))
         .collect::<Result<_>>()?;
-    let store = open_store(repo)?;
-    let snapshot = ensure_snapshot(&store, None)?;
+    let snapshot = ensure_snapshot(store, None)?;
     let root = crate::pipeline::discover_root(repo);
     let mut per_within = Vec::with_capacity(bounds.len());
     for bound in &bounds {
-        per_within.push(files_of(&store, bound, filter, max_depth)?);
+        per_within.push(files_of(store, bound, filter, max_depth)?);
     }
     let files = union_files(per_within);
 
@@ -171,34 +179,65 @@ pub fn run(
         }
     }
 
-    if json {
-        let mut out = serde_json::json!({
-            "status": if total > 0 { "found" } else { "not_proven" },
-            "snapshot": snapshot,
-            "pattern": pattern,
-            "within": within,
-            "files_in_bound": files.len(),
-            "files_searched": searched,
-            "total": total,
-            "matches": hits.iter().map(|h| serde_json::json!({
-                "f": h.file,
-                "l": h.line,
-                "t": h.text,
-            })).collect::<Vec<_>>(),
-        });
-        if total > hits.len() {
-            out["truncated"] = serde_json::json!(total - hits.len());
-        }
+    let mut out = serde_json::json!({
+        "status": if total > 0 { "found" } else { "not_proven" },
+        "snapshot": snapshot,
+        "pattern": pattern,
+        "within": within,
+        "files_in_bound": files.len(),
+        "files_searched": searched,
+        "total": total,
+        "matches": hits.iter().map(|h| serde_json::json!({
+            "f": h.file,
+            "l": h.line,
+            "t": h.text,
+        })).collect::<Vec<_>>(),
+    });
+    if total > hits.len() {
+        out["truncated"] = serde_json::json!(total - hits.len());
+    }
+    Ok(out)
+}
+
+/// `sinter grep`: regex search over the files a graph traversal reached.
+/// Ok(true) when anything matched (grep-style exit codes).
+pub fn run(
+    repo: &Path,
+    pattern: &str,
+    within: &[String],
+    filter: &EdgeFilter,
+    max_depth: usize,
+    limit: usize,
+    as_json: bool,
+) -> Result<bool> {
+    // Validated before the store is opened: `open_store` runs an incremental
+    // build scan, and an unusable pattern or `--within` must report as itself
+    // rather than pay for one. `json` re-checks for its own callers.
+    compile(pattern)?;
+    for spec in within {
+        parse_within(spec)?;
+    }
+    let store = open_store(repo)?;
+    let out = json(&store, repo, pattern, within, filter, max_depth, limit)?;
+    let total = out["total"].as_u64().unwrap_or(0) as usize;
+
+    if as_json {
         crate::agent_protocol::write_json(&out)?;
         return Ok(total > 0);
     }
 
+    let hits = out["matches"].as_array().map_or(&[][..], Vec::as_slice);
     println!(
-        "{total} matches · bound {} files ({searched} searched)",
-        files.len()
+        "{total} matches · bound {} files ({} searched)",
+        out["files_in_bound"], out["files_searched"]
     );
-    for hit in &hits {
-        println!("{}:{}: {}", hit.file, hit.line, hit.text);
+    for hit in hits {
+        println!(
+            "{}:{}: {}",
+            hit["f"].as_str().unwrap_or_default(),
+            hit["l"],
+            hit["t"].as_str().unwrap_or_default()
+        );
     }
     if total > hits.len() {
         println!(

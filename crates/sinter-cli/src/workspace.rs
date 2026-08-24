@@ -371,8 +371,8 @@ pub fn stale_members(ws: &Workspace) -> Result<Vec<String>> {
 
 // ---------------------------------------------------------------- traversal
 
-/// Cross-workspace reverse blast radius: BFS over member in-edges plus
-/// boundary in-links, nodes identified as (member, id).
+/// One node reached by a cross-workspace BFS over member edges plus
+/// boundary links, nodes identified as (member, id).
 pub struct WsReached {
     pub member: String,
     pub node: Node,
@@ -387,12 +387,61 @@ fn node_file(id: &str) -> &str {
     id.split_once('#').map_or(id, |(file, _)| file)
 }
 
+/// Which way traversal walks. Member edges and boundary links are directed
+/// the same way: a link's `src` is the member that referenced a foreign
+/// symbol, its `dst` the member that owns it. So reverse walks in-edges and
+/// in-links (who reaches this), forward walks out-edges and out-links (what
+/// this reaches). Getting this backwards yields plausible, wrong answers,
+/// so both verbs share one traversal and differ only by this flag.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    Reverse,
+    Forward,
+}
+
+/// Cross-workspace reverse blast radius: who transitively reaches `start`.
 pub fn dependents(
     ws: &Workspace,
     start_member: &str,
     start: &NodeId,
     filter: &sinter_store::EdgeFilter,
     max_depth: usize,
+) -> Result<Vec<WsReached>> {
+    traverse(
+        ws,
+        start_member,
+        start,
+        filter,
+        max_depth,
+        Direction::Reverse,
+    )
+}
+
+/// Cross-workspace forward blast radius: what `start` transitively reaches.
+pub fn dependencies(
+    ws: &Workspace,
+    start_member: &str,
+    start: &NodeId,
+    filter: &sinter_store::EdgeFilter,
+    max_depth: usize,
+) -> Result<Vec<WsReached>> {
+    traverse(
+        ws,
+        start_member,
+        start,
+        filter,
+        max_depth,
+        Direction::Forward,
+    )
+}
+
+fn traverse(
+    ws: &Workspace,
+    start_member: &str,
+    start: &NodeId,
+    filter: &sinter_store::EdgeFilter,
+    max_depth: usize,
+    direction: Direction,
 ) -> Result<Vec<WsReached>> {
     let links = LinkStore::open(ws)?;
     let mut stores = BTreeMap::new();
@@ -414,8 +463,16 @@ pub fn dependents(
         }
         let store = &stores[&member];
         let node_id = NodeId::new(id.clone());
-        for edge in store.in_edges(&node_id)? {
-            let file = node_file(edge.src.as_str());
+        let edges = match direction {
+            Direction::Reverse => store.in_edges(&node_id)?,
+            Direction::Forward => store.out_edges(&node_id)?,
+        };
+        for edge in edges {
+            let next = match direction {
+                Direction::Reverse => &edge.src,
+                Direction::Forward => &edge.dst,
+            };
+            let file = node_file(next.as_str());
             let scope = scope_maps[&member]
                 .get(file)
                 .copied()
@@ -423,11 +480,11 @@ pub fn dependents(
             if !filter.admits(&edge) || !filter.admits_scope(scope) {
                 continue;
             }
-            let key = (member.clone(), edge.src.as_str().to_string());
+            let key = (member.clone(), next.as_str().to_string());
             if !seen.insert(key.clone()) {
                 continue;
             }
-            if let Some(node) = store.node(&edge.src)? {
+            if let Some(node) = store.node(next)? {
                 out.push(WsReached {
                     member: member.clone(),
                     node,
@@ -438,7 +495,11 @@ pub fn dependents(
                 queue.push_back((key.0, key.1, depth + 1));
             }
         }
-        for link in links.in_links(&member, &id)? {
+        let boundary = match direction {
+            Direction::Reverse => links.in_links(&member, &id)?,
+            Direction::Forward => links.out_links(&member, &id)?,
+        };
+        for link in boundary {
             let admit = filter
                 .evidence
                 .as_ref()
@@ -450,21 +511,25 @@ pub fn dependents(
             if !admit {
                 continue;
             }
-            let file = node_file(&link.src_id);
-            let scope = scope_maps[&link.src_member]
+            let (next_member, next_id) = match direction {
+                Direction::Reverse => (&link.src_member, &link.src_id),
+                Direction::Forward => (&link.dst_member, &link.dst_id),
+            };
+            let file = node_file(next_id);
+            let scope = scope_maps[next_member]
                 .get(file)
                 .copied()
                 .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(file));
             if !filter.admits_scope(scope) {
                 continue;
             }
-            let key = (link.src_member.clone(), link.src_id.clone());
+            let key = (next_member.clone(), next_id.clone());
             if !seen.insert(key.clone()) {
                 continue;
             }
-            if let Some(node) = stores[&link.src_member].node(&NodeId::new(link.src_id.clone()))? {
+            if let Some(node) = stores[next_member].node(&NodeId::new(next_id.clone()))? {
                 out.push(WsReached {
-                    member: link.src_member.clone(),
+                    member: next_member.clone(),
                     node,
                     relation: link.relation,
                     evidence: link.evidence,

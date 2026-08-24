@@ -535,3 +535,218 @@ fn mcp_reports_snapshot_staleness_and_handle_relocation_as_typed_errors() {
         responses[1]
     );
 }
+
+/// One CLI read command in `--json` mode. Read verbs exit grep-style, so
+/// exit 1 (a valid query with no results) is not a harness failure.
+fn cli_json(repo: &Path, args: &[&str]) -> serde_json::Value {
+    let output = Command::new(env!("CARGO_BIN_EXE_sinter"))
+        .args(args)
+        .arg("--repo")
+        .arg(repo)
+        .output()
+        .expect("run sinter CLI");
+    assert!(
+        matches!(output.status.code(), Some(0 | 1)),
+        "sinter {args:?}: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("parse CLI JSON")
+}
+
+/// `grep` is the verb that removes a tool switch, so it has to exist over
+/// MCP, be advertised, and return exactly what the CLI returns.
+#[test]
+fn grep_is_advertised_and_matches_cli_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = build_repo(dir.path());
+
+    // `--scope all` on the CLI is the MCP default, left implicit here so the
+    // comparison also pins that default.
+    let cli = cli_json(
+        &repo,
+        &[
+            "grep",
+            "Base",
+            "--within",
+            "affected(Base)",
+            "--scope",
+            "all",
+            "--json",
+        ],
+    );
+    let responses = serve(
+        &repo,
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.to_string(),
+            call_tool(
+                2,
+                "grep",
+                serde_json::json!({"pattern": "Base", "within": ["affected(Base)"]}),
+            ),
+        ],
+    );
+
+    let tools = responses[0]["result"]["tools"].as_array().unwrap();
+    let grep = tools
+        .iter()
+        .find(|tool| tool["name"] == "grep")
+        .unwrap_or_else(|| panic!("grep missing from tools/list: {}", responses[0]));
+    assert_eq!(
+        grep["inputSchema"]["required"],
+        serde_json::json!(["pattern", "within"])
+    );
+    assert_eq!(grep["inputSchema"]["properties"]["within"]["type"], "array");
+
+    let mut data = body(&responses[1]);
+    assert_eq!(data["status"], "found", "{data}");
+    assert!(data["total"].as_u64().unwrap() > 0, "{data}");
+    assert!(data["matches"][0]["f"].is_string(), "{data}");
+    assert!(data["matches"][0]["l"].is_u64(), "{data}");
+    assert!(data["matches"][0]["t"].is_string(), "{data}");
+    // The envelope adds `legend` to any response carrying terse rows; the
+    // payload underneath must be the CLI document.
+    assert_eq!(
+        data["legend"].as_str().unwrap(),
+        "f=file l=line t=text",
+        "{data}"
+    );
+    data.as_object_mut().unwrap().remove("legend");
+    assert_eq!(data, cli, "MCP grep data diverged from CLI --json");
+    assert_eq!(
+        responses[1]["result"]["structuredContent"]["outcome"]["status"],
+        "complete"
+    );
+
+    // A bound that reaches nothing is a bounded answer, not an error.
+    let empty = serve(
+        &repo,
+        &[call_tool(
+            1,
+            "grep",
+            serde_json::json!({"pattern": "zzz_no_such_text", "within": ["file(lib.go)"]}),
+        )],
+    );
+    assert_eq!(body(&empty[0])["status"], "not_proven");
+    assert_eq!(
+        empty[0]["result"]["structuredContent"]["outcome"]["status"],
+        "not_proven"
+    );
+}
+
+/// `show --body` over MCP: the excerpt is the CLI's excerpt, and absent
+/// unless asked for.
+#[test]
+fn show_excerpt_matches_cli_json_and_is_omitted_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = build_repo(dir.path());
+
+    let cli = cli_json(
+        &repo,
+        &[
+            "show",
+            "Base",
+            "--scope",
+            "all",
+            "--json",
+            "--body",
+            "--context-lines",
+            "2",
+        ],
+    );
+    let responses = serve(
+        &repo,
+        &[
+            call_tool(
+                1,
+                "show",
+                serde_json::json!({"symbol": "Base", "body": true, "context_lines": 2}),
+            ),
+            call_tool(2, "show", serde_json::json!({"symbol": "Base"})),
+        ],
+    );
+
+    let with_body = body(&responses[0]);
+    assert!(
+        with_body["excerpt"]
+            .as_str()
+            .unwrap()
+            .contains("func Base()"),
+        "{with_body}"
+    );
+    assert_eq!(with_body, cli, "MCP show data diverged from CLI --json");
+    assert!(
+        body(&responses[1]).get("excerpt").is_none(),
+        "excerpt must be absent when not requested: {}",
+        responses[1]
+    );
+}
+
+/// `impact --expect` over MCP: the unfinished-refactor check, byte-identical
+/// to the CLI and omitted entirely when nothing is expected.
+#[test]
+fn impact_expect_matches_cli_json_and_is_omitted_when_unused() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = build_repo(dir.path());
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["add", "go.mod", "lib.go", "more.go"]);
+    git(&["commit", "-qm", "base"]);
+    // Only A1 is updated; A2/A3/A4 still call Base and are what `--expect`
+    // reports as owed.
+    let source = std::fs::read_to_string(repo.join("lib.go")).unwrap();
+    std::fs::write(
+        repo.join("lib.go"),
+        source.replace(
+            "func A1() int { return Base() }",
+            "func A1() int { return Base() + 1 }",
+        ),
+    )
+    .unwrap();
+    git(&["add", "lib.go"]);
+    git(&["commit", "-qm", "update A1"]);
+
+    let cli = cli_json(
+        &repo,
+        &["impact", "HEAD~1..HEAD", "--json", "--expect", "Base"],
+    );
+    let responses = serve(
+        &repo,
+        &[
+            call_tool(
+                1,
+                "impact",
+                serde_json::json!({"rev_range": "HEAD~1..HEAD", "expect": ["Base"]}),
+            ),
+            call_tool(
+                2,
+                "impact",
+                serde_json::json!({"rev_range": "HEAD~1..HEAD"}),
+            ),
+        ],
+    );
+
+    let expected = body(&responses[0]);
+    assert_eq!(expected["expect"][0]["symbol"], "Base", "{expected}");
+    assert!(
+        expected["expect"][0]["untouched_total"].as_u64().unwrap() > 0,
+        "{expected}"
+    );
+    assert_eq!(expected, cli, "MCP impact data diverged from CLI --json");
+    assert!(
+        body(&responses[1]).get("expect").is_none(),
+        "expect must be absent when not requested: {}",
+        responses[1]
+    );
+}

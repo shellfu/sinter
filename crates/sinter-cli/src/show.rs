@@ -22,7 +22,13 @@ pub const DEFAULT_BODY_LINES: usize = 10;
 /// First `lines` lines of the exact source at `file[start..end]`.
 /// Any failure — missing file, out-of-range or non-UTF8 span — degrades
 /// to `None` rather than panicking. Same approach as `context::excerpt`.
-fn excerpt(repo: &Path, file: &str, start: u64, end: u64, lines: usize) -> Option<String> {
+pub(crate) fn excerpt(
+    repo: &Path,
+    file: &str,
+    start: u64,
+    end: u64,
+    lines: usize,
+) -> Option<String> {
     let source = std::fs::read_to_string(repo.join(file)).ok()?;
     let start = (start as usize).min(source.len());
     let end = (end as usize).min(source.len()).max(start);
