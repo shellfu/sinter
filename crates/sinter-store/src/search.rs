@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use redb::{ReadableDatabase, ReadableTable};
+use redb::ReadableTable;
 use sinter_core::Node;
 
 use crate::error::StoreError;

@@ -14,13 +14,19 @@ recorded in `cases.json`. It contains 249 hand-labeled tasks: 3 exact lookups,
 checks. Each run builds syntax-only graphs, so the score represents Sinter's
 zero-config behavior without SCIP.
 
-The local corpus in `agent-flows.json` adds nine multi-step scenarios. Its
+The local corpus in `agent-flows.json` adds seventeen multi-step scenarios. Its
 orientation case checks labeled repository facts from Map: the expected module,
 dependency hub, documentation entry point, hub metric, and graph-health state.
 The remaining scenarios cover forward dependency analysis, reverse blast radius, test
 selection, ambiguity and unresolved-reference handling, diff impact,
 stable-handle reuse after a harmless edit, dirty-working-tree refresh, and
-MCP/CLI parity. Each flow starts from a fresh two-commit fixture under
+MCP/CLI parity. Eight more cover the 0.51/0.52 batched verbs: bounded content
+search (`grep --within`), refactor completeness (`impact --expect`), a bounded
+source excerpt (`show --body`), multi-seed blast radius, and a `context` task
+whose identifiers name real nodes. Three of those eight are `-old-way`
+counterparts that answer the same question with pre-0.51 verbs only, so a
+release-to-release run can separate flows both builds complete from flows only
+the new build can serve. Each flow starts from a fresh two-commit fixture under
 `fixtures/agent-flow/`; it never clones a repository or invokes an indexer.
 The runner records flow and step correctness, abstention failures,
 unsafe-confidence failures, tool-call count, output bytes, and stale or

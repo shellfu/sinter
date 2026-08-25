@@ -247,6 +247,239 @@
           "right": {"step": "mcp-query", "pointer": "/data"}
         }
       ]
+    },
+    {
+      "id": "bounded-content-search",
+      "capability": "bounded_content_search",
+      "steps": [
+        {
+          "kind": "cli",
+          "id": "grep-within-affected",
+          "args": ["grep", "dispatch\\(\\)", "--within", "affected(leaf)"],
+          "expect": [
+            {"pointer": "/status", "predicate": "equals", "value": "found"},
+            {"pointer": "/within", "predicate": "contains", "value": "affected(leaf)"},
+            {"pointer": "/files_in_bound", "predicate": "equals", "value": 1},
+            {"pointer": "/matches", "predicate": "contains", "value": {"f": "src/lib.rs", "t": "    dispatch()"}}
+          ]
+        },
+        {
+          "kind": "cli",
+          "id": "grep-within-deps",
+          "args": ["grep", "unavailable_dependency", "--within", "deps(entry)"],
+          "expect": [
+            {"pointer": "/within", "predicate": "contains", "value": "deps(entry)"},
+            {"pointer": "/matches", "predicate": "non_empty"},
+            {"pointer": "/files_searched", "predicate": "exists"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bounded-content-search-old-way",
+      "capability": "bounded_content_search",
+      "steps": [
+        {
+          "kind": "cli",
+          "id": "affected-leaf",
+          "args": ["affected", "leaf", "--relations", "calls"],
+          "expect": [
+            {"pointer": "/dependents", "predicate": "contains", "value": {"s": "dispatch"}}
+          ]
+        },
+        {
+          "kind": "cli",
+          "id": "show-dispatch",
+          "args": ["show", "dispatch"],
+          "expect": [
+            {"pointer": "/symbol/name", "predicate": "equals", "value": "dispatch"}
+          ]
+        },
+        {
+          "kind": "cli",
+          "id": "show-entry",
+          "args": ["show", "entry"],
+          "expect": [
+            {"pointer": "/symbol/name", "predicate": "equals", "value": "entry"}
+          ]
+        },
+        {
+          "kind": "cli",
+          "id": "show-test",
+          "args": ["show", "tests::dispatch_works"],
+          "expect": [
+            {"pointer": "/symbol/name", "predicate": "equals", "value": "dispatch_works"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "refactor-completeness",
+      "capability": "refactor_completeness",
+      "steps": [
+        {
+          "kind": "cli",
+          "id": "impact-expect-leaf",
+          "args": ["impact", "HEAD~1..HEAD", "--expect", "leaf"],
+          "expect": [
+            {"pointer": "/changed_symbols", "predicate": "contains", "value": {"qualified": "leaf"}},
+            {"pointer": "/expect", "predicate": "contains", "value": {"symbol": "leaf", "untouched_total": 1}},
+            {"pointer": "/expect/0/untouched", "predicate": "contains", "value": {"qualified": "dispatch"}}
+          ]
+        },
+        {
+          "kind": "cli",
+          "id": "impact-expect-two-symbols",
+          "args": ["impact", "HEAD~1..HEAD", "--expect", "leaf", "--expect", "dispatch"],
+          "expect": [
+            {"pointer": "/expect", "predicate": "contains", "value": {"symbol": "dispatch"}},
+            {"pointer": "/expect/1/untouched", "predicate": "contains", "value": {"qualified": "entry"}},
+            {"pointer": "/expect/1/untouched", "predicate": "contains", "value": {"qualified": "tests::dispatch_works"}}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "refactor-completeness-old-way",
+      "capability": "refactor_completeness",
+      "steps": [
+        {
+          "kind": "cli",
+          "id": "impact-range",
+          "args": ["impact", "HEAD~1..HEAD"],
+          "expect": [
+            {"pointer": "/changed_symbols", "predicate": "contains", "value": {"qualified": "leaf"}}
+          ]
+        },
+        {
+          "kind": "cli",
+          "id": "direct-dependents-of-changed",
+          "args": ["affected", "leaf", "--depth", "1", "--relations", "calls"],
+          "expect": [
+            {"pointer": "/dependents", "predicate": "contains", "value": {"s": "dispatch"}}
+          ]
+        },
+        {
+          "kind": "cli",
+          "id": "show-untouched-dependent",
+          "args": ["show", "dispatch"],
+          "expect": [
+            {"pointer": "/symbol/file", "predicate": "equals", "value": "src/lib.rs"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "symbol-body-without-file-read",
+      "capability": "symbol_body",
+      "steps": [
+        {
+          "kind": "cli",
+          "id": "show-body-dispatch",
+          "args": ["show", "dispatch", "--body"],
+          "expect": [
+            {"pointer": "/symbol/name", "predicate": "equals", "value": "dispatch"},
+            {"pointer": "/excerpt", "predicate": "contains", "value": "leaf()"},
+            {"pointer": "/outgoing", "predicate": "non_empty"}
+          ]
+        },
+        {
+          "kind": "cli",
+          "id": "show-body-leaf-bounded",
+          "args": ["show", "leaf", "--body", "--context-lines", "3"],
+          "expect": [
+            {"pointer": "/symbol/name", "predicate": "equals", "value": "leaf"},
+            {"pointer": "/excerpt", "predicate": "contains", "value": "pub fn leaf"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "multi-seed-blast-radius",
+      "capability": "multi_seed_blast_radius",
+      "steps": [
+        {
+          "kind": "cli",
+          "id": "affected-two-seeds",
+          "args": ["affected", "leaf", "dispatch", "--relations", "calls"],
+          "expect": [
+            {"pointer": "/symbols", "predicate": "contains", "value": {"name": "leaf"}},
+            {"pointer": "/symbols", "predicate": "contains", "value": {"name": "dispatch"}},
+            {"pointer": "/dependents", "predicate": "contains", "value": {"s": "entry", "seeds": "dispatch"}},
+            {"pointer": "/total", "predicate": "equals", "value": 3}
+          ]
+        },
+        {
+          "kind": "cli",
+          "id": "affected-three-seeds",
+          "args": ["affected", "leaf", "dispatch", "entry", "--relations", "calls"],
+          "expect": [
+            {"pointer": "/symbols", "predicate": "contains", "value": {"name": "entry"}},
+            {"pointer": "/dependents", "predicate": "contains", "value": {"s": "tests::dispatch_works"}}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "multi-seed-blast-radius-old-way",
+      "capability": "multi_seed_blast_radius",
+      "steps": [
+        {
+          "kind": "cli",
+          "id": "affected-seed-leaf",
+          "args": ["affected", "leaf", "--relations", "calls"],
+          "expect": [
+            {"pointer": "/dependents", "predicate": "contains", "value": {"s": "dispatch"}}
+          ]
+        },
+        {
+          "kind": "cli",
+          "id": "affected-seed-dispatch",
+          "args": ["affected", "dispatch", "--relations", "calls"],
+          "expect": [
+            {"pointer": "/dependents", "predicate": "contains", "value": {"s": "entry"}}
+          ]
+        },
+        {
+          "kind": "cli",
+          "id": "affected-seed-entry",
+          "args": ["affected", "entry", "--relations", "calls"],
+          "expected_exit": 1,
+          "expect": [
+            {"pointer": "/status", "predicate": "equals", "value": "not_proven"},
+            {"pointer": "/total", "predicate": "equals", "value": 0}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "context-seeds-from-task-identifiers",
+      "capability": "task_context",
+      "steps": [
+        {
+          "kind": "cli",
+          "id": "context-named-symbols",
+          "args": ["context", "change dispatch so leaf returns a different value"],
+          "expect": [
+            {"pointer": "/anchors", "predicate": "contains", "value": {"qualified": "dispatch", "term": "dispatch"}},
+            {"pointer": "/anchors", "predicate": "contains", "value": {"qualified": "leaf", "term": "leaf"}},
+            {"pointer": "/candidates/0/qualified", "predicate": "equals", "value": "dispatch"},
+            {"pointer": "/candidates/0/why/channels", "predicate": "contains", "value": "identifier"},
+            {"pointer": "/tests", "predicate": "contains", "value": {"qualified": "tests::dispatch_works"}}
+          ]
+        },
+        {
+          "kind": "cli",
+          "id": "context-unknown-identifier",
+          "args": ["context", "rename nonexistent_symbol_xyz across the crate"],
+          "expected_exit": 1,
+          "expect": [
+            {"pointer": "/outcome", "predicate": "equals", "value": "abstain"},
+            {"pointer": "/gaps/abstain_reason", "predicate": "equals", "value": "no_match"},
+            {"pointer": "/candidates", "predicate": "equals", "value": []}
+          ]
+        }
+      ]
     }
   ]
 }

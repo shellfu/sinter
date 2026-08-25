@@ -119,13 +119,51 @@ impl Store {
     /// Read a database's schema stamp without opening for write and
     /// without triggering the wipe-on-mismatch in [`Store::create`].
     pub fn schema_of(path: impl AsRef<Path>) -> Result<Option<u32>, StoreError> {
-        Self::open(path)?.schema()
+        let path = path.as_ref();
+        match Self::open_read_only(path) {
+            Ok(store) => store.schema(),
+            // Unclean shutdown: only a writable open can repair it.
+            Err(_) => Self::open(path)?.schema(),
+        }
     }
 }
 
 /// Persistent graph store. Point queries never load the whole graph.
 pub struct Store {
-    pub(crate) db: Database,
+    pub(crate) db: Db,
+}
+
+/// A store is opened for writing or for reading. redb's writable
+/// `Database` rewrites the file header on open and persists allocator
+/// state on close — a read-only query that opens one mutates 16MB of
+/// content-addressed graph and takes the exclusive lock while doing it.
+/// `ReadOnlyDatabase` takes a shared lock and writes nothing at all.
+pub(crate) enum Db {
+    Writable(Database),
+    ReadOnly(redb::ReadOnlyDatabase),
+}
+
+impl Db {
+    pub(crate) fn begin_read(&self) -> Result<redb::ReadTransaction, redb::TransactionError> {
+        match self {
+            Self::Writable(db) => db.begin_read(),
+            Self::ReadOnly(db) => db.begin_read(),
+        }
+    }
+
+    pub(crate) fn begin_write(&self) -> Result<redb::WriteTransaction, StoreError> {
+        match self {
+            Self::Writable(db) => Ok(db.begin_write()?),
+            Self::ReadOnly(_) => Err(StoreError::ReadOnly),
+        }
+    }
+
+    fn compact(&mut self) -> Result<bool, StoreError> {
+        match self {
+            Self::Writable(db) => Ok(db.compact()?),
+            Self::ReadOnly(_) => Err(StoreError::ReadOnly),
+        }
+    }
 }
 
 /// redb opens are exclusive, so a query racing a short-lived build (or a
@@ -135,10 +173,10 @@ pub struct Store {
 /// longer budget: file locks release lazily after process exit (handle
 /// teardown + AV scans), so a waiter there can outlive 5s of real
 /// contention that unix clears instantly.
-pub(crate) fn open_retrying(
+pub(crate) fn open_retrying<D>(
     path: &Path,
-    open: fn(&Path) -> Result<Database, redb::DatabaseError>,
-) -> Result<Database, redb::DatabaseError> {
+    open: fn(&Path) -> Result<D, redb::DatabaseError>,
+) -> Result<D, redb::DatabaseError> {
     let budget = std::time::Duration::from_secs(if cfg!(windows) { 20 } else { 5 });
     let started = std::time::Instant::now();
     let mut delay = std::time::Duration::from_millis(10);
@@ -192,7 +230,7 @@ impl Store {
             }
         }
         let store = Self {
-            db: open_retrying(path, |p| Database::create(p))?,
+            db: Db::Writable(open_retrying(path, |p| Database::create(p))?),
         };
         let txn = store.db.begin_write()?;
         {
@@ -224,8 +262,26 @@ impl Store {
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         Ok(Self {
-            db: open_retrying(path.as_ref(), |p| Database::open(p))?,
+            db: Db::Writable(open_retrying(path.as_ref(), |p| Database::open(p))?),
         })
+    }
+
+    /// Open for reading only: shared lock, and not one byte written — no
+    /// header stamp on open, no allocator flush on close. Every read verb
+    /// wants this. Errors if the database needs repair (an unclean
+    /// shutdown); the caller falls back to [`Store::open`], which repairs.
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        Ok(Self {
+            db: Db::ReadOnly(open_retrying(path.as_ref(), |p| {
+                redb::ReadOnlyDatabase::open(p)
+            })?),
+        })
+    }
+
+    /// True when this handle cannot write; the build path upgrades to a
+    /// writable handle only once it has real work.
+    pub fn is_read_only(&self) -> bool {
+        matches!(self.db, Db::ReadOnly(_))
     }
 
     /// The schema stamp of this open database, if any.

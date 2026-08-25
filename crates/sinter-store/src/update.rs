@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use redb::{ReadableDatabase, ReadableMultimapTable, ReadableTable};
+use redb::{ReadableMultimapTable, ReadableTable};
 use sinter_core::{CorpusScope, Edge, Evidence, FileFacts, UnresolvedReference};
 
 use crate::error::StoreError;

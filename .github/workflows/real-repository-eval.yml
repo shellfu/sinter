@@ -1,9 +1,15 @@
+# Pinned real-repository accuracy scorecard. Network-dependent (clones
+# public repos), so it lives outside `make gate`, which stays offline.
+# Triggers: weekly cron as early warning between releases, on demand, and
+# — via workflow_call — as a blocking job in release.yml, where a red
+# scorecard stops the release before anything is published.
 name: real-repository-eval
 
 on:
   schedule:
     - cron: "41 4 * * 1"
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read

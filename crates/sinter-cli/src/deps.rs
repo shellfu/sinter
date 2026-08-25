@@ -85,6 +85,10 @@ pub fn run(
         if total > limit {
             out["truncated"] = serde_json::json!(total - limit);
         }
+        if total == 0 {
+            out["verify_with"] =
+                serde_json::json!(format!("sinter unresolved --name {}", node.name));
+        }
         out["coverage"] =
             crate::coverage::traversal_json(&root, &store, filter, evidence, total > 0)?;
         crate::agent_protocol::write_json(&out)?;
@@ -97,6 +101,9 @@ pub fn run(
             qualified_of(node.id.as_str()),
             node.file
         );
+        // A blind graph and a leaf symbol look identical here; `unresolved`
+        // is the verb that tells them apart.
+        println!("  verify: sinter unresolved --name {}", node.name);
     } else {
         println!(
             "{} dependencies of {} ({})",

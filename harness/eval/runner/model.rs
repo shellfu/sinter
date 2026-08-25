@@ -130,6 +130,11 @@ pub enum AgentCapability {
     StableHandleReuse,
     DirtyEdit,
     McpCliParity,
+    BoundedContentSearch,
+    RefactorCompleteness,
+    SymbolBody,
+    MultiSeedBlastRadius,
+    TaskContext,
 }
 
 impl AgentCapability {
@@ -144,6 +149,11 @@ impl AgentCapability {
             Self::StableHandleReuse => "stable_handle_reuse",
             Self::DirtyEdit => "dirty_edit",
             Self::McpCliParity => "mcp_cli_parity",
+            Self::BoundedContentSearch => "bounded_content_search",
+            Self::RefactorCompleteness => "refactor_completeness",
+            Self::SymbolBody => "symbol_body",
+            Self::MultiSeedBlastRadius => "multi_seed_blast_radius",
+            Self::TaskContext => "task_context",
         }
     }
 }

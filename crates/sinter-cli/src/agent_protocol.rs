@@ -220,6 +220,14 @@ fn summary(operation: &str, data: &Value) -> String {
             .map_or_else(String::new, |s| format!(" {s}")),
         _ => String::new(),
     });
+    // The verdict is already in the payload; many clients surface only
+    // `content[]`, so a negative must say so in the line an agent reads
+    // first. Held out of `line` until the end so truncation cannot eat it.
+    let status_note = match data.get("status").and_then(Value::as_str) {
+        None | Some("found") => String::new(),
+        Some("not_proven") => " NOT PROVEN (absence unproven);".to_string(),
+        Some(other) => format!(" status {other};"),
+    };
     let mut line = format!("{operation}{subject}:");
     if let Some(total) = data.get("total").and_then(Value::as_u64) {
         line.push_str(&format!(" total {total};"));
@@ -241,14 +249,16 @@ fn summary(operation: &str, data: &Value) -> String {
         Some(Value::Bool(true)) => line.push_str(" truncated;"),
         _ => {}
     }
+    line.push_str(&status_note);
     line.push_str(" see structuredContent");
     if line.len() > 200 {
+        let cap = 176usize.saturating_sub(status_note.len());
         let cut = line
             .char_indices()
-            .take_while(|(i, _)| *i < 176)
+            .take_while(|(i, _)| *i < cap)
             .last()
             .map_or(0, |(i, _)| i);
-        line = format!("{}… see structuredContent", &line[..cut]);
+        line = format!("{}…{status_note} see structuredContent", &line[..cut]);
     }
     line
 }
@@ -923,6 +933,7 @@ mod tests {
     #[test]
     fn terse_rows_get_a_legend_and_a_summary_line() {
         let payload = json!({
+            "status": "found",
             "symbol": "Store::in_edges",
             "total": 71,
             "dependents": [{"s": "a", "k": "fn", "f": "a.rs", "e": "calls", "c": "certain", "d": 1}],
@@ -958,6 +969,63 @@ mod tests {
         )
         .unwrap();
         assert!(paged["structuredContent"]["data"].get("legend").is_none());
+    }
+
+    #[test]
+    fn a_negative_summary_says_not_proven_in_the_text_line() {
+        // The one line many MCP clients surface. Without the verdict it
+        // reads as "no callers"; the payload already knows better.
+        for (operation, payload) in [
+            (
+                "affected",
+                json!({"status": "not_proven", "symbol": "orphan_wipe", "total": 0, "dependents": []}),
+            ),
+            (
+                "grep",
+                json!({"status": "not_proven", "pattern": "x", "total": 0, "matches": []}),
+            ),
+        ] {
+            let text = mcp_success(operation, &payload).unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert!(text.contains("NOT PROVEN (absence unproven)"), "{text}");
+            assert!(text.len() <= 200, "{text}");
+        }
+        assert_eq!(
+            mcp_success(
+                "affected",
+                &json!({"status": "not_proven", "symbol": "orphan_wipe", "total": 0, "dependents": []})
+            )
+            .unwrap()["content"][0]["text"],
+            "affected orphan_wipe: total 0; NOT PROVEN (absence unproven); \
+             see structuredContent"
+        );
+        // A non-`found`, non-`not_proven` status is named, never dropped.
+        let partial = mcp_success(
+            "affected",
+            &json!({"status": "partial", "symbol": "x", "total": 0, "dependents": []}),
+        )
+        .unwrap();
+        assert_eq!(
+            partial["content"][0]["text"],
+            "affected x: total 0; status partial; see structuredContent"
+        );
+    }
+
+    #[test]
+    fn the_status_note_survives_summary_truncation() {
+        let mut payload = json!({"status": "not_proven", "total": 0});
+        for i in 0..40 {
+            payload[format!("list_with_a_long_name_{i}")] = json!([{"s": "a", "f": "b"}]);
+        }
+        let text = mcp_success("affected", &payload).unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(text.len() <= 200, "{} bytes: {text}", text.len());
+        assert!(text.contains("NOT PROVEN (absence unproven)"), "{text}");
+        assert!(text.ends_with("see structuredContent"), "{text}");
     }
 
     #[test]

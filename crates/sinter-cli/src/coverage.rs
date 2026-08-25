@@ -693,8 +693,16 @@ pub fn print_footer(
     snapshot: Option<&str>,
 ) -> Result<()> {
     let coverage = traversal_json(repo, store, filter, evidence, found)?;
+    print_traversal_footer(&coverage, snapshot);
+    Ok(())
+}
+
+/// The same footer from an envelope already built (and already carried in a
+/// `--json` payload), so a verb that has the coverage object does not
+/// recompute it to print one line.
+pub fn print_traversal_footer(coverage: &serde_json::Value, snapshot: Option<&str>) {
     let verbose = verbose();
-    println!("{}", footer_line(&coverage, snapshot));
+    println!("{}", footer_line(coverage, snapshot));
     if verbose {
         let relations = coverage["filters"]["relations"]["values"]
             .as_array()
@@ -717,10 +725,9 @@ pub fn print_footer(
                 .join(",")
         );
     }
-    for text in query_gaps(&coverage, verbose) {
+    for text in query_gaps(coverage, verbose) {
         println!("  gap: {text}");
     }
-    Ok(())
 }
 
 fn footer_line(coverage: &serde_json::Value, snapshot: Option<&str>) -> String {

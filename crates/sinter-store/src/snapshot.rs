@@ -1,6 +1,6 @@
 //! Deterministic identity of one committed graph snapshot.
 
-use redb::{ReadableDatabase, ReadableMultimapTable, ReadableTable};
+use redb::{ReadableMultimapTable, ReadableTable};
 
 use crate::error::StoreError;
 use crate::store::{FILE_HASH, FILE_SCOPE, FileStamp, META, NODES, OUT_EDGES, RESOLVE_META, Store};

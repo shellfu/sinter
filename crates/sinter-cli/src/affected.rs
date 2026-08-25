@@ -94,6 +94,18 @@ fn entry_json(root: &Path, r: &Reached, scope: &str, seeds: Option<&[String]>) -
     entry
 }
 
+/// What to run next when the traversal reached nothing: the graph being
+/// blind and the symbol having no callers look identical here, and
+/// `unresolved` is the verb that tells them apart.
+fn verify_command(seeds: &[(String, Node)]) -> String {
+    let names = seeds
+        .iter()
+        .map(|(_, node)| node.name.as_str())
+        .collect::<Vec<_>>()
+        .join("; sinter unresolved --name ");
+    format!("sinter unresolved --name {names}")
+}
+
 /// `sinter affected`: reverse blast radius — everything transitively
 /// depending on the seed symbols, cross-file, unioned and deduplicated.
 /// Ok(true) when any dependent (or external reference site) was found
@@ -301,6 +313,9 @@ pub fn run(
         if total > limit {
             out["truncated"] = serde_json::json!(total - limit);
         }
+        if total == 0 {
+            out["verify_with"] = serde_json::json!(verify_command(&seeds));
+        }
         out["coverage"] =
             crate::coverage::traversal_json(&root, &store, filter, evidence, total > 0)?;
         crate::agent_protocol::write_json(&out)?;
@@ -310,6 +325,7 @@ pub fn run(
     let label = seed_label(&seeds);
     if total == 0 {
         println!("not proven: 0 dependents observed for {label}");
+        println!("  verify: {}", verify_command(&seeds));
     } else {
         let imports = if importing_files > 0 {
             format!("; {importing_files} file(s) import it")

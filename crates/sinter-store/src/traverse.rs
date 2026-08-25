@@ -3,7 +3,6 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
-use redb::ReadableDatabase;
 use sinter_core::{Confidence, CorpusScope, Edge, Evidence, Node, NodeId, Relation};
 
 use crate::error::StoreError;

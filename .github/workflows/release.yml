@@ -11,6 +11,12 @@ permissions:
   contents: write
 
 jobs:
+  # Accuracy is a release gate, not a newsletter: the eval runs on the tag
+  # and `publish` needs it, so a red scorecard stops the release (and the
+  # crates.io/PyPI/tap fan-out it dispatches) before anything ships.
+  eval:
+    uses: ./.github/workflows/real-repository-eval.yml
+
   build:
     strategy:
       matrix:
@@ -62,7 +68,7 @@ jobs:
             sinter-*.zip*
 
   publish:
-    needs: build
+    needs: [build, eval]
     runs-on: ubuntu-latest
     permissions:
       contents: write

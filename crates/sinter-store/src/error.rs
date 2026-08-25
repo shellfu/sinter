@@ -24,6 +24,8 @@ pub enum StoreError {
     NewerSchema { stored: u32, supported: u32 },
     #[error("facts compression error: {0}")]
     Compress(std::io::Error),
+    #[error("store opened read-only; this operation writes")]
+    ReadOnly,
     #[error("compaction error: {0}")]
     Compaction(#[from] redb::CompactionError),
 }

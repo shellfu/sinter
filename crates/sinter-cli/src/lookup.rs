@@ -212,7 +212,9 @@ pub(crate) fn open_current(repo: &Path) -> Result<Store> {
     if !path.exists() {
         bail!("no graph at {} — run `sinter build` first", path.display());
     }
-    let store = Store::open(&path)?;
+    // Reads take a shared lock and write nothing; only an unclean
+    // shutdown needs the writable handle, which repairs on open.
+    let store = Store::open_read_only(&path).or_else(|_| Store::open(&path))?;
     // A 0-node graph answers every query with "no match" — say what is
     // actually wrong instead.
     if store.node_count()? == 0 {

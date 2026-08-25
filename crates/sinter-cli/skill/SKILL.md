@@ -51,8 +51,10 @@ explicit build/refresh command for CI and scripts.
 If a graph exists but its health is uncertain, run `sinter doctor <repo>` and
 follow the named repair. When traversal reports missing compiler evidence or
 cannot prove a receiver-typed call, run `sinter scip <repo>` to add
-compiler-grade bindings. A negative result with incomplete coverage is
-`not_proven`, never proof of zero callers or dependencies.
+compiler-grade bindings. A negative result is `not_proven`, never proof of
+zero callers or dependencies: `coverage.conclusive` is always `false`, and
+`completeness: complete_for_indexed_snapshot` describes the index, not the
+running program.
 
 `sinter install enforce --strict` opts into strict enforcement: the first
 raw recursive search (grep/rg or the Grep tool) of a Claude Code session
@@ -104,9 +106,12 @@ human-oriented renderer. MCP `structuredContent` wraps that same payload as
 `{protocol, operation, outcome, data}`; the CLI value is exactly `data`.
 MCP's `content[0].text` is a one-line summary; read `structuredContent`. Repo-scope
 read verbs exit grep-style: 0 results found, 1 valid query with no results,
-2 error — branch on the exit code instead of parsing. In `--json` mode,
-errors are structured `sinter.agent.v1` outcomes; MCP exposes the identical
-failure under JSON-RPC `error.data`. `affected`/`path`/`deps` accept
+2 error — the exit code only decides whether to read further, since 1
+conflates `not_found` (the symbol was not matched) with `not_proven` (the
+graph could not see). Any negative claim must read `status` (CLI `--json`)
+or `outcome.status` (MCP). In `--json` mode, errors are structured
+`sinter.agent.v1` outcomes; MCP exposes the identical failure under
+JSON-RPC `error.data`. `affected`/`path`/`deps` accept
 `--evidence scip,import,scope,dynamic` and `--certain` (stronger evidence
 tiers) plus `--relations calls,uses,imports,implements,extends` —
 `--relations calls,uses` cuts file-level import noise from a blast

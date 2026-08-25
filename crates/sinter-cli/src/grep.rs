@@ -196,6 +196,18 @@ pub(crate) fn json(
     if total > hits.len() {
         out["truncated"] = serde_json::json!(total - hits.len());
     }
+    // An empty bound is a coverage answer, not a search answer: zero files
+    // searched must carry the same trust envelope the bounding traversal
+    // would have printed, or `0 matches` reads as proof.
+    if files.is_empty() {
+        out["coverage"] = crate::coverage::traversal_json(
+            &root,
+            store,
+            filter,
+            crate::coverage::TraversalEvidence::default(),
+            false,
+        )?;
+    }
     Ok(out)
 }
 
@@ -244,6 +256,9 @@ pub fn run(
             "{} more matches below cutoff · `sinter grep --limit {total}` to widen",
             total - hits.len()
         );
+    }
+    if let Some(coverage) = out.get("coverage") {
+        crate::coverage::print_traversal_footer(coverage, out["snapshot"].as_str());
     }
     Ok(total > 0)
 }

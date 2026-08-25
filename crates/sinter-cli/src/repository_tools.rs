@@ -71,7 +71,19 @@ pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
             Ok(crate::unresolved::to_json(&root, &classifier, &refs, limit))
         }
         "show" => {
-            let filter = traversal_filter(args)?;
+            // `show` reads only `relations` and `scope` (see `show::edges`);
+            // evidence and confidence are not part of its contract.
+            let mut filter = sinter_store::EdgeFilter {
+                relations: crate::lookup::relation_set(&strings(args, "relations"))?,
+                ..Default::default()
+            };
+            let selection = crate::corpus::ScopeSelection::from_json(
+                args,
+                crate::corpus::ScopeSelection::all(),
+            )?;
+            if !selection.is_all() {
+                filter.scopes = Some(selection.as_set());
+            }
             let node = unique_symbol_in(
                 store,
                 &required_string(args, "symbol")?,

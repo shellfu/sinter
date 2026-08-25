@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use redb::{ReadableDatabase, ReadableTable};
+use redb::ReadableTable;
 use sinter_core::{CorpusScope, Node};
 
 use crate::error::StoreError;

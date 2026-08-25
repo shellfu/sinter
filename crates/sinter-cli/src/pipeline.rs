@@ -350,9 +350,13 @@ pub fn build_with(
     // first build or schema change. Keeps a clean build write-free and
     // pays a single Database::open per build.
     let db = db_path(&repo);
+    // Read-only first: redb's writable handle stamps the file header on
+    // open and flushes allocator state on close, so merely opening one
+    // rewrites the graph file even when the build turns out to be a no-op.
+    // The handle upgrades to writable below, once there is real work.
     let mut store = match db
         .exists()
-        .then(|| Store::open(&db))
+        .then(|| Store::open_read_only(&db).or_else(|_| Store::open(&db)))
         .transpose()?
         .filter(|s| s.schema().ok().flatten() == Some(Store::CURRENT_SCHEMA))
     {
@@ -416,6 +420,95 @@ pub fn build_with(
         changed: changed_files.len(),
         removed: removed.len(),
     });
+    // Non-source resolution inputs can move bindings in files whose source
+    // did not change: a new/regenerated SCIP index, or a manifest edit that
+    // renames a module root (package rename with imports untouched). Either
+    // fingerprint changing re-resolves the whole corpus, but never
+    // re-extracts (facts are content-addressed and untouched). The index
+    // uses len:mtime, not a content hash — indexes run to hundreds of MB
+    // and this runs on every build.
+    // Index mtime serves twice: the resolve fingerprint, and the
+    // staleness signal below. Ingestion is unconditional when the file
+    // exists, so an index older than the corpus binds references the
+    // compiler last saw somewhere else — say so instead of ingesting it
+    // silently.
+    let scip_mtime = scip_index_path(&repo).and_then(|p| {
+        let meta = std::fs::metadata(&p).ok()?;
+        let nanos = modified_nanos(&meta);
+        Some((meta.len(), nanos))
+    });
+    let scip_fingerprint = scip_mtime.map(|(len, nanos)| format!("{len}:{nanos}"));
+    let scip_stale = scip_mtime.is_some_and(|(_, nanos)| newest_source_nanos > nanos);
+    let roots_fingerprint = {
+        let mut hasher = blake3::Hasher::new();
+        for root in &module_roots {
+            hasher.update(root.name.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(root.dir.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(root.language.as_bytes());
+            hasher.update(b"\n");
+        }
+        Some(hasher.finalize().to_hex().to_string())
+    };
+    let full_reresolve = store.resolve_fingerprint("scip")? != scip_fingerprint
+        || store.resolve_fingerprint("module_roots")? != roots_fingerprint;
+
+    // A no-op sync must be observably no-op: no write transaction, and no
+    // writable redb handle either. Every write this build could perform is
+    // already idempotent, so the whole build reduces to these predicates.
+    let residue_pending = store.pending_delta()?;
+    let stored_scopes = store.file_scopes()?;
+    let stamp_refresh_due = hashes.iter().any(|(f, s)| {
+        stored.get(f).is_some_and(|st| {
+            st.hash == s.hash && (st.identity_nanos, st.len) != (s.identity_nanos, s.len)
+        })
+    });
+    let idle = changed_files.is_empty()
+        && removed.is_empty()
+        && !full_reresolve
+        && !stamp_refresh_due
+        && residue_pending.def_names.is_empty()
+        && residue_pending.dependent_files.is_empty()
+        && scopes
+            .iter()
+            .all(|(file, scope)| stored_scopes.get(file) == Some(scope));
+    if idle {
+        let (total_nodes, total_edges, total_unresolved) = (
+            store.node_count()?,
+            store.edge_count()?,
+            store.unresolved_count()?,
+        );
+        on(Phase::Ready {
+            nodes: total_nodes,
+            edges: total_edges,
+            elapsed: started.elapsed(),
+        });
+        return Ok(BuildReport {
+            scanned: hashes.len(),
+            changed: 0,
+            removed: 0,
+            reresolved_files: 0,
+            syntax_error_files: Vec::new(),
+            failures: Vec::new(),
+            scip_disagreements: Vec::new(),
+            stats: sinter_resolve::ResolutionStats::default(),
+            dep_symbols: 0,
+            dep_packages: 0,
+            total_nodes,
+            total_edges,
+            total_unresolved,
+            elapsed: started.elapsed(),
+            scip_stale,
+            scope_rows_restamped: 0,
+        });
+    }
+    // Real work ahead: take the writable handle (and its exclusive lock).
+    if store.is_read_only() {
+        // Drop the shared lock before asking for the exclusive one.
+        drop(store);
+        store = Store::open(&db)?;
+    }
 
     // Extract changed files in parallel, extractors pooled per language.
     let mut by_lang: Vec<(&'static LanguageSpec, Vec<&str>)> = Vec::new();
@@ -501,39 +594,6 @@ pub fn build_with(
     for file in &removed {
         affected.remove(file);
     }
-    // Non-source resolution inputs can move bindings in files whose source
-    // did not change: a new/regenerated SCIP index, or a manifest edit that
-    // renames a module root (package rename with imports untouched). Either
-    // fingerprint changing re-resolves the whole corpus, but never
-    // re-extracts (facts are content-addressed and untouched). The index
-    // uses len:mtime, not a content hash — indexes run to hundreds of MB
-    // and this runs on every build.
-    // Index mtime serves twice: the resolve fingerprint, and the
-    // staleness signal below. Ingestion is unconditional when the file
-    // exists, so an index older than the corpus binds references the
-    // compiler last saw somewhere else — say so instead of ingesting it
-    // silently.
-    let scip_mtime = scip_index_path(&repo).and_then(|p| {
-        let meta = std::fs::metadata(&p).ok()?;
-        let nanos = modified_nanos(&meta);
-        Some((meta.len(), nanos))
-    });
-    let scip_fingerprint = scip_mtime.map(|(len, nanos)| format!("{len}:{nanos}"));
-    let scip_stale = scip_mtime.is_some_and(|(_, nanos)| newest_source_nanos > nanos);
-    let roots_fingerprint = {
-        let mut hasher = blake3::Hasher::new();
-        for root in &module_roots {
-            hasher.update(root.name.as_bytes());
-            hasher.update(b"\0");
-            hasher.update(root.dir.as_bytes());
-            hasher.update(b"\0");
-            hasher.update(root.language.as_bytes());
-            hasher.update(b"\n");
-        }
-        Some(hasher.finalize().to_hex().to_string())
-    };
-    let full_reresolve = store.resolve_fingerprint("scip")? != scip_fingerprint
-        || store.resolve_fingerprint("module_roots")? != roots_fingerprint;
     if full_reresolve {
         affected.extend(hashes.iter().map(|(f, _)| f.clone()));
         for file in &removed {
