@@ -89,27 +89,28 @@ pub fn db_path(repo: &Path) -> PathBuf {
 /// Resolve the graph root for a path without crossing repository ownership.
 /// Inside Git, the nearest `.sinter` on the way to the repository boundary
 /// wins; otherwise the `.git` directory or worktree file is the root for a
-/// first build. Outside Git, only the requested path can own the graph: an
-/// unrelated ancestor marker must never capture it.
+/// first build. Outside Git, the nearest ancestor `.sinter` owns the graph.
 pub fn discover_root(path: &Path) -> PathBuf {
     let Ok(canon) = path.canonicalize() else {
         return path.to_path_buf();
     };
-    if canon.join(".sinter").is_dir() {
-        return canon;
-    }
-    let Some(git_root) = canon.ancestors().find(|dir| dir.join(".git").exists()) else {
-        return canon;
-    };
+    let git_root = canon.ancestors().find(|dir| dir.join(".git").exists());
+    nearest_graph_root(&canon, git_root)
+}
+
+/// Select a graph root under an already-resolved repository boundary. Keeping
+/// boundary detection outside this function makes the non-Git contract
+/// testable without inheriting `.git` markers from the test host.
+fn nearest_graph_root(canon: &Path, git_root: Option<&Path>) -> PathBuf {
     for current in canon.ancestors() {
         if current.join(".sinter").is_dir() {
             return current.to_path_buf();
         }
-        if current == git_root {
-            return git_root.to_path_buf();
+        if git_root == Some(current) {
+            return current.to_path_buf();
         }
     }
-    canon
+    canon.to_path_buf()
 }
 
 /// The SCIP index to ingest, if any: `sinter scip` writes .sinter/index.scip;
@@ -1095,6 +1096,20 @@ mod tests {
         std::fs::create_dir_all(&nested).unwrap();
 
         assert_eq!(discover_root(&nested), repo.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn graph_discovery_finds_a_non_git_graph_without_host_git_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let nested = repo.join("src/deep");
+        std::fs::create_dir_all(repo.join(".sinter")).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+
+        assert_eq!(
+            nearest_graph_root(&nested.canonicalize().unwrap(), None),
+            repo.canonicalize().unwrap()
+        );
     }
 
     /// Compaction is maintenance, not construction: the graph must be
