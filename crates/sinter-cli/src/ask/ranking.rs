@@ -628,7 +628,7 @@ pub(super) fn score_candidates(
     sort_hits(&mut hits);
     apply_callee_evidence(store, query, rarest, &mut hits)?;
     sort_hits(&mut hits);
-    Ok(collapse_same_name(hits))
+    Ok(cluster_same_name(collapse_same_name(hits)))
 }
 
 /// Relational planner: for each neighbouring topic pair, a leading hit on
@@ -728,6 +728,40 @@ fn collapse_same_name(hits: Vec<Hit>) -> Vec<Hit> {
         }
     }
     kept
+}
+
+/// One bare name is one answer with several homes: `add_url_rule` on four
+/// types, `getRawType` on two. Rank order scatters that family, so the
+/// member a question means can sit past the visible top-k behind its own
+/// namesakes, separated by evidence too thin to tell them apart. Emit each
+/// name as one contiguous run at its best rank.
+///
+/// Bounded two ways, because an unbounded pull drags junk into the window:
+/// a namesake joins only from within `NAME_RUN_SPAN` ranks of the run's
+/// leader (further down it lost on evidence, not on tie-breaking), and only
+/// from a different file, since same file and same name is an overload
+/// rather than a second answer.
+const NAME_RUN_SPAN: usize = 4;
+
+fn cluster_same_name(hits: Vec<Hit>) -> Vec<Hit> {
+    let mut runs: Vec<Vec<Hit>> = Vec::new();
+    let mut leader_rank: Vec<usize> = Vec::new();
+    let mut run_of: HashMap<String, usize> = HashMap::new();
+    for (rank, hit) in hits.into_iter().enumerate() {
+        let joins = run_of.get(hit.node.name.as_str()).copied().filter(|&at| {
+            rank - leader_rank[at] <= NAME_RUN_SPAN
+                && runs[at].iter().all(|kept| kept.node.file != hit.node.file)
+        });
+        match joins {
+            Some(at) => runs[at].push(hit),
+            None => {
+                run_of.insert(hit.node.name.clone(), runs.len());
+                leader_rank.push(rank);
+                runs.push(vec![hit]);
+            }
+        }
+    }
+    runs.into_iter().flatten().collect()
 }
 
 fn sort_hits(hits: &mut [Hit]) {
@@ -948,9 +982,10 @@ fn apply_family_boost(hits: &mut [Hit]) {
 mod tests {
     use super::super::query::{Query, identifier_tokens};
     use super::{
-        CONNECTED_PERMILLE, Hit, IDF_CEILING_PERMILLE, IDF_FLOOR_PERMILLE, PRIOR_PRODUCTION,
-        PT_DOC, ScoreBreakdown, boost_connected, combine, doc_phrase_hits, idf_permille,
-        name_phrase_hits, owner_of, scope_prior, shares_prefix, weigh,
+        CONNECTED_PERMILLE, Hit, IDF_CEILING_PERMILLE, IDF_FLOOR_PERMILLE, NAME_RUN_SPAN,
+        PRIOR_PRODUCTION, PT_DOC, ScoreBreakdown, boost_connected, cluster_same_name, combine,
+        doc_phrase_hits, idf_permille, name_phrase_hits, owner_of, scope_prior, shares_prefix,
+        weigh,
     };
     use sinter_core::{CorpusScope, Node, NodeId, Span, SymbolKind};
 
@@ -1029,6 +1064,54 @@ mod tests {
             variants: Vec::new(),
             parent: None,
         }
+    }
+
+    fn named(name: &str, file: &str) -> Hit {
+        let mut hit = hit(name, 0);
+        hit.node.id = NodeId::new(format!("{file}#{name}"));
+        hit.node.file = file.to_owned();
+        hit
+    }
+
+    #[test]
+    fn same_name_hits_are_emitted_as_one_run() {
+        // `add_url_rule` on three types, scattered by evidence: the run
+        // leader pulls the two below it up behind itself. `route`, which
+        // sat between them, drops to the end of the run.
+        let clustered = cluster_same_name(vec![
+            named("add_url_rule", "blueprints.py"),
+            named("route", "scaffold.py"),
+            named("add_url_rule", "scaffold.py"),
+            named("add_url_rule", "app.py"),
+        ]);
+        let files = clustered
+            .iter()
+            .map(|hit| hit.node.file.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            files,
+            ["blueprints.py", "scaffold.py", "app.py", "scaffold.py"]
+        );
+    }
+
+    #[test]
+    fn a_run_takes_neither_overloads_nor_distant_namesakes() {
+        let mut hits = vec![named("parseReader", "JsonParser.java")];
+        // Same name, same file: an overload, not a second answer.
+        hits.push(named("parseReader", "JsonParser.java"));
+        // Same name, different file, but past NAME_RUN_SPAN.
+        for step in 0..NAME_RUN_SPAN {
+            hits.push(named(&format!("filler{step}"), "other.java"));
+        }
+        hits.push(named("parseReader", "Streams.java"));
+        let clustered = cluster_same_name(hits);
+        let names = clustered
+            .iter()
+            .map(|hit| hit.node.id.as_str().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(names[0], "JsonParser.java#parseReader");
+        assert_eq!(names[1], "JsonParser.java#parseReader");
+        assert_eq!(names.last().unwrap(), "Streams.java#parseReader");
     }
 
     #[test]
