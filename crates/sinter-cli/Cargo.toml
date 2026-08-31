@@ -4,7 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "sinter command-line interface"
+description = "Persistent, evidence-backed code graph for coding agents"
+homepage = "https://getsinter.io"
+readme = "README.md"
+keywords = ["code-graph", "mcp", "coding-agents", "code-intelligence", "developer-tools"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "sinter"
