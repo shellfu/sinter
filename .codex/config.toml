@@ -1,0 +1,6 @@
+# BEGIN sinter (managed by `sinter install`; edits inside are overwritten)
+[mcp_servers.sinter]
+command = "sinter"
+args = ["serve", "--repo", "."]
+required = true
+# END sinter

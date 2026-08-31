@@ -1,12 +1,42 @@
 {
   "hooks": {
-    "SessionStart": [
+    "PreToolUse": [
       {
-        "matcher": "startup|resume|compact",
         "hooks": [
           {
-            "type": "command",
-            "command": "if test -r .rustkit/doctrine/core-rules.md; then cat .rustkit/doctrine/core-rules.md; else echo 'RustKit error: required .rustkit/doctrine/core-rules.md is missing or unreadable' >&2; exit 1; fi"
+            "command": "bash .claude/hooks/sinter-first.sh grep",
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash"
+      },
+      {
+        "hooks": [
+          {
+            "command": "bash .claude/hooks/sinter-first.sh greptool",
+            "type": "command"
+          }
+        ],
+        "matcher": "Grep"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "if test -r .rustkit/doctrine/core-rules.md; then cat .rustkit/doctrine/core-rules.md; else echo 'RustKit error: required .rustkit/doctrine/core-rules.md is missing or unreadable' >&2; exit 1; fi",
+            "type": "command"
+          }
+        ],
+        "matcher": "startup|resume|compact"
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "bash .claude/hooks/sinter-first.sh prompt",
+            "type": "command"
           }
         ]
       }
