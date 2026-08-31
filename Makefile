@@ -119,8 +119,9 @@ endif
 	$(MAKE) gate
 	sed -i 's/^version = ".*"/version = "$(VERSION)"/' Cargo.toml
 	sed -i -E 's/^(sinter-[a-z]+ = \{ version = )"[^"]+"/\1"$(VERSION)"/' Cargo.toml
+	sed -i 's/"version": "[^"]*"/"version": "$(VERSION)"/g' server.json
 	cargo update --workspace --quiet   # sync Cargo.lock to the new version
-	git add Cargo.toml Cargo.lock
+	git add Cargo.toml Cargo.lock server.json
 	git commit -m "chore: release $(VERSION)"
 	git tag "v$(VERSION)"
 	@echo "tagged v$(VERSION) — push with: git push origin main v$(VERSION)"

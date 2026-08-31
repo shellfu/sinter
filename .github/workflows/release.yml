@@ -96,10 +96,10 @@ jobs:
       # A release created with GITHUB_TOKEN does not emit a workflow-visible
       # `release: published` event, so the fan-out must be dispatched
       # explicitly (workflow_dispatch is exempt from that suppression).
-      - name: fan out to pypi, crates.io, and homebrew
+      - name: fan out to package channels and MCP Registry
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          for wf in pypi.yml crates.yml tap.yml; do
+          for wf in pypi.yml crates.yml tap.yml mcp-registry.yml; do
             gh workflow run "$wf" --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
           done

@@ -5,13 +5,16 @@ off a tag push: `release.yml` builds and publishes the GitHub release
 (attested binaries), and its final step dispatches the fan-out to
 `pypi.yml` (wheels via Trusted Publishing), `crates.yml` (five crates
 via crates.io Trusted Publishing), and `tap.yml` (Homebrew formula via
-the tap deploy key). One `git push origin main vX.Y.Z` reaches every
-channel; no long-lived credentials exist anywhere.
+the tap deploy key). `mcp-registry.yml` waits for the PyPI package, then
+publishes `server.json` to the official MCP Registry with GitHub OIDC.
+One `git push origin main vX.Y.Z` reaches every channel. The package and
+registry publishers use short-lived OIDC credentials.
 
 Versioning stays single-source: `make bump VERSION=x.y.z` rewrites both the
 `[workspace.package]` version and the `sinter-* = { version = "…" }` path-dep
 versions in the root `Cargo.toml` (path deps need an explicit version for
 crates.io; cargo does not support workspace-inherited dependency versions).
+It also updates the server and PyPI package versions in `server.json`.
 
 ## crates.io
 
@@ -92,6 +95,18 @@ Users then install with:
 ```sh
 brew install shellfu/tap/sinter
 ```
+
+## MCP Registry
+
+`server.json` publishes Sinter as `io.github.shellfu/sinter` and points MCP
+clients at the `sinter-io` PyPI package. The package README carries the
+matching `mcp-name` ownership marker required by the official registry.
+
+### Per release
+
+Nothing. `release.yml` dispatches `mcp-registry.yml`; that workflow waits for
+the matching PyPI version, authenticates with GitHub OIDC, and publishes the
+descriptor. It can also be dispatched manually after a failed registry run.
 
 ## Release attestation
 
