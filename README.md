@@ -193,6 +193,18 @@ stale-snapshot, relocated-handle, or ambiguous-candidate outcomes instead of
 silently rebinding. A symbol whose bare name is ambiguous can be addressed as
 `Name@file` or `Name@file:line` (`run@doctor.rs:175`).
 
+## Test Sinter on a real repository
+
+Sinter is recruiting ten design partners who use coding agents on repositories
+where dependency or blast-radius investigations are expensive. Bring one real
+task. The evaluation will compare the investigation with and without Sinter and
+record where the graph helped or failed.
+
+[Open a design-partner issue](https://github.com/shellfu/sinter/issues/new?template=design-partner.yml)
+to propose a public repository or describe a private repository without naming
+it. Do not include private source code, credentials, or customer information in
+the issue.
+
 ## Commands
 
 | Command | Purpose |

@@ -1,0 +1,63 @@
+name: Test Sinter on a repository
+description: Bring one real coding-agent task and help measure Sinter on it.
+title: "[design partner] "
+labels:
+  - design-partner
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Sinter is looking for ten repositories where coding agents spend too much time reconstructing dependencies or blast radius. Bring one real task. We will compare the investigation with and without Sinter and report where the graph helped or failed.
+
+        This issue is public. Do not include private repository names, source code, credentials, or customer information. For a private repository, describe only the language, approximate size, and task shape; follow-up can happen through your GitHub account.
+
+  - type: input
+    id: repository
+    attributes:
+      label: Public repository
+      description: Link the repository, or write "private" without naming it.
+      placeholder: https://github.com/owner/repository
+    validations:
+      required: true
+
+  - type: input
+    id: task
+    attributes:
+      label: Real investigation task
+      description: State the question the coding agent needs to answer.
+      placeholder: What depends on this authentication policy across the workspace?
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Repository shape
+      description: Include the primary languages, approximate file count, and monorepo or multi-repo layout.
+      placeholder: Rust and TypeScript, about 8,000 files, Cargo workspace with three services
+    validations:
+      required: true
+
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Coding agent
+      options:
+        - Claude Code
+        - Codex
+        - Cursor
+        - Other MCP client
+    validations:
+      required: true
+
+  - type: dropdown
+    id: publication
+    attributes:
+      label: May the anonymized result be published?
+      description: Publication is optional and will exclude source code and repository secrets.
+      options:
+        - Yes
+        - Ask me after the evaluation
+        - No
+    validations:
+      required: true
