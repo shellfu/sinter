@@ -131,6 +131,19 @@ sinter ask "where is payment settlement handled?" --workspace ./sinter-workspace
 The ranked results include each symbol's member prefix. Replace the example
 symbols in later commands with names returned from your workspace.
 
+Build one task packet across every declared member when a design spans
+repositories:
+
+```bash
+sinter context "change endpoint authorization" --workspace ./sinter-workspace.toml
+```
+
+The JSON packet includes `coverage.universe` with the canonical manifest path,
+workspace name, canonical member roots, and per-member coverage. Sinter
+searches only members declared in the manifest. Repositories that happen to
+share a parent directory are outside that universe until the manifest names
+them.
+
 ## Step 5 — Declaring Runtime Coupling
 
 Static imports cannot describe every distributed-system dependency. Add a
@@ -173,6 +186,16 @@ that owns the starting symbol:
 ```bash
 sinter affected auth:publish_settled --workspace ./sinter-workspace.toml
 ```
+
+Check a snapshot-scoped no-caller assertion across those same members:
+
+```bash
+sinter assert no-callers auth:publish_settled --workspace ./sinter-workspace.toml --json
+```
+
+Exit 0 means `holds_for_indexed_snapshot`. A caller returns `violated`; an
+incomplete member graph or unresolved matching reference returns `not_proven`.
+All three outcomes retain `coverage.conclusive: false`.
 
 Find the declared path from the billing consumer to the authentication
 publisher with this command:

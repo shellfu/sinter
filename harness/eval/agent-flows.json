@@ -480,6 +480,30 @@
           ]
         }
       ]
+    },
+    {
+      "id": "design-similarity-before-naming",
+      "capability": "design_similarity",
+      "steps": [
+        {
+          "kind": "cli",
+          "id": "ask-role-scope-shape",
+          "args": ["ask", "role to authorization scope mapping table", "--limit", "10"],
+          "expect": [
+            {"pointer": "/topics/0/hits", "predicate": "contains", "value": {"qualified": "endpoint_role_scope_table"}},
+            {"pointer": "/topics/0/hits", "predicate": "contains", "value": {"qualified": "delegated_role_scope_table"}}
+          ]
+        },
+        {
+          "kind": "cli",
+          "id": "verify-existing-table",
+          "args": ["show", "delegated_role_scope_table", "--body"],
+          "expect": [
+            {"pointer": "/symbol/name", "predicate": "equals", "value": "delegated_role_scope_table"},
+            {"pointer": "/excerpt", "predicate": "contains", "value": "endpoint:delegate"}
+          ]
+        }
+      ]
     }
   ]
 }

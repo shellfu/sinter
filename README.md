@@ -38,7 +38,15 @@ points or domain ownership. Then use the graph for focused work:
 - **Task evidence packet** — `sinter context "<task>"` resolves identifiers in
   the task against real node names and seeds from them, returning edit
   candidates, anchors, unresolved intents, and affected tests as runnable
-  commands.
+  commands. Add `--workspace <manifest>` to rank candidates across declared
+  member repositories in one packet.
+- **Snapshot-scoped assertions** — `sinter assert no-callers <symbol>` checks
+  depth-one call edges in an explicit corpus scope. Its decision is one of
+  `violated`, `holds_for_indexed_snapshot`, or `not_proven`; it never claims
+  runtime exhaustiveness.
+- **Citation maintenance** — `sinter cite <symbol>` emits a Markdown location
+  with a stable symbol key. `sinter verify-doc <file.md>` re-resolves managed
+  citations and fails on moved, missing, invalid, or identity-free references.
 - **[Cross-repo workspaces](docs/workspaces.md)** — federated graphs over many repos for
   distributed systems: blast radius, paths, and PR impact across service
   boundaries (`--workspace`).
@@ -182,9 +190,10 @@ Every `affected`, `deps`, and `path` response is deliberately bounded. Positive
 and negative answers include a `coverage` object with the graph snapshot,
 requested filters, available evidence sources, certain and possible result
 counts, unresolved-reference counts, compiler-index status, and explicit
-gaps. `completeness` describes only the indexed snapshot and `conclusive`
-remains false, so agents do not turn a non-empty syntax-only result into an
-exhaustive claim.
+gaps. The `universe` field names the repository root or every declared
+workspace member searched. `completeness` describes only the indexed snapshot
+and `conclusive` remains false, so agents do not turn a non-empty syntax-only
+result into an exhaustive claim.
 
 Agent-facing node `id` values are stable symbol keys and survive unrelated
 offset shifts. `snapshot_id` retains the byte-exact locator for the reported
@@ -224,7 +233,10 @@ the issue.
 | `sinter unresolved` | List unresolved references — the graph's honest gaps (`--file`, `--name`) |
 | `sinter path <from> <to>` | Shortest dependency path with per-step evidence; an unproven answer reports `closest_frontier`, `excluded_edges`, and `suggested_retries` |
 | `sinter grep <regex> --within <traversal>` | Text search bounded by a graph traversal: `affected(SYM)`, `deps(SYM)`, `file(PATH)`, repeatable and unioned |
-| `sinter context "<task>"` | Evidence packet for a coding task: edit candidates, deps/dependents, relevant tests, gaps, next commands |
+| `sinter context "<task>"` | Evidence packet for a coding task: edit candidates, deps/dependents, relevant tests, gaps, next commands (`--workspace <manifest>` federates member packets) |
+| `sinter assert no-callers <symbol>` | Check for production callers by default; exits 0 only for `holds_for_indexed_snapshot`, with `--scope`, `--workspace`, `--certain`, and `--json` controls |
+| `sinter cite <symbol>` | Emit a repository-root-relative Markdown `file#Lline` citation carrying a stable symbol key |
+| `sinter verify-doc <file.md>` | Re-resolve managed citations; bare `path:line` references return `not_proven` even when the location exists |
 | `sinter impact <rev-range>` | Changed symbols → blast radius → affected tests (`--expect <symbol>` reports direct dependents the diff did not touch) |
 | `sinter serve` | MCP server over stdio (`--repo` for one repo, `--workspace <manifest>` for a cross-repo scope) |
 | `sinter overlap <range>...` | Map open PRs onto the graph; rank pairwise merge risk (direct/radius/file) |
@@ -313,9 +325,10 @@ automatically. Recipe, cache-key guidance, and a copy-paste workflow:
   and Java static-class calls that a compiler index binds, and the harness
   labels those sites anyway. The weekly and manually dispatched workflow
   uploads the full scorecard and syntax-only build timings (`harness/eval/`).
-- **Agent-flow evaluation**: nine deterministic, network-free coding flows
-  exercise orientation, dependency and blast-radius analysis, test selection,
-  ambiguity, diff impact, stable-handle reuse, dirty edits, and CLI/MCP parity.
+- **Agent-flow evaluation**: eighteen deterministic, network-free coding flows
+  cover multi-step graph use, bounded agent responses, task context, and a
+  labeled design-similarity question that must surface both existing mapping
+  tables before inspection.
   The current scorecard passes 9/9 flows and 21/21 steps with one correct
   abstention and zero unsafe-confidence failures. These are observational
   scenarios, not a claim of general end-to-end coding accuracy.

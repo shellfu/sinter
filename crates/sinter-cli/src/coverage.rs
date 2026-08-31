@@ -381,6 +381,10 @@ pub(crate) fn repository_coverage(repo: &Path, store: &Store) -> Result<serde_js
     Ok(serde_json::json!({
         "completeness": completeness,
         "conclusive": false,
+        "universe": {
+            "mode": "repository",
+            "root": repo,
+        },
         "snapshot": {
             "head": head,
             "dirty": dirty,
@@ -420,6 +424,7 @@ pub(crate) fn orientation_health_json(repo: &Path, store: &Store) -> Result<serd
     let count = |field: &str| graph[field].as_array().map_or(0, std::vec::Vec::len);
     Ok(serde_json::json!({
         "status": coverage["completeness"].clone(),
+        "universe": coverage["universe"].clone(),
         "snapshot": coverage["snapshot"].clone(),
         "compiler_index": {
             "state": coverage["compiler_index"]["state"].clone(),
@@ -544,15 +549,20 @@ pub(crate) const COVERAGE_URI: &str = "sinter://coverage";
 /// than the query. Identical for every answer computed from one graph
 /// state, and therefore what a long-lived MCP session pays for again on
 /// every call.
-const SHARED_FIELDS: [&str; 7] = [
+const SHARED_FIELDS: [&str; 8] = [
     "completeness",
     "conclusive",
+    "universe",
     "snapshot",
     "compiler_index",
     "graph",
     "available_sources",
     "limitations",
 ];
+
+/// Claim qualifiers must survive reference collapsing. They are small and
+/// interpreting a negative answer without them can silently widen its scope.
+const ALWAYS_CARRIED_FIELDS: [&str; 3] = ["completeness", "conclusive", "universe"];
 
 /// Fingerprint of the repository-wide half, `None` when `coverage` is not a
 /// traversal envelope. Session-scoped identity only: it must change when
@@ -561,6 +571,16 @@ fn shared_fingerprint(coverage: &serde_json::Value) -> Option<String> {
     use std::hash::{Hash, Hasher};
 
     let object = coverage.as_object()?;
+    // Workspace servers do not expose a workspace coverage resource. Let
+    // the ordinary byte-budget collapse retain the essential qualifiers
+    // instead of emitting a reference the client cannot resolve.
+    if coverage
+        .pointer("/universe/mode")
+        .and_then(serde_json::Value::as_str)
+        == Some("workspace")
+    {
+        return None;
+    }
     if !object.contains_key("completeness") {
         return None;
     }
@@ -602,7 +622,10 @@ fn collapse_into(value: &mut serde_json::Value, known: Option<&str>, carried: &m
                     *carried = Some(fingerprint.clone());
                 }
                 if known == Some(fingerprint.as_str()) {
-                    envelope.retain(|field, _| !SHARED_FIELDS.contains(&field.as_str()));
+                    envelope.retain(|field, _| {
+                        !SHARED_FIELDS.contains(&field.as_str())
+                            || ALWAYS_CARRIED_FIELDS.contains(&field.as_str())
+                    });
                     envelope.insert(
                         "ref_note".to_string(),
                         serde_json::json!(format!(
@@ -786,6 +809,14 @@ pub fn workspace_json(
         "status": if found { "found" } else { "not_proven" },
         "completeness": if partial { "partial" } else { "complete_for_indexed_snapshot" },
         "conclusive": false,
+        "universe": {
+            "mode": "workspace",
+            "name": workspace.manifest.workspace.name,
+            "manifest": workspace.manifest_path,
+            "members": workspace.members.iter().map(|(name, root)| {
+                (name.clone(), serde_json::json!({"root": root}))
+            }).collect::<serde_json::Map<String, serde_json::Value>>(),
+        },
         "filters": filter_json(filter),
         "evidence": {
             "count_scope": "all_matches_before_limit",
@@ -966,6 +997,11 @@ mod tests {
         assert_eq!(coverage["status"], "found");
         assert_eq!(coverage["completeness"], "complete_for_indexed_snapshot");
         assert_eq!(coverage["conclusive"], false);
+        assert_eq!(coverage["universe"]["mode"], "repository");
+        assert_eq!(
+            coverage["universe"]["root"],
+            repo.to_string_lossy().as_ref()
+        );
         assert_eq!(coverage["evidence"]["certain"]["results"], 1);
         assert_eq!(coverage["evidence"]["possible"]["results"], 0);
         assert_eq!(coverage["filters"]["evidence"]["values"][0], "scip");
@@ -996,6 +1032,7 @@ mod tests {
         let health = orientation_health_json(repo, &store).unwrap();
 
         assert_eq!(health["status"], "complete_for_indexed_snapshot");
+        assert_eq!(health["universe"]["mode"], "repository");
         assert_eq!(health["compiler_index"]["state"], "fresh");
         assert_eq!(health["graph"]["actionable_unresolved"], 0);
         assert!(health["compiler_index"].get("projects").is_none());

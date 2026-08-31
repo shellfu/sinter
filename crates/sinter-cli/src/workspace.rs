@@ -47,6 +47,7 @@ pub struct DeclaredLink {
 
 pub struct Workspace {
     pub manifest: Manifest,
+    pub manifest_path: PathBuf,
     pub manifest_dir: PathBuf,
     pub members: BTreeMap<String, PathBuf>,
 }
@@ -73,6 +74,7 @@ pub fn load(manifest_path: &Path) -> Result<Workspace> {
     }
     Ok(Workspace {
         manifest,
+        manifest_path,
         manifest_dir: dir,
         members,
     })
@@ -450,7 +452,7 @@ fn traverse(
     }
     let scope_maps = stores
         .iter()
-        .map(|(member, store)| Ok((member.clone(), store.file_scopes()?)))
+        .map(|(member, store)| Ok((member.clone(), store.scope_index()?)))
         .collect::<Result<BTreeMap<_, _>>>()?;
     let mut seen: HashSet<(String, String)> =
         HashSet::from([(start_member.to_string(), start.as_str().to_string())]);
@@ -473,10 +475,7 @@ fn traverse(
                 Direction::Forward => &edge.dst,
             };
             let file = node_file(next.as_str());
-            let scope = scope_maps[&member]
-                .get(file)
-                .copied()
-                .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(file));
+            let scope = scope_maps[&member].scope_of_id(next.as_str(), file);
             if !filter.admits(&edge) || !filter.admits_scope(scope) {
                 continue;
             }
@@ -516,10 +515,7 @@ fn traverse(
                 Direction::Forward => (&link.dst_member, &link.dst_id),
             };
             let file = node_file(next_id);
-            let scope = scope_maps[next_member]
-                .get(file)
-                .copied()
-                .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(file));
+            let scope = scope_maps[next_member].scope_of_id(next_id, file);
             if !filter.admits_scope(scope) {
                 continue;
             }
@@ -560,7 +556,7 @@ pub fn shortest_path(
     }
     let scope_maps = stores
         .iter()
-        .map(|(member, store)| Ok((member.clone(), store.file_scopes()?)))
+        .map(|(member, store)| Ok((member.clone(), store.scope_index()?)))
         .collect::<Result<BTreeMap<_, _>>>()?;
     type Key = (String, String);
     let start: Key = (from.0.to_string(), from.1.as_str().to_string());
@@ -592,10 +588,7 @@ pub fn shortest_path(
         let mut nexts: Vec<(Key, Relation, Evidence)> = Vec::new();
         for edge in store.out_edges(&NodeId::new(id.clone()))? {
             let file = node_file(edge.dst.as_str());
-            let scope = scope_maps[member]
-                .get(file)
-                .copied()
-                .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(file));
+            let scope = scope_maps[member].scope_of_id(edge.dst.as_str(), file);
             if filter.admits(&edge) && filter.admits_scope(scope) {
                 nexts.push((
                     (member.clone(), edge.dst.as_str().to_string()),
@@ -615,10 +608,7 @@ pub fn shortest_path(
                     .is_none_or(|allowed| allowed.contains(&link.relation));
             if admit {
                 let file = node_file(&link.dst_id);
-                let scope = scope_maps[&link.dst_member]
-                    .get(file)
-                    .copied()
-                    .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(file));
+                let scope = scope_maps[&link.dst_member].scope_of_id(&link.dst_id, file);
                 if !filter.admits_scope(scope) {
                     continue;
                 }

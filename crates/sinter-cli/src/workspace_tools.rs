@@ -25,15 +25,21 @@ pub(crate) fn call(manifest: &Path, name: &str, args: &Value) -> Result<Value> {
         crate::workspace::refresh(&workspace)?;
     }
 
-    let snapshot = matches!(name, "show" | "query" | "affected" | "deps" | "path")
-        .then(|| crate::workspace::snapshot_token(&workspace))
-        .transpose()?;
+    let snapshot = matches!(
+        name,
+        "show" | "query" | "context" | "affected" | "deps" | "path"
+    )
+    .then(|| crate::workspace::snapshot_token(&workspace))
+    .transpose()?;
     if let Some(snapshot) = snapshot.as_deref() {
         ensure_snapshot_token(args.get("if_snapshot").and_then(Value::as_str), snapshot)?;
     }
 
     let mut result = match name {
         "ask" => ask(&workspace, args),
+        "context" => {
+            crate::workspace_context::response(&workspace, &required_string(args, "task")?)
+        }
         "show" => show(&workspace, args),
         "impact" => impact(&workspace, args),
         "unresolved" => unresolved(&workspace, args),
@@ -42,7 +48,7 @@ pub(crate) fn call(manifest: &Path, name: &str, args: &Value) -> Result<Value> {
         "deps" => dependencies(&workspace, args),
         "path" => path(&workspace, args),
         other => anyhow::bail!(
-            "unknown tool {other} (workspace scope serves: ask, show, query, affected, deps, path, impact)"
+            "unknown tool {other} (workspace scope serves: ask, context, show, query, affected, deps, path, impact)"
         ),
     }?;
     if let Some(snapshot) = snapshot {
@@ -69,26 +75,23 @@ fn member_node(node: &Node, member: &str, scope: sinter_core::CorpusScope) -> Va
 
 fn member_scopes(
     workspace: &crate::workspace::Workspace,
-) -> Result<BTreeMap<String, std::collections::HashMap<String, sinter_core::CorpusScope>>> {
+) -> Result<BTreeMap<String, sinter_store::ScopeIndex>> {
     workspace
         .members
         .iter()
         .map(|(member, repo)| {
             let store = sinter_store::Store::open(crate::pipeline::db_path(repo))?;
-            Ok((member.clone(), store.file_scopes()?))
+            Ok((member.clone(), store.scope_index()?))
         })
         .collect()
 }
 
 fn scope_of(
-    scopes: &BTreeMap<String, std::collections::HashMap<String, sinter_core::CorpusScope>>,
+    scopes: &BTreeMap<String, sinter_store::ScopeIndex>,
     member: &str,
     node: &Node,
 ) -> sinter_core::CorpusScope {
-    scopes[member]
-        .get(&node.file)
-        .copied()
-        .unwrap_or_else(|| sinter_core::CorpusScope::classify_path(&node.file))
+    scopes[member].scope_of(node)
 }
 
 fn ask(workspace: &crate::workspace::Workspace, args: &Value) -> Result<Value> {

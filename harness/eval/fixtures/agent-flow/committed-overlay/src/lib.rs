@@ -13,6 +13,16 @@ pub fn entry() -> usize {
     dispatch()
 }
 
+/// Maps endpoint roles to the authorization scopes they may request.
+pub fn endpoint_role_scope_table() -> &'static [(&'static str, &'static str)] {
+    &[("operator", "endpoint:write"), ("viewer", "endpoint:read")]
+}
+
+/// Legacy role-to-scope mapping kept for delegated agent sessions.
+pub fn delegated_role_scope_table() -> &'static [(&'static str, &'static str)] {
+    &[("agent", "endpoint:delegate")]
+}
+
 pub mod left {
     pub fn duplicate() -> &'static str {
         "left"

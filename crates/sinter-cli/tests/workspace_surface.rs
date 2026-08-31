@@ -186,6 +186,71 @@ fn workspace_end_to_end() {
     assert!(json["verify_required"].is_boolean());
     assert!(json["returned"].as_u64().unwrap() <= 5);
 
+    // One workspace context call federates member-local evidence and names
+    // the exact set of repositories it searched.
+    let (ok, context) = sinter(
+        root,
+        &["context", "retry backoff", "--workspace", m, "--json"],
+    );
+    assert!(ok, "{context}");
+    let context: serde_json::Value = serde_json::from_str(&context).unwrap();
+    assert_eq!(context["coverage"]["universe"]["mode"], "workspace");
+    assert_eq!(context["coverage"]["universe"]["name"], "shop");
+    assert_eq!(
+        context["coverage"]["universe"]["manifest"],
+        manifest.canonicalize().unwrap().to_string_lossy().as_ref()
+    );
+    assert_eq!(
+        context["coverage"]["universe"]["members"]
+            .as_object()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert!(
+        context["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate["qualified"] == "common:Backoff"),
+        "{context}"
+    );
+    let next = context["next_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>();
+    assert!(
+        next.iter()
+            .any(|action| action.starts_with("sinter show Backoff --repo ")),
+        "{context}"
+    );
+    assert!(
+        next.iter().all(|action| !action.contains("<manifest>")),
+        "{context}"
+    );
+
+    // The assertion crosses member boundaries and counts only call edges,
+    // while still refusing to advertise runtime exhaustiveness.
+    let (ok, assertion) = sinter(
+        root,
+        &[
+            "assert",
+            "no-callers",
+            "common:Backoff",
+            "--workspace",
+            m,
+            "--json",
+        ],
+    );
+    assert!(!ok, "violated assertions exit 1: {assertion}");
+    let assertion: serde_json::Value = serde_json::from_str(&assertion).unwrap();
+    assert_eq!(assertion["status"], "violated", "{assertion}");
+    assert_eq!(assertion["observed_callers"], 2);
+    assert_eq!(assertion["coverage"]["universe"]["mode"], "workspace");
+    assert_eq!(assertion["coverage"]["conclusive"], false);
+
     // Forward direction crosses the boundary the other way: auth's Login
     // depends on common's Backoff, and nothing in auth depends on billing.
     let (ok, out) = sinter(root, &["deps", "auth:Login", "--workspace", m]);
@@ -490,6 +555,11 @@ fn serve_workspace_answers_across_members() {
             r#"{{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{{"name":"deps","arguments":{{"symbol":"auth:Login","budget_bytes":0}}}}}}"#
         )
         .unwrap();
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{{"name":"context","arguments":{{"task":"retry backoff"}}}}}}"#
+        )
+        .unwrap();
     }
     drop(child.stdin.take());
     let output = child.wait_with_output().unwrap();
@@ -506,6 +576,7 @@ fn serve_workspace_answers_across_members() {
     assert_eq!(
         names,
         [
+            "context",
             "ask",
             "show",
             "query",
@@ -631,4 +702,24 @@ fn serve_workspace_answers_across_members() {
         "{body}"
     );
     assert_eq!(parsed["coverage"]["status"], "found", "{body}");
+
+    // context federates member-local packets and retains the searched
+    // universe even when the default MCP budget collapses detailed coverage.
+    let context: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    let parsed = context["result"]["structuredContent"]["data"].clone();
+    let body = parsed.to_string();
+    assert_eq!(
+        parsed["coverage"]["universe"]["mode"], "workspace",
+        "{body}"
+    );
+    assert_eq!(parsed["coverage"]["universe"]["name"], "shop", "{body}");
+    assert!(parsed["coverage"].get("ref").is_none(), "{body}");
+    assert!(
+        parsed["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate["qualified"] == "common:Backoff"),
+        "{body}"
+    );
 }

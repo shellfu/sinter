@@ -45,6 +45,8 @@ direct dependents this diff changed and the ones it still owes (`expect[].untouc
 ## Coverage semantics
 `coverage.status` found|not_proven; `coverage.completeness` complete|partial;
 `coverage.conclusive` is always false: a static graph is never runtime-exhaustive.
+`coverage.universe` names the canonical repository root or every declared workspace member
+searched; repositories absent from it were not searched.
 `coverage.compiler_index` is {state: fresh|stale|missing, stale_inputs, missing_index_for:
 [languages]}; run `sinter scip` to refresh. Full per-project detail: CLI `--json` or `doctor`.
 `unresolved` lists references the graph could not bind; check it before reading an empty
@@ -244,6 +246,13 @@ pub(crate) fn repository() -> Value {
 pub(crate) fn workspace() -> Value {
     let filters = traversal_filters();
     let mut list = json!({"tools": [
+        {
+            "name": "context",
+            "description": "One bounded task packet across members: ranked symbols, callers, tests, gaps, and searched universe. e.g. {task:\"endpoint auth\"}",
+            "inputSchema": {"type": "object", "properties": {
+                "task": {"type": "string"},
+            }, "required": ["task"]},
+        },
         {
             "name": "ask",
             "description": "Concept search across all members: ranked hits per topic with status/advice. e.g. {question:\"retry backoff\"}",

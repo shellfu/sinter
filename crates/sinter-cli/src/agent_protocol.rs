@@ -497,11 +497,18 @@ fn collapse(data: &mut Value) -> bool {
             && let Value::Object(inner) = value
             && !inner.contains_key("omitted")
         {
-            let status = inner.get("status").cloned();
+            // The searched universe and negative-proof qualifiers are part
+            // of the answer, not expendable diagnostics. Keep them even
+            // when the detailed compiler/index health must be collapsed.
+            let essentials: Vec<(&str, Value)> =
+                ["status", "completeness", "conclusive", "universe"]
+                    .into_iter()
+                    .filter_map(|field| inner.get(field).cloned().map(|value| (field, value)))
+                    .collect();
             inner.clear();
             inner.insert("omitted".into(), json!("budget"));
-            if let Some(status) = status {
-                inner.insert("status".into(), status);
+            for (field, value) in essentials {
+                inner.insert(field.to_string(), value);
             }
             changed = true;
         } else if let Value::Array(items) = value {
@@ -591,7 +598,7 @@ pub fn failure(operation: &str, error: &anyhow::Error) -> Value {
 fn allowed_arguments(operation: &str, workspace: bool) -> Option<&'static [&'static str]> {
     Some(match (workspace, operation) {
         (_, "ask") => &["question", "limit", "scope", "explain"],
-        (false, "context") => &["task"],
+        (_, "context") => &["task"],
         (false, "show") => &[
             "symbol",
             "limit",
@@ -1102,6 +1109,31 @@ mod tests {
             "not_proven"
         );
         assert_eq!(result["structuredContent"]["data"]["total"], 0);
+    }
+
+    #[test]
+    fn budget_collapse_keeps_the_searched_universe_and_claim_qualifiers() {
+        let mut data = json!({
+            "coverage": {
+                "status": "not_proven",
+                "completeness": "partial",
+                "conclusive": false,
+                "universe": {
+                    "mode": "workspace",
+                    "name": "shop",
+                    "members": {"auth": {"root": "/repos/auth"}}
+                },
+                "compiler_index": {"projects": [{"large": "x".repeat(1000)}]},
+            }
+        });
+
+        assert!(super::collapse(&mut data));
+        assert_eq!(data["coverage"]["omitted"], "budget");
+        assert_eq!(data["coverage"]["status"], "not_proven");
+        assert_eq!(data["coverage"]["completeness"], "partial");
+        assert_eq!(data["coverage"]["conclusive"], false);
+        assert_eq!(data["coverage"]["universe"]["name"], "shop");
+        assert!(data["coverage"].get("compiler_index").is_none());
     }
 
     #[test]

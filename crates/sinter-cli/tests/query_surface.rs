@@ -3,6 +3,9 @@
 use std::path::Path;
 use std::process::Command;
 
+use protobuf::Message;
+use scip::types::Index;
+
 fn sinter(repo: &Path, args: &[&str]) -> (bool, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
         .args(args)
@@ -34,6 +37,152 @@ fn git(repo: &Path, args: &[&str]) {
         .status
         .success();
     assert!(ok, "git {args:?} failed");
+}
+
+#[test]
+fn no_callers_assertion_distinguishes_violation_from_snapshot_scoped_holding() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(
+        repo.join("src/lib.rs"),
+        "pub fn called() {}\npub fn production_caller() { called(); }\npub fn leaf() {}\n\n#[cfg(test)]\nmod tests {\n    use super::called;\n    #[test]\n    fn test_caller() { called(); }\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname='fixture'\nversion='0.1.0'\nedition='2024'\n",
+    )
+    .unwrap();
+    git(repo, &["init", "-q"]);
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "init"]);
+
+    // A valid, fresh compiler index makes the empty traversal complete for
+    // this indexed snapshot. The graph assertion still stays non-runtime-
+    // exhaustive (`coverage.conclusive` is false).
+    std::fs::write(
+        repo.join("index.scip"),
+        Index::default().write_to_bytes().unwrap(),
+    )
+    .unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+
+    let (ok, out) = sinter(repo, &["assert", "no-callers", "called", "--json"]);
+    assert!(!ok, "a violated assertion must exit 1: {out}");
+    let violated: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(violated["status"], "violated");
+    assert_eq!(violated["observed_callers"], 1);
+    assert_eq!(violated["ignored_out_of_scope"]["count"], 1);
+    assert_eq!(violated["coverage"]["universe"]["mode"], "repository");
+
+    std::fs::write(
+        repo.join("workspace.toml"),
+        "[workspace]\nname='fixture-workspace'\n[members]\nfixture='.'\n",
+    )
+    .unwrap();
+    let (ok, out) = sinter(repo, &["workspace", "workspace.toml"]);
+    assert!(ok, "{out}");
+    let (ok, workspace_assertion) = sinter(
+        repo,
+        &[
+            "assert",
+            "no-callers",
+            "fixture:called",
+            "--workspace",
+            "workspace.toml",
+            "--json",
+        ],
+    );
+    assert!(
+        !ok,
+        "a violated workspace assertion must exit 1: {workspace_assertion}"
+    );
+    let workspace_assertion: serde_json::Value =
+        serde_json::from_str(&workspace_assertion).unwrap();
+    assert_eq!(workspace_assertion["observed_callers"], 1);
+    assert_eq!(workspace_assertion["ignored_out_of_scope"]["count"], 1);
+    assert_eq!(
+        workspace_assertion["ignored_out_of_scope"]["by_scope"]["test"],
+        1
+    );
+
+    let (ok, out) = sinter(repo, &["assert", "no-callers", "leaf", "--json"]);
+    assert!(ok, "{out}");
+    let holding: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(holding["status"], "holds_for_indexed_snapshot");
+    assert_eq!(holding["observed_callers"], 0);
+    assert_eq!(
+        holding["coverage"]["completeness"],
+        "complete_for_indexed_snapshot"
+    );
+    assert_eq!(holding["coverage"]["conclusive"], false);
+    assert_eq!(holding["assertion"]["runtime_exhaustive"], false);
+
+    std::fs::remove_file(repo.join("index.scip")).unwrap();
+    let (ok, not_proven) = sinter(repo, &["assert", "no-callers", "leaf", "--json"]);
+    assert!(!ok, "an incomplete snapshot must not pass: {not_proven}");
+    let not_proven: serde_json::Value = serde_json::from_str(&not_proven).unwrap();
+    assert_eq!(not_proven["status"], "not_proven");
+    assert_eq!(not_proven["coverage"]["completeness"], "partial");
+}
+
+#[test]
+fn managed_citations_follow_symbol_identity_and_bare_locations_do_not_prove_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::create_dir_all(repo.join("docs")).unwrap();
+    std::fs::write(
+        repo.join("src/lib.rs"),
+        "pub fn first() {}\n\npub fn cited() {}\n",
+    )
+    .unwrap();
+    git(repo, &["init", "-q"]);
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "init"]);
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+
+    let (ok, citation) = sinter(repo, &["cite", "cited"]);
+    assert!(ok, "{citation}");
+    assert!(citation.contains("sinter-cite:v1"), "{citation}");
+    assert!(citation.contains("symbol:"), "{citation}");
+    std::fs::write(repo.join("docs/design.md"), &citation).unwrap();
+
+    let (ok, verified) = sinter(repo, &["verify-doc", "docs/design.md", "--json"]);
+    assert!(ok, "{verified}");
+    let verified: serde_json::Value = serde_json::from_str(&verified).unwrap();
+    assert_eq!(verified["status"], "current");
+    assert_eq!(verified["summary"]["managed_current"], 1);
+
+    // The stable key still resolves after line movement, so the verifier can
+    // report both the stale rendered target and its current replacement.
+    std::fs::write(
+        repo.join("src/lib.rs"),
+        "// inserted\n// inserted again\npub fn first() {}\n\npub fn cited() {}\n",
+    )
+    .unwrap();
+    let (ok, moved) = sinter(repo, &["verify-doc", "docs/design.md", "--json"]);
+    assert!(!ok, "a moved citation must fail the gate: {moved}");
+    let moved: serde_json::Value = serde_json::from_str(&moved).unwrap();
+    assert_eq!(moved["status"], "stale");
+    assert_eq!(moved["citations"][0]["status"], "moved");
+    assert_ne!(
+        moved["citations"][0]["cited_target"],
+        moved["citations"][0]["current_target"]
+    );
+
+    std::fs::write(repo.join("docs/bare.md"), "See src/lib.rs:5.\n").unwrap();
+    let (ok, bare) = sinter(repo, &["verify-doc", "docs/bare.md", "--json"]);
+    assert!(
+        !ok,
+        "a bare path/line cannot prove semantic identity: {bare}"
+    );
+    let bare: serde_json::Value = serde_json::from_str(&bare).unwrap();
+    assert_eq!(bare["status"], "not_proven");
+    assert_eq!(bare["citations"][0]["status"], "location_only");
 }
 
 #[test]

@@ -60,9 +60,12 @@ by structure, `sinter grep --within` is that search, not rg.
 | How does A reach B | `sinter path <A> <B>` |
 | Find text only inside a blast radius | `sinter grep '<regex>' --within 'affected(<sym>)'` (`--within` also takes `deps(SYM)`/`file(PATH)`, is repeatable, unions the bounds) |
 | Check gaps before a negative proof | `sinter unresolved [--file <f>] [--name <n>]` |
+| Prove no production callers in this indexed snapshot | `sinter assert no-callers <symbol> --json` — accept only `holds_for_indexed_snapshot`; retain scope, snapshot, universe, and limitations |
+| Emit a durable source citation | `sinter cite <symbol>` — paste the complete Markdown line and metadata comment |
+| Gate citations in a document | `sinter verify-doc <file.md> --json` — bare path/line references remain `not_proven` |
 | What does this commit/diff/PR affect downstream | `sinter impact <rev-range>` (default is capped; `--limit 0` returns all) |
 | Did the refactor finish (unfinished-refactor check) | `sinter impact --expect <symbol>` — direct dependents the diff did NOT touch |
-| Evidence packet before starting a task | `sinter context "<task>"` — name real symbols in the task; returns anchors, unresolved intents, and affected tests as runnable commands |
+| Evidence packet before starting a task | `sinter context "<task>"` — name real symbols in the task; add `--workspace <manifest>` for one packet across declared members |
 | Where do proposed changes overlap | `sinter overlap <rangeA> <rangeB> ...` |
 | Build a cross-repo graph | `sinter workspace <manifest.toml>`; then add `--workspace <manifest.toml>` to reads |
 | Create missing derived graph state | `sinter ensure <repo>` |
@@ -70,8 +73,9 @@ by structure, `sinter grep --within` is that search, not rg.
 | Add compiler-grade call/type evidence | `sinter scip <repo>` |
 
 - Every read verb takes `--json` and exits grep-style (0 results,
-  1 none, 2 error) — branch on the code, not the prose. Results carry
-  call sites (`file:line`).
+  1 none, 2 error). Assertion and document gates use 0 pass, 1 fail,
+  2 error. Branch on the code, then read the status. Results carry call
+  sites (`file:line`).
 - `--relations calls,uses` on affected/deps/path drops file-level
   import noise from a blast radius.
 - Queries self-sync before answering — no manual refresh needed
@@ -81,6 +85,8 @@ by structure, `sinter grep --within` is that search, not rg.
   coverage may require `sinter scip`; `sinter unresolved` lists the gaps.
   Ambiguous symbol? Rerun as `name@file-suffix` or `name@file:line`
   (e.g. `run@init.rs`, `run@doctor.rs:175`).
+- Coverage carries `universe`: the canonical repository root or every declared
+  workspace member searched. Repositories absent from it were not searched.
 - A `not_proven` `path` carries `closest_frontier`, `excluded_edges`, and
   `suggested_retries` — rerun a suggestion before claiming no path exists.
 - Spawning subagents? Their prompts must mandate sinter for structure
@@ -90,7 +96,7 @@ by structure, `sinter grep --within` is that search, not rg.
 - `sinter ensure <repo>` creates only derived `.sinter/` state. Run
   `sinter init <repo>` only when full hook and client integration installation
   was explicitly requested.
-- MCP registered? `mcp__sinter__*` tools (ask/show/query/affected/deps/
+- MCP registered? `mcp__sinter__*` tools (ask/show/query/context/affected/deps/
   path/grep/unresolved/impact/overlap/map) answer the same questions as the
   CLI verbs above — either route is fine. Arguments mirror the flags:
   `grep{pattern, within[]}`, `show{body, context_lines}`,
@@ -157,7 +163,7 @@ pub fn agents(repo: &Path) -> Result<PathBuf> {
     // per-prompt hook already routes Claude when CLAUDE.md is absent.
     let claude_md = repo.join("CLAUDE.md");
     if let Ok(existing) = std::fs::read_to_string(&claude_md)
-        && !existing.contains("AGENTS.md")
+        && !existing.lines().any(|line| line.trim() == "@AGENTS.md")
     {
         std::fs::write(
             &claude_md,
@@ -516,6 +522,9 @@ mod tests {
             "sinter deps",
             "sinter path",
             "sinter unresolved",
+            "sinter assert",
+            "sinter cite",
+            "sinter verify-doc",
             "sinter impact",
             "sinter overlap",
             "sinter workspace",
@@ -595,5 +604,60 @@ mod tests {
         assert!(ENFORCE_HOOK_PS1.contains("New-SessionMarker"));
         assert!(!ENFORCE_HOOK.contains("permissionDecision\":\"allow"));
         assert!(!ENFORCE_HOOK_PS1.contains("permissionDecision\":\"allow"));
+    }
+
+    #[test]
+    fn enforcement_hooks_route_agent_first_workflows() {
+        for hook in [ENFORCE_HOOK, ENFORCE_HOOK_PS1] {
+            for contract in [
+                "context",
+                "assert no-callers",
+                "holds_for_indexed_snapshot",
+                "universe/limitations",
+                "cite/verify-doc",
+                "unresolved for graph gaps",
+            ] {
+                assert!(
+                    hook.contains(contract),
+                    "enforcement hook lost `{contract}`"
+                );
+            }
+            assert!(
+                !hook.contains("unresolved for negative proofs"),
+                "enforcement hook must not route production-caller proofs to unresolved"
+            );
+        }
+    }
+
+    #[test]
+    fn agents_install_refreshes_the_card_and_connects_claude() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::write(
+            repo.path().join("AGENTS.md"),
+            format!("before\n\n{AGENTS_BEGIN}\n\nstale\n{AGENTS_END}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            repo.path().join("CLAUDE.md"),
+            "Follow `.rustkit/AGENTS.md` for Rust engineering work.\n",
+        )
+        .unwrap();
+
+        agents(repo.path()).unwrap();
+
+        let installed = std::fs::read_to_string(repo.path().join("AGENTS.md")).unwrap();
+        assert!(installed.starts_with("before\n\n"));
+        assert!(block_current(&installed));
+        assert!(!installed.contains("\nstale\n"));
+
+        let claude = std::fs::read_to_string(repo.path().join("CLAUDE.md")).unwrap();
+        assert_eq!(
+            claude,
+            "Follow `.rustkit/AGENTS.md` for Rust engineering work.\n\n@AGENTS.md\n"
+        );
+
+        agents(repo.path()).unwrap();
+        let claude = std::fs::read_to_string(repo.path().join("CLAUDE.md")).unwrap();
+        assert_eq!(claude.matches("@AGENTS.md").count(), 1);
     }
 }

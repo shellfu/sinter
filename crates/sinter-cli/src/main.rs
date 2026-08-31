@@ -2,6 +2,7 @@ mod affected;
 mod agent_protocol;
 mod ask;
 mod build;
+mod citation;
 mod context;
 mod corpus;
 mod coverage;
@@ -16,6 +17,7 @@ mod init;
 mod install;
 mod lookup;
 mod map;
+mod no_callers;
 mod overlap;
 mod pathcmd;
 mod pipeline;
@@ -32,6 +34,7 @@ mod unresolved;
 mod update;
 mod watch;
 mod workspace;
+mod workspace_context;
 mod workspace_tools;
 
 use std::path::PathBuf;
@@ -56,10 +59,9 @@ struct Cli {
     offset: usize,
 }
 
-const EXIT_CODES: &str =
-    "Exit codes (grep-style, for the read commands ask/query/show/path/affected/deps/unresolved):
-  0  found results
-  1  valid query, no results
+const EXIT_CODES: &str = "Exit codes (grep-style, for read and assertion commands):
+  0  found/current; assertions hold
+  1  valid query with no results; assertion or document gate did not pass
   2  usage or execution error";
 
 #[derive(Args, Default)]
@@ -251,9 +253,45 @@ enum Command {
         /// Repository to query
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        /// Build one packet across a declared multi-repository workspace
+        #[arg(long)]
+        workspace: Option<PathBuf>,
         /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`)
         #[arg(long)]
         json: bool,
+    },
+    /// Evaluate a bounded structural assertion against the current graph
+    Assert {
+        #[command(subcommand)]
+        assertion: Assertion,
+    },
+    /// Emit a durable Markdown citation for a symbol's current location
+    Cite {
+        /// Symbol: stable key, name, qualified suffix, or name@file
+        symbol: String,
+        /// Repository to query
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// Structured output including symbol identity and snapshot
+        #[arg(long)]
+        json: bool,
+        /// Fail if the graph changed since this snapshot token was returned
+        #[arg(long)]
+        if_snapshot: Option<String>,
+    },
+    /// Check managed citations and bare path/line references in Markdown
+    VerifyDoc {
+        /// Markdown document, relative to the repository root
+        document: PathBuf,
+        /// Repository whose graph and source files citations address
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// Structured per-citation results
+        #[arg(long)]
+        json: bool,
+        /// Fail if the graph changed since this snapshot token was returned
+        #[arg(long)]
+        if_snapshot: Option<String>,
     },
     /// One-screen orientation card for a symbol or file
     Show {
@@ -548,6 +586,36 @@ enum ScipAction {
 }
 
 #[derive(Subcommand)]
+enum Assertion {
+    /// Assert that a symbol has no observed depth-one call edges in scope
+    NoCallers {
+        /// Symbol: stable key, name, qualified suffix, or name@file
+        symbol: String,
+        /// Repository to query
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// Assert across a declared multi-repository workspace
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+        /// Corpus roles callers may be in (production by default)
+        #[arg(long, value_delimiter = ',', default_value = "production")]
+        scope: Vec<String>,
+        /// Count only compiler-grade (Certain) call edges
+        #[arg(long)]
+        certain: bool,
+        /// Maximum caller rows to print (the decision always counts all)
+        #[arg(long, default_value_t = no_callers::DEFAULT_LIMIT)]
+        limit: usize,
+        /// Compact `sinter.agent.v1` assertion data
+        #[arg(long)]
+        json: bool,
+        /// Fail if the repository/workspace graph changed since this token
+        #[arg(long)]
+        if_snapshot: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum HooksAction {
     /// Write post-commit/post-checkout/post-merge hooks
     Install {
@@ -795,10 +863,84 @@ fn main() -> ExitCode {
                 grep_exit(result)
             };
         }
-        Command::Context { task, repo, json } => {
-            let result = context::run(&repo, &task, json);
+        Command::Context {
+            task,
+            repo,
+            workspace,
+            json,
+        } => {
+            let result = match workspace {
+                Some(manifest) => workspace_context::run(&manifest, &task, json),
+                None => context::run(&repo, &task, json),
+            };
             return if json {
                 grep_exit_json("context", result)
+            } else {
+                grep_exit(result)
+            };
+        }
+        Command::Assert { assertion } => match assertion {
+            Assertion::NoCallers {
+                symbol,
+                repo,
+                workspace,
+                scope,
+                certain,
+                limit,
+                json,
+                if_snapshot,
+            } => {
+                let result =
+                    corpus::ScopeSelection::parse(&scope, corpus::ScopeSelection::agent_default())
+                        .and_then(|selection| match workspace {
+                            Some(manifest) => no_callers::run_workspace(
+                                &manifest,
+                                &symbol,
+                                selection.as_set(),
+                                certain,
+                                limit,
+                                json,
+                                if_snapshot.as_deref(),
+                            ),
+                            None => no_callers::run_repository(
+                                &repo,
+                                &symbol,
+                                selection.as_set(),
+                                certain,
+                                limit,
+                                json,
+                                if_snapshot.as_deref(),
+                            ),
+                        });
+                return if json {
+                    grep_exit_json("assert_no_callers", result)
+                } else {
+                    grep_exit(result)
+                };
+            }
+        },
+        Command::Cite {
+            symbol,
+            repo,
+            json,
+            if_snapshot,
+        } => {
+            let result = citation::run_cite(&repo, &symbol, json, if_snapshot.as_deref());
+            return if json {
+                grep_exit_json("cite", result)
+            } else {
+                grep_exit(result)
+            };
+        }
+        Command::VerifyDoc {
+            document,
+            repo,
+            json,
+            if_snapshot,
+        } => {
+            let result = citation::run_verify(&repo, &document, json, if_snapshot.as_deref());
+            return if json {
+                grep_exit_json("verify_doc", result)
             } else {
                 grep_exit(result)
             };

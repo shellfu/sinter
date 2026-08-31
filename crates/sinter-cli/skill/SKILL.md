@@ -56,10 +56,18 @@ zero callers or dependencies: `coverage.conclusive` is always `false`, and
 `completeness: complete_for_indexed_snapshot` describes the index, not the
 running program.
 
+For the narrower question "does this symbol have production callers?", run
+`sinter assert no-callers <symbol> --json`. Exit 0 requires
+`holds_for_indexed_snapshot`: zero observed depth-one `calls` edges, complete
+indexed-snapshot coverage, and no unresolved reference matching the symbol
+name. `violated` lists observed callers. `not_proven` names the remaining gap.
+The assertion keeps `runtime_exhaustive: false` and
+`coverage.conclusive: false`.
+
 `sinter install enforce --strict` opts into strict enforcement: the first
 raw recursive search (grep/rg or the Grep tool) of a Claude Code session
 is blocked with a redirect to
-`sinter ask/show/affected/deps/path/grep/impact`;
+`sinter context/ask/show/affected/deps/path/assert no-callers/cite/verify-doc/grep/impact`;
 the retry passes with a one-time advisory nudge, and later searches in that
 class are silent for the session — sinter-first, grep-second, never
 grep-never. Strict mode only ever denies (it never auto-approves anything).
@@ -75,12 +83,16 @@ never nudge. Calls without a session ID remain nudge-only.
 |---|---|
 | Orient in an unfamiliar repo (module inventory, dependency hubs, docs, graph health) | `sinter map --repo <repo>` |
 | Starting a coding task ("add X", "fix Y", "cap Z") | `sinter context "<task>" --repo <repo>` first; then the specialized verbs below on the handles it returns. Identifiers in the task are resolved against real node names and seed the packet — naming a real symbol materially improves the answer. It returns anchors (task term -> resolved node), unresolved intents (terms that matched nothing), and affected tests already shaped as runnable commands |
+| Starting a task across declared repositories | `sinter context "<task>" --workspace <manifest.toml>`; read `coverage.universe.members` before making a cross-repo claim |
 | Vague/conceptual: "where is the X", "how does Y work" | `sinter ask "<question>" --repo <repo>` |
 | Orient on a found symbol or file | `sinter show <symbol> --repo <repo>` (add `--body [--context-lines N]` for a bounded source excerpt — no follow-up file read) |
 | Exact/fuzzy symbol lookup | `sinter query <symbol> --repo <repo>` |
 | What depends on X / blast radius (reverse) | `sinter affected <symbol>... --repo <repo>` (seeds are repeatable; results are unioned and deduplicated, each row naming the seeds that reached it) |
 | What does X depend on (forward, before touching X) | `sinter deps <symbol> --repo <repo>` |
 | Where is the graph blind (honesty check, negative proofs) | `sinter unresolved [--file <f>] [--name <n>] [--all] --repo <repo>` (default prints actionable gaps only; `--all` lists external/unsupported rows) |
+| Does X have production callers in this indexed snapshot? | `sinter assert no-callers <symbol> --json [--workspace <manifest.toml>]`; accept only `status: holds_for_indexed_snapshot`, and quote the returned scope, snapshot, universe, and limitations |
+| Emit a durable source citation | `sinter cite <symbol> --repo <repo>`; paste the entire Markdown line, including its `sinter-cite:v1` metadata comment. Link targets are repository-root relative |
+| Gate a document's source citations | `sinter verify-doc <file.md> --repo <repo> --json`; `current` passes, `stale` identifies moved or missing citations, and `not_proven` identifies bare path/line references without symbol identity |
 | List a type's members or every impl of a method | `sinter query 'Type::*'` · `sinter query '*::method'` |
 | How does A reach B | `sinter path <A> <B> --repo <repo>` |
 | Find text, but only inside a blast radius ("which of these callers still say X") | `sinter grep '<regex>' --within 'affected(<sym>)' --repo <repo>` — `--within` takes `affected(SYM)`, `deps(SYM)`, or `file(PATH)`, is repeatable, and unions the bounded file sets. Full regex. This replaces running `affected` and grepping the result by hand |
@@ -111,11 +123,18 @@ conflates `not_found` (the symbol was not matched) with `not_proven` (the
 graph could not see). Any negative claim must read `status` (CLI `--json`)
 or `outcome.status` (MCP). In `--json` mode, errors are structured
 `sinter.agent.v1` outcomes; MCP exposes the identical failure under
-JSON-RPC `error.data`. `affected`/`path`/`deps` accept
+JSON-RPC `error.data`. CLI assertion and document gates use 0 pass, 1 fail,
+and 2 error; inspect their top-level `status` after branching on the code.
+`affected`/`path`/`deps` accept
 `--evidence scip,import,scope,dynamic` and `--certain` (stronger evidence
 tiers) plus `--relations calls,uses,imports,implements,extends` —
 `--relations calls,uses` cuts file-level import noise from a blast
 radius; implements/extends follows interface fan-out.
+
+Every traversal coverage envelope carries `universe`. Repository mode names
+the canonical root. Workspace mode names the manifest workspace and every
+canonical member root. Treat repositories absent from that field as
+unsearched.
 
 Text footers are one `coverage:` line plus query-specific gaps; set `SINTER_VERBOSE_COVERAGE=1` for filters and every repository-wide limitation.
 
@@ -163,12 +182,12 @@ do not infer production ownership from a path string.
 
 When the sinter MCP server is registered (`.mcp.json`, `.cursor/mcp.json`,
 `.codex/config.toml` — full `sinter init` does this), the same verbs are
-available as `mcp__sinter__*` tools (`ask`, `show`, `query`, `affected`,
+available as `mcp__sinter__*` tools (`ask`, `show`, `query`, `context`, `affected`,
 `deps`, `path`, `grep`, `unresolved`, `impact`, `overlap`, `map`). Every tool
 has a closed input schema. `grep` takes `pattern` and `within` (array, at
 least one bound); `show` takes `body` and `context_lines`; `impact` takes
 `expect` (array) and answers it under `expect[].untouched`. A `--workspace`
-server serves a smaller set — `ask`, `show`, `query`, `affected`, `path`,
+server serves a smaller set — `ask`, `show`, `query`, `context`, `affected`, `deps`, `path`,
 `unresolved`, `impact` — so `grep` is repository-scope only. Read `structuredContent.data` as the CLI `--json`
 payload (`content[0].text` is only a one-line summary) and inspect `outcome`
 before acting: `not_proven` is explicitly non-conclusive, and neither

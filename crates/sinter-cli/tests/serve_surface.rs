@@ -242,7 +242,9 @@ fn affected_is_terse_capped_and_batchable() {
         "{first}"
     );
     assert_eq!(v["coverage"]["ref"], first["coverage"]["ref"], "{v}");
-    assert!(v["coverage"]["completeness"].is_null(), "{v}");
+    assert_eq!(v["coverage"]["completeness"], "partial", "{v}");
+    assert_eq!(v["coverage"]["conclusive"], false, "{v}");
+    assert_eq!(v["coverage"]["universe"]["mode"], "repository", "{v}");
     assert!(v["coverage"]["compiler_index"].is_null(), "{v}");
     assert!(
         v["coverage"]["ref_note"]

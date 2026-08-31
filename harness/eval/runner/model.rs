@@ -135,6 +135,7 @@ pub enum AgentCapability {
     SymbolBody,
     MultiSeedBlastRadius,
     TaskContext,
+    DesignSimilarity,
 }
 
 impl AgentCapability {
@@ -154,6 +155,7 @@ impl AgentCapability {
             Self::SymbolBody => "symbol_body",
             Self::MultiSeedBlastRadius => "multi_seed_blast_radius",
             Self::TaskContext => "task_context",
+            Self::DesignSimilarity => "design_similarity",
         }
     }
 }
