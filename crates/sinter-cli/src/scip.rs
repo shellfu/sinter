@@ -382,22 +382,45 @@ pub fn run(repo: &Path) -> Result<()> {
             &project_root
         };
         eprintln!("{lang} ({label}): running {}...", argv.join(" "));
-        let status = Command::new(argv[0])
+        // Indexers narrate on stderr (rust-analyzer: hundreds of internal
+        // ERROR and duplicate-symbol lines on a healthy run). That is log
+        // material, not an answer: keep it in a file and print one line.
+        let log_path = repo
+            .join(".sinter")
+            .join(format!("scip-{lang}-{job_index}.log"));
+        let output = Command::new(argv[0])
             .args(&argv[1..])
             .current_dir(&project)
-            .status();
-        match status {
+            .output();
+        match output {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 eprintln!("{lang}: {} is not on PATH — install it: {hint}", argv[0]);
                 continue;
             }
             Err(e) => return Err(e).with_context(|| format!("run {}", argv[0])),
-            Ok(s) if !s.success() => {
-                let _ = std::fs::remove_file(&root_index);
-                eprintln!("{lang}: {} failed with {s} — skipped", argv[0]);
-                continue;
+            Ok(out) => {
+                let mut log = out.stdout;
+                log.extend_from_slice(&out.stderr);
+                let _ = std::fs::write(&log_path, &log);
+                let text = String::from_utf8_lossy(&log);
+                if !out.status.success() {
+                    let _ = std::fs::remove_file(&root_index);
+                    let tail: Vec<&str> = text.lines().rev().take(20).collect();
+                    eprintln!(
+                        "{lang}: {} failed with {} — skipped; last lines:\n{}",
+                        argv[0],
+                        out.status,
+                        tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+                    );
+                    continue;
+                }
+                let errors = text.lines().filter(|l| l.contains(" ERROR ")).count();
+                eprintln!(
+                    "{lang}: indexer finished ({} log lines, {errors} indexer-internal errors; {})",
+                    text.lines().count(),
+                    log_path.display()
+                );
             }
-            Ok(_) => {}
         }
         if !root_index.exists() {
             eprintln!("{lang}: {} succeeded but wrote no index.scip", argv[0]);
