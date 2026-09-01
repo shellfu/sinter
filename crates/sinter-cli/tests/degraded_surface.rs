@@ -297,7 +297,7 @@ fn doctor_counts_skipped_sql_constructs() {
 
     let (_, out) = sinter_raw(repo, &["doctor", "."]);
     assert!(
-        out.contains("SQL statement(s) skipped") && out.contains("CREATE PROCEDURE"),
+        out.contains("parsed only partially") && out.contains("CREATE PROCEDURE x1"),
         "doctor must surface skipped SQL constructs: {out}"
     );
 }

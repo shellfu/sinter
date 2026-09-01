@@ -472,6 +472,17 @@ fn stale_servers() -> Vec<(u32, String, String)> {
     Vec::new()
 }
 
+/// The auto-fix rebuild, with the same phase reporter `sinter build` uses:
+/// a large repository takes tens of seconds and a silent `--fix` reads as
+/// a hang.
+fn rebuild(repo: &Path) -> Result<()> {
+    let progress = crate::progress::Progress::stderr();
+    pipeline::build_with(repo, None, &mut |phase| {
+        crate::progress::render(&progress, phase)
+    })
+    .map(drop)
+}
+
 /// Graph-section findings. Returns early when there is no readable graph
 /// so the integration section still runs and the summary stays whole.
 fn graph_checks(r: &mut Report, repo: &Path) -> Result<()> {
@@ -480,7 +491,7 @@ fn graph_checks(r: &mut Report, repo: &Path) -> Result<()> {
         r.fixable(
             &format!("no graph at {}", db.display()),
             "run `sinter build`",
-            || pipeline::build(repo, None).map(drop),
+            || rebuild(repo),
         );
         if !db.exists() {
             return Ok(());
@@ -506,10 +517,10 @@ fn graph_checks(r: &mut Report, repo: &Path) -> Result<()> {
                 Store::CURRENT_SCHEMA
             ),
             "run `sinter build` (rebuilds automatically)",
-            || pipeline::build(repo, None).map(drop),
+            || rebuild(repo),
         ),
         None => r.fixable("graph has no schema stamp", "run `sinter build`", || {
-            pipeline::build(repo, None).map(drop)
+            rebuild(repo)
         }),
     }
     // Re-read: `--fix` may have just rebuilt. Values under an old schema
@@ -541,7 +552,7 @@ fn graph_checks(r: &mut Report, repo: &Path) -> Result<()> {
         r.fixable(
             &format!("graph stale: {stale} changed, {removed} removed files"),
             "run `sinter build`",
-            || pipeline::build(repo, None).map(drop),
+            || rebuild(repo),
         );
     }
 
@@ -578,8 +589,9 @@ fn graph_checks(r: &mut Report, repo: &Path) -> Result<()> {
     }
     let coverage = crate::coverage::repository_coverage(repo, &store)?;
     completeness_warnings(r, &coverage);
-    skipped_sql_constructs(r, repo, &coverage);
-    schema_consistency(r, repo, &store, &coverage)?;
+    let gap = schema_consistency(r, repo, &store, &coverage)?;
+    let total_sql = stored.keys().filter(|f| f.ends_with(".sql")).count();
+    sql_parse_gap(r, repo, &coverage, total_sql, gap);
     Ok(())
 }
 
@@ -592,7 +604,7 @@ fn schema_consistency(
     repo: &Path,
     store: &Store,
     coverage: &serde_json::Value,
-) -> Result<()> {
+) -> Result<SqlGap> {
     let objects: Vec<Node> = store
         .all_nodes()?
         .into_iter()
@@ -662,23 +674,24 @@ fn schema_consistency(
             ));
         }
     }
-    if hidden_creates > 0 {
-        r.completeness(&format!(
-            "{hidden_creates} referenced table(s) are created in partially parsed .sql file(s); those CREATE statements are absent from the graph"
-        ));
-    }
     if shown > NEVER_CREATED_SHOWN && r.json.is_none() {
         r.completeness(&format!(
             "{} more table(s) referenced in SQL but never created (`sinter doctor --json` lists all)",
             shown - NEVER_CREATED_SHOWN
         ));
     }
-    if withheld > 0 {
-        r.completeness(&format!(
-            "{withheld} never-created table finding(s) withheld: every reference sits in a partially parsed .sql file, where the CREATE may be in a dropped statement"
-        ));
-    }
-    Ok(())
+    Ok(SqlGap {
+        hidden_creates,
+        withheld,
+    })
+}
+
+/// What the SQL grammar gap cost the schema lints; folded into the one
+/// SQL completeness line by [`sql_parse_gap`].
+#[derive(Default)]
+struct SqlGap {
+    hidden_creates: usize,
+    withheld: usize,
 }
 
 /// Names the never-created lint should not judge: system catalogs, and
@@ -964,11 +977,18 @@ fn schema_findings(
     out
 }
 
-/// SQL statements the grammar cannot parse (CREATE PROCEDURE misparses in
-/// tree-sitter-sequel 0.3) leave the file flagged as a partial syntax tree
-/// but the skipped objects themselves used to vanish silently. Count them
-/// so the gap is a number, not a shrug.
-fn skipped_sql_constructs(r: &mut Report, repo: &Path, coverage: &serde_json::Value) {
+/// One row for the whole SQL grammar gap. tree-sitter-sequel drops the
+/// statements it cannot parse (Postgres DDL: functions, triggers, policies,
+/// DO blocks), so the affected files are indexed from partial trees and
+/// every downstream lint inherits the hole. Nothing in the repository fixes
+/// it; the row says so and names what is missing.
+fn sql_parse_gap(
+    r: &mut Report,
+    repo: &Path,
+    coverage: &serde_json::Value,
+    total_sql: usize,
+    gap: SqlGap,
+) {
     let sql_files: Vec<&str> = coverage["graph"]["syntax_error_files"]
         .as_array()
         .map(|files| {
@@ -982,30 +1002,69 @@ fn skipped_sql_constructs(r: &mut Report, repo: &Path, coverage: &serde_json::Va
     if sql_files.is_empty() {
         return;
     }
-    // ponytail: line-level text heuristic, not a parse — a real count needs
-    // extraction to record skipped statements, which lives outside doctor.
-    let mut skipped = 0usize;
+    // ponytail: text heuristic over the partial files — which statement
+    // kinds are present, not which ones the parser actually dropped. A real
+    // answer needs extraction to record ERROR-node spans.
+    const CONSTRUCTS: &[(&str, &str)] = &[
+        (
+            "CREATE PROCEDURE",
+            r"(?i)\bcreate\s+(or\s+replace\s+)?procedure\b",
+        ),
+        (
+            "CREATE FUNCTION",
+            r"(?i)\bcreate\s+(or\s+replace\s+)?function\b",
+        ),
+        (
+            "CREATE TRIGGER",
+            r"(?i)\bcreate\s+(or\s+replace\s+)?trigger\b",
+        ),
+        ("CREATE POLICY", r"(?i)\bcreate\s+policy\b"),
+        ("CREATE TYPE", r"(?i)\bcreate\s+type\b"),
+        ("CREATE EXTENSION", r"(?i)\bcreate\s+extension\b"),
+        ("DO block", r"(?i)\bdo\s+\$"),
+        ("ROW LEVEL SECURITY", r"(?i)\brow\s+level\s+security\b"),
+        ("GRANT/REVOKE", r"(?i)^\s*(grant|revoke)\b"),
+    ];
+    let mut counts: Vec<(&str, usize)> = CONSTRUCTS.iter().map(|(n, _)| (*n, 0)).collect();
     for file in &sql_files {
         let Ok(content) = std::fs::read_to_string(repo.join(file)) else {
             continue;
         };
-        skipped += content
-            .lines()
-            .map(str::to_ascii_uppercase)
-            .filter(|line| line.contains("CREATE") && line.contains("PROCEDURE"))
-            .count();
+        for (i, (_, pattern)) in CONSTRUCTS.iter().enumerate() {
+            if let Ok(re) = regex::RegexBuilder::new(pattern).multi_line(true).build() {
+                counts[i].1 += re.find_iter(&content).count();
+            }
+        }
     }
-    if skipped > 0 {
-        r.completeness(&format!(
-            "{skipped} SQL statement(s) skipped in {} partially parsed .sql file(s) (CREATE PROCEDURE is unsupported by the SQL grammar); those objects are absent from the graph",
-            sql_files.len()
-        ));
+    counts.retain(|(_, n)| *n > 0);
+    counts.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    let likely = if counts.is_empty() {
+        String::new()
     } else {
-        r.completeness(&format!(
-            "{} .sql file(s) indexed from partial syntax trees; unparsed statements are absent from the graph",
-            sql_files.len()
-        ));
+        let top: Vec<String> = counts
+            .iter()
+            .take(3)
+            .map(|(name, n)| format!("{name} x{n}"))
+            .collect();
+        format!(" (likely: {})", top.join(", "))
+    };
+    let mut missing = vec!["the unparsed statements".to_string()];
+    if gap.hidden_creates > 0 {
+        missing.insert(0, format!("{} table CREATEs", gap.hidden_creates));
     }
+    let withheld = if gap.withheld > 0 {
+        format!(
+            "; {} unverifiable table reference(s) withheld",
+            gap.withheld
+        )
+    } else {
+        String::new()
+    };
+    r.completeness(&format!(
+        "SQL: {} of {total_sql} .sql files parsed only partially — the SQL grammar lacks Postgres constructs{likely}; absent from the graph: {}; reads/writes on those tables may be incomplete{withheld}. Not fixable in this repository",
+        sql_files.len(),
+        missing.join(" and "),
+    ));
 }
 
 /// Gaps `map` already reports as `partial`, surfaced here so `0 problems`
@@ -1014,9 +1073,16 @@ fn skipped_sql_constructs(r: &mut Report, repo: &Path, coverage: &serde_json::Va
 fn completeness_warnings(r: &mut Report, coverage: &serde_json::Value) {
     let graph = &coverage["graph"];
     let count = |field: &str| graph[field].as_u64().unwrap_or(0);
+    // .sql files have their own line (`sql_parse_gap`): one grammar gap, one row.
     let partial: Vec<&str> = graph["syntax_error_files"]
         .as_array()
-        .map(|files| files.iter().filter_map(|f| f.as_str()).collect())
+        .map(|files| {
+            files
+                .iter()
+                .filter_map(|f| f.as_str())
+                .filter(|f| !f.ends_with(".sql"))
+                .collect()
+        })
         .unwrap_or_default();
     if !partial.is_empty() {
         let first: Vec<&str> = partial.iter().copied().take(3).collect();
