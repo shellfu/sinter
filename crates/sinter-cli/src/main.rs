@@ -756,12 +756,27 @@ fn exit_json(operation: &str, result: anyhow::Result<()>) -> ExitCode {
     }
 }
 
+/// Stack for the CLI thread. The main thread is 1 MiB on Windows, and the
+/// derived clap `Command` for this CLI plus the deeper indexing paths need
+/// more than that in debug builds (`sinter build` overflowed in CI).
+const CLI_STACK_BYTES: usize = 64 * 1024 * 1024;
+
 fn main() -> ExitCode {
     // Die quietly when the read end of a pipe closes (`sinter ask | head`).
     #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
+    std::thread::Builder::new()
+        .name("sinter".into())
+        .stack_size(CLI_STACK_BYTES)
+        .spawn(cli_main)
+        .expect("spawn sinter thread")
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+fn cli_main() -> ExitCode {
     let cli = Cli::parse();
     // `context` is the one CLI verb with a default budget: its packet is
     // agent-facing by definition (it exists to be pasted into a context
