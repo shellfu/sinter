@@ -579,7 +579,7 @@ fn graph_checks(r: &mut Report, repo: &Path) -> Result<()> {
     let coverage = crate::coverage::repository_coverage(repo, &store)?;
     completeness_warnings(r, &coverage);
     skipped_sql_constructs(r, repo, &coverage);
-    schema_consistency(r, repo, &store)?;
+    schema_consistency(r, repo, &store, &coverage)?;
     Ok(())
 }
 
@@ -587,7 +587,12 @@ fn graph_checks(r: &mut Report, repo: &Path) -> Result<()> {
 /// completeness warnings: lexical filename order is the migration
 /// convention, not proof of execution order, so a finding never fails
 /// the exit code.
-fn schema_consistency(r: &mut Report, repo: &Path, store: &Store) -> Result<()> {
+fn schema_consistency(
+    r: &mut Report,
+    repo: &Path,
+    store: &Store,
+    coverage: &serde_json::Value,
+) -> Result<()> {
     let objects: Vec<Node> = store
         .all_nodes()?
         .into_iter()
@@ -619,13 +624,150 @@ fn schema_consistency(r: &mut Report, repo: &Path, store: &Store) -> Result<()> 
             sites_text(repo, &d.sites),
         ));
     }
+    // A partially parsed file may hold the CREATE in a statement the
+    // grammar dropped, so a reference seen only there proves nothing.
+    let partial: std::collections::BTreeSet<&str> = coverage["graph"]["syntax_error_files"]
+        .as_array()
+        .map(|files| files.iter().filter_map(|f| f.as_str()).collect())
+        .unwrap_or_default();
+    let partial_sql: Vec<String> = partial
+        .iter()
+        .filter(|f| f.ends_with(".sql"))
+        .filter_map(|f| std::fs::read_to_string(repo.join(f)).ok())
+        .collect();
+    let mut withheld = 0usize;
+    let mut hidden_creates = 0usize;
+    let mut shown = 0usize;
+    const NEVER_CREATED_SHOWN: usize = 10;
     for (name, sites) in &findings.never_created {
+        if !plausible_table_name(name) || defined_as_cte(repo, name, sites) {
+            continue;
+        }
+        if created_in_text(&partial_sql, name) {
+            hidden_creates += 1;
+            continue;
+        }
+        if sites
+            .iter()
+            .all(|(file, _)| partial.contains(file.as_str()))
+        {
+            withheld += 1;
+            continue;
+        }
+        shown += 1;
+        if shown <= NEVER_CREATED_SHOWN || r.json.is_some() {
+            r.completeness(&format!(
+                "table `{name}` is referenced in SQL but never created by any migration: {}",
+                sites_text(repo, sites),
+            ));
+        }
+    }
+    if hidden_creates > 0 {
         r.completeness(&format!(
-            "table `{name}` is referenced in SQL but never created by any migration: {}",
-            sites_text(repo, sites),
+            "{hidden_creates} referenced table(s) are created in partially parsed .sql file(s); those CREATE statements are absent from the graph"
+        ));
+    }
+    if shown > NEVER_CREATED_SHOWN && r.json.is_none() {
+        r.completeness(&format!(
+            "{} more table(s) referenced in SQL but never created (`sinter doctor --json` lists all)",
+            shown - NEVER_CREATED_SHOWN
+        ));
+    }
+    if withheld > 0 {
+        r.completeness(&format!(
+            "{withheld} never-created table finding(s) withheld: every reference sits in a partially parsed .sql file, where the CREATE may be in a dropped statement"
         ));
     }
     Ok(())
+}
+
+/// Names the never-created lint should not judge: system catalogs, and
+/// tokens the grammar's error recovery mistakes for relation names.
+fn plausible_table_name(name: &str) -> bool {
+    const SQL_KEYWORDS: &[&str] = &[
+        "all",
+        "and",
+        "as",
+        "by",
+        "case",
+        "columns",
+        "constraint",
+        "cross",
+        "delete",
+        "distinct",
+        "else",
+        "end",
+        "exists",
+        "for",
+        "from",
+        "group",
+        "having",
+        "in",
+        "index",
+        "inner",
+        "insert",
+        "into",
+        "is",
+        "join",
+        "left",
+        "limit",
+        "not",
+        "null",
+        "offset",
+        "on",
+        "only",
+        "or",
+        "order",
+        "outer",
+        "over",
+        "partition",
+        "returning",
+        "right",
+        "row",
+        "select",
+        "set",
+        "table",
+        "then",
+        "union",
+        "update",
+        "using",
+        "values",
+        "view",
+        "when",
+        "where",
+        "with",
+    ];
+    !(name.starts_with("pg_")
+        || name.starts_with("information_schema")
+        || SQL_KEYWORDS.contains(&name))
+}
+
+/// `CREATE TABLE|VIEW name` as text in a partially parsed file: the object
+/// exists, the grammar dropped its statement.
+fn created_in_text(texts: &[String], name: &str) -> bool {
+    let Ok(re) = regex::Regex::new(&format!(
+        r#"(?i)create\s+(table|(materialized\s+)?view)\s+(if\s+not\s+exists\s+)?("?\w+"?\.)?"?{}"?\b"#,
+        regex::escape(name)
+    )) else {
+        return false;
+    };
+    texts.iter().any(|t| re.is_match(t))
+}
+
+/// `WITH name AS (` in a referencing file makes the name a CTE, not a
+/// table. ponytail: text heuristic; capturing `cte` nodes in sql.scm as
+/// file-local definitions would make resolution itself bind these.
+fn defined_as_cte(repo: &Path, name: &str, sites: &[(String, u64)]) -> bool {
+    let Ok(re) = regex::Regex::new(&format!(r"(?i)\b{}\s+as\s*\(", regex::escape(name))) else {
+        return false;
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    sites
+        .iter()
+        .filter(|(file, _)| seen.insert(file.clone()))
+        .any(|(file, _)| {
+            std::fs::read_to_string(repo.join(file)).is_ok_and(|text| re.is_match(&text))
+        })
 }
 
 /// Up to three `file:line` evidence sites (file-only when the line is
@@ -1243,5 +1385,30 @@ mod tests {
 
         assert!(mcp_command_resolves(repo.path(), "tools/sinter", None));
         assert!(!mcp_command_resolves(repo.path(), "tools/missing", None));
+    }
+}
+
+#[cfg(test)]
+mod never_created_filters {
+    use super::{created_in_text, plausible_table_name};
+
+    #[test]
+    fn catalog_tables_and_keywords_are_not_judged() {
+        assert!(!plausible_table_name("pg_roles"));
+        assert!(!plausible_table_name("information_schema"));
+        assert!(!plausible_table_name("on"));
+        assert!(!plausible_table_name("row"));
+        assert!(plausible_table_name("trajectories"));
+    }
+
+    #[test]
+    fn creates_hidden_in_partial_files_are_found_by_text() {
+        let texts = vec![
+            "CREATE TABLE IF NOT EXISTS public.\"trajectories\" (id int);".to_string(),
+            "create materialized view agg as select 1;".to_string(),
+        ];
+        assert!(created_in_text(&texts, "trajectories"));
+        assert!(created_in_text(&texts, "agg"));
+        assert!(!created_in_text(&texts, "trajectory"));
     }
 }
