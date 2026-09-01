@@ -20,9 +20,36 @@ use crate::lookup::{ensure_snapshot, ensure_snapshot_token, open_store, unique_s
 
 pub(crate) const DEFAULT_LIMIT: usize = 50;
 
-fn call_filter(scopes: BTreeSet<CorpusScope>, certain: bool) -> EdgeFilter {
+/// Which depth-one edge relations an assertion forbids, and how it names
+/// itself. `assert no-writers` is `assert no-callers` over write-shaped
+/// relations: same traversal, same JSON shape, same exit codes.
+pub(crate) struct AssertionSpec {
+    pub kind: &'static str,
+    pub label: &'static str,
+    pub noun: &'static str,
+    pub meaning: &'static str,
+    pub relations: &'static [Relation],
+}
+
+pub(crate) const NO_CALLERS: AssertionSpec = AssertionSpec {
+    kind: "no_callers",
+    label: "no-callers",
+    noun: "caller",
+    meaning: "no observed depth-one call edges in the requested corpus scope",
+    relations: &[Relation::Calls],
+};
+
+pub(crate) const NO_WRITERS: AssertionSpec = AssertionSpec {
+    kind: "no_writers",
+    label: "no-writers",
+    noun: "writer",
+    meaning: "no observed depth-one writes/alters/drops edges in the requested corpus scope",
+    relations: &[Relation::Writes, Relation::Alters, Relation::Drops],
+};
+
+fn edge_filter(spec: &AssertionSpec, scopes: BTreeSet<CorpusScope>, certain: bool) -> EdgeFilter {
     EdgeFilter {
-        relations: Some(BTreeSet::from([Relation::Calls])),
+        relations: Some(spec.relations.iter().copied().collect()),
         scopes: Some(scopes),
         min_confidence: certain.then_some(sinter_core::Confidence::Certain),
         ..Default::default()
@@ -77,13 +104,14 @@ fn caller_row(repo: &Path, reached: &Reached, scopes: &sinter_store::ScopeIndex)
 fn repository_response(
     repo: &Path,
     store: &Store,
+    spec: &AssertionSpec,
     symbol: &str,
     scopes: BTreeSet<CorpusScope>,
     certain: bool,
     limit: usize,
 ) -> Result<Value> {
     let root = crate::pipeline::discover_root(repo).canonicalize()?;
-    let filter = call_filter(scopes.clone(), certain);
+    let filter = edge_filter(spec, scopes.clone(), certain);
     let node = unique_symbol_in(store, symbol, Some(&scopes))?;
     let callers = store.dependents(&node.id, &filter, 1)?;
 
@@ -107,8 +135,8 @@ fn repository_response(
     let mut out = json!({
         "status": assertion_status,
         "assertion": {
-            "kind": "no_callers",
-            "meaning": "no observed depth-one call edges in the requested corpus scope",
+            "kind": spec.kind,
+            "meaning": spec.meaning,
             "runtime_exhaustive": false,
         },
         "symbol": crate::graph_tool::scoped_node_json(&node, &scope_index),
@@ -147,12 +175,13 @@ fn workspace_node(member: &str, node: &Node, scope: CorpusScope) -> Value {
 /// Workspace assertion producer.
 fn workspace_response(
     workspace: &crate::workspace::Workspace,
+    spec: &AssertionSpec,
     symbol: &str,
     scopes: BTreeSet<CorpusScope>,
     certain: bool,
     limit: usize,
 ) -> Result<Value> {
-    let filter = call_filter(scopes.clone(), certain);
+    let filter = edge_filter(spec, scopes.clone(), certain);
     let (member, node) = crate::workspace::find_symbol(workspace, symbol)?;
     let callers = crate::workspace::dependents(workspace, &member, &node.id, &filter, 1)?;
 
@@ -198,8 +227,8 @@ fn workspace_response(
     let mut out = json!({
         "status": assertion_status,
         "assertion": {
-            "kind": "no_callers",
-            "meaning": "no observed depth-one call edges in the requested corpus scope",
+            "kind": spec.kind,
+            "meaning": spec.meaning,
             "runtime_exhaustive": false,
         },
         "symbol": workspace_node(&member, &node, owner_scope),
@@ -226,12 +255,14 @@ fn workspace_response(
     Ok(out)
 }
 
-fn print_response(response: &Value) {
+fn print_response(spec: &AssertionSpec, response: &Value) {
     let symbol = response["symbol"]["qualified"].as_str().unwrap_or("?");
     let count = response["observed_callers"].as_u64().unwrap_or(0);
     println!(
-        "assert no-callers {symbol}: {} ({count} observed caller(s))",
-        response["status"].as_str().unwrap_or("not_proven")
+        "assert {} {symbol}: {} ({count} observed {}(s))",
+        spec.label,
+        response["status"].as_str().unwrap_or("not_proven"),
+        spec.noun,
     );
     for caller in response["callers"].as_array().into_iter().flatten() {
         println!(
@@ -252,8 +283,10 @@ fn print_response(response: &Value) {
     crate::coverage::print_traversal_footer(&response["coverage"], response["snapshot"].as_str());
 }
 
+#[allow(clippy::too_many_arguments)] // mirrors the clap subcommand one-to-one
 pub(crate) fn run_repository(
     repo: &Path,
+    spec: &AssertionSpec,
     symbol: &str,
     scopes: BTreeSet<CorpusScope>,
     certain: bool,
@@ -263,19 +296,21 @@ pub(crate) fn run_repository(
 ) -> Result<bool> {
     let store = open_store(repo)?;
     let snapshot = ensure_snapshot(&store, if_snapshot)?;
-    let mut response = repository_response(repo, &store, symbol, scopes, certain, limit)?;
+    let mut response = repository_response(repo, &store, spec, symbol, scopes, certain, limit)?;
     response["snapshot"] = json!(snapshot);
     let holds = response["status"] == "holds_for_indexed_snapshot";
     if json_output {
         crate::agent_protocol::write_json(&response)?;
     } else {
-        print_response(&response);
+        print_response(spec, &response);
     }
     Ok(holds)
 }
 
+#[allow(clippy::too_many_arguments)] // mirrors the clap subcommand one-to-one
 pub(crate) fn run_workspace(
     manifest: &Path,
+    spec: &AssertionSpec,
     symbol: &str,
     scopes: BTreeSet<CorpusScope>,
     certain: bool,
@@ -292,13 +327,13 @@ pub(crate) fn run_workspace(
     }
     let snapshot = crate::workspace::snapshot_token(&workspace)?;
     ensure_snapshot_token(if_snapshot, &snapshot)?;
-    let mut response = workspace_response(&workspace, symbol, scopes, certain, limit)?;
+    let mut response = workspace_response(&workspace, spec, symbol, scopes, certain, limit)?;
     response["snapshot"] = json!(snapshot);
     let holds = response["status"] == "holds_for_indexed_snapshot";
     if json_output {
         crate::agent_protocol::write_json(&response)?;
     } else {
-        print_response(&response);
+        print_response(spec, &response);
     }
     Ok(holds)
 }

@@ -935,7 +935,7 @@ fn resolve_one<'a>(
         return (target, evidence, internal);
     }
 
-    resolve_bare_reference(index, r, file_module, imports)
+    resolve_bare_reference(index, spec, r, file_module, imports)
 }
 
 /// Method call on a tonic-generated client (`client.adjudicates(req)`):
@@ -1149,6 +1149,7 @@ fn resolve_qualified_reference<'a>(
 /// imports. Shadowing and every ambiguity remain evidence-or-nothing.
 fn resolve_bare_reference<'a>(
     index: &Index<'a>,
+    spec: &LanguageSpec,
     r: &Reference,
     file_module: &[String],
     imports: Option<&Vec<Import>>,
@@ -1232,7 +1233,43 @@ fn resolve_bare_reference<'a>(
         }
         _ => (None, true), // ambiguous named imports
     };
+    if target.is_none() && (spec.name == "sql" || is_data_relation(r.relation)) {
+        // Data relations from a non-SQL file are embedded SQL (sqlx/diesel
+        // string literals): the host language's module key can never match
+        // a SQL namespace, so the repo-wide unique-table tier is the only
+        // binding chance.
+        return sql_repo_fallback(index, r);
+    }
     (target, Evidence::Import, internal)
+}
+
+/// Relations only SQL emits — table data flow, whether from a .sql file
+/// or a SQL literal embedded in host-language code.
+fn is_data_relation(relation: Relation) -> bool {
+    matches!(
+        relation,
+        Relation::Reads | Relation::Writes | Relation::Creates | Relation::Alters | Relation::Drops
+    )
+}
+
+/// Repo-wide SQL fallback: a table/view name that misses its database-root
+/// namespace binds only when exactly one table or view in the whole corpus
+/// carries that name. Two or more candidates is ambiguity — unresolved is
+/// the answer, never a guess.
+fn sql_repo_fallback<'a>(index: &Index<'a>, r: &Reference) -> (Option<&'a Node>, Evidence, bool) {
+    let candidates: Vec<&Node> = index
+        .by_name
+        .get(r.name.as_str())
+        .into_iter()
+        .flatten()
+        .map(|(_, node)| *node)
+        .filter(|n| matches!(n.kind, SymbolKind::Table | SymbolKind::View))
+        .collect();
+    match candidates.as_slice() {
+        [node] => (Some(node), Evidence::Scope, true),
+        [] => (None, Evidence::Scope, false),
+        _ => (None, Evidence::Scope, true), // ambiguous across roots: conservative
+    }
 }
 
 /// Document-path reference (spec.file_refs, e.g. a markdown link): the

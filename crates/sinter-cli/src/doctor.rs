@@ -9,6 +9,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use sinter_core::{Edge, Node, NodeId, Relation, SymbolKind, UnresolvedReference};
 use sinter_extract::LANGUAGES;
 use sinter_store::Store;
 
@@ -496,8 +497,294 @@ fn graph_checks(r: &mut Report, repo: &Path) -> Result<()> {
             r.ok("no SCIP index (optional; `sinter scip` would bind external/method refs)")
         }
     }
-    completeness_warnings(r, &crate::coverage::repository_coverage(repo, &store)?);
+    let coverage = crate::coverage::repository_coverage(repo, &store)?;
+    completeness_warnings(r, &coverage);
+    skipped_sql_constructs(r, repo, &coverage);
+    schema_consistency(r, repo, &store)?;
     Ok(())
+}
+
+/// Migration-sequence fold and schema-consistency lints, rendered as
+/// completeness warnings: lexical filename order is the migration
+/// convention, not proof of execution order, so a finding never fails
+/// the exit code.
+fn schema_consistency(r: &mut Report, repo: &Path, store: &Store) -> Result<()> {
+    let objects: Vec<Node> = store
+        .all_nodes()?
+        .into_iter()
+        .filter(|n| matches!(n.kind, SymbolKind::Table | SymbolKind::View))
+        .collect();
+    let ids: Vec<NodeId> = objects.iter().map(|n| n.id.clone()).collect();
+    let mut in_edges = store.in_edges_many(&ids)?;
+    let tables: Vec<(Node, Vec<Edge>)> = objects
+        .into_iter()
+        .map(|n| {
+            let edges = in_edges.remove(&n.id).unwrap_or_default();
+            (n, edges)
+        })
+        .collect();
+    let unresolved = store.all_unresolved_details()?;
+    let findings = schema_findings(&tables, &unresolved);
+    for dir in &findings.skipped {
+        let dir = if dir.is_empty() { "." } else { dir };
+        r.completeness(&format!(
+            "schema fold skipped for {dir}/: migration filenames lack sortable prefixes"
+        ));
+    }
+    for d in &findings.dropped {
+        r.completeness(&format!(
+            "{} `{}` is dropped at head ({}) but still referenced: {}",
+            d.kind,
+            d.name,
+            d.dropped_in,
+            sites_text(repo, &d.sites),
+        ));
+    }
+    for (name, sites) in &findings.never_created {
+        r.completeness(&format!(
+            "table `{name}` is referenced in SQL but never created by any migration: {}",
+            sites_text(repo, sites),
+        ));
+    }
+    Ok(())
+}
+
+/// Up to three `file:line` evidence sites (file-only when the line is
+/// unavailable), then a remainder count.
+fn sites_text(repo: &Path, sites: &[(String, u64)]) -> String {
+    let shown: Vec<String> = sites
+        .iter()
+        .take(3)
+        .map(
+            |(file, byte)| match crate::render::line_of(repo, file, *byte) {
+                Some(line) => format!("{file}:{line}"),
+                None => file.clone(),
+            },
+        )
+        .collect();
+    let more = sites.len().saturating_sub(3);
+    if more > 0 {
+        format!("{}, +{more} more", shown.join(", "))
+    } else {
+        shown.join(", ")
+    }
+}
+
+/// Results of the migration fold, separated from rendering so tests can
+/// drive it with an in-memory graph.
+#[derive(Default)]
+struct SchemaFindings {
+    /// Directories whose fold was skipped: they drop objects but at least
+    /// one schema-changing filename has no sortable (leading-digit) prefix.
+    skipped: Vec<String>,
+    dropped: Vec<DroppedButReferenced>,
+    /// (name, reference sites) for tables read/written/used in SQL that no
+    /// table or view node anywhere defines — distinct from plain unresolved
+    /// because a create provably does not exist in the corpus.
+    never_created: Vec<(String, Vec<(String, u64)>)>,
+}
+
+/// A table/view whose lexically-last migration event is a drop, yet the
+/// graph still holds reads/writes/uses edges into it from outside the
+/// migration sequence.
+struct DroppedButReferenced {
+    kind: &'static str,
+    name: String,
+    dropped_in: String,
+    /// (file, byte offset) of each surviving reference site.
+    sites: Vec<(String, u64)>,
+}
+
+/// Lexical fold over each directory's schema-changing `.sql` files.
+/// Creates and drops move an object's head state; alters (including
+/// renames) never change liveness — conservative, so a renamed table
+/// reads as still alive under its original node. Directories whose
+/// schema-changing filenames are not sortable (no leading digit) are
+/// skipped and named instead of guessed at.
+fn schema_findings(
+    tables: &[(Node, Vec<Edge>)],
+    unresolved: &[UnresolvedReference],
+) -> SchemaFindings {
+    use std::collections::{BTreeMap, BTreeSet};
+    // File encoded in a node id: symbol ids are `file#qualified@off`,
+    // file-node ids are the path itself (same derivation as edge sites).
+    let file_of = |id: &NodeId| {
+        id.as_str()
+            .split_once('#')
+            .map_or(id.as_str(), |(f, _)| f)
+            .to_string()
+    };
+    let dir_of = |file: &str| file.rsplit_once('/').map_or("", |(d, _)| d).to_string();
+    // Schema events grouped dir -> file -> (position, relation, object).
+    #[allow(clippy::type_complexity)]
+    let mut dirs: BTreeMap<String, BTreeMap<String, Vec<(u64, Relation, usize)>>> = BTreeMap::new();
+    for (i, (node, in_edges)) in tables.iter().enumerate() {
+        for e in in_edges {
+            if !matches!(e.relation, Relation::Creates | Relation::Drops) {
+                continue;
+            }
+            let src_file = file_of(&e.src);
+            if !src_file.ends_with(".sql") {
+                continue;
+            }
+            // Position of the event inside its file: the reference site, or
+            // the definition span for a create edge that carries none.
+            let pos = e
+                .site
+                .map(|s| s.start)
+                .or_else(|| (node.file == src_file).then_some(node.span.start))
+                .unwrap_or(0);
+            dirs.entry(dir_of(&src_file))
+                .or_default()
+                .entry(src_file)
+                .or_default()
+                .push((pos, e.relation, i));
+        }
+    }
+    let mut out = SchemaFindings::default();
+    for (dir, files) in &dirs {
+        if !files
+            .values()
+            .flatten()
+            .any(|(_, rel, _)| *rel == Relation::Drops)
+        {
+            continue; // nothing can die: no fold needed
+        }
+        let sortable = files.keys().all(|f| {
+            f.rsplit_once('/')
+                .map_or(f.as_str(), |(_, base)| base)
+                .starts_with(|c: char| c.is_ascii_digit())
+        });
+        if !sortable {
+            out.skipped.push(dir.clone());
+            continue;
+        }
+        // Fold in lexical file order, site order within a file: the last
+        // create/drop wins the object's head state.
+        let mut last: BTreeMap<usize, (Relation, &str)> = BTreeMap::new();
+        for (file, events) in files {
+            let mut events = events.clone();
+            events.sort_unstable_by_key(|(pos, ..)| *pos);
+            for (_, rel, i) in events {
+                last.insert(i, (rel, file));
+            }
+        }
+        let migration_files: BTreeSet<&str> = files.keys().map(String::as_str).collect();
+        for (i, (rel, dropped_in)) in last {
+            if rel != Relation::Drops {
+                continue;
+            }
+            let (node, in_edges) = &tables[i];
+            // Objects defined in another directory belong to that
+            // directory's fold; a cross-directory drop proves nothing here.
+            if dir_of(&node.file) != *dir {
+                continue;
+            }
+            let mut sites: Vec<(String, u64)> = in_edges
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e.relation,
+                        Relation::Reads | Relation::Writes | Relation::Uses
+                    )
+                })
+                .filter_map(|e| {
+                    let file = file_of(&e.src);
+                    // Reads/writes inside the migration sequence itself
+                    // (backfills) were valid at their point in history.
+                    (!migration_files.contains(file.as_str()))
+                        .then(|| (file, e.site.map_or(0, |s| s.start)))
+                })
+                .collect();
+            sites.sort_unstable();
+            sites.dedup();
+            if !sites.is_empty() {
+                out.dropped.push(DroppedButReferenced {
+                    kind: node.kind.as_str(),
+                    name: node.name.clone(),
+                    dropped_in: dropped_in.to_string(),
+                    sites,
+                });
+            }
+        }
+    }
+    // Never created: a SQL read/write/use that resolution left dangling and
+    // whose name matches no table/view definition anywhere in the corpus.
+    let defined: BTreeSet<String> = tables
+        .iter()
+        .map(|(n, _)| n.name.to_ascii_lowercase())
+        .collect();
+    let mut missing: BTreeMap<String, Vec<(String, u64)>> = BTreeMap::new();
+    for u in unresolved {
+        let r = &u.reference;
+        if !r.file.ends_with(".sql")
+            || !matches!(
+                r.relation,
+                Relation::Reads | Relation::Writes | Relation::Uses
+            )
+        {
+            continue;
+        }
+        let name = r
+            .name
+            .rsplit('.')
+            .next()
+            .unwrap_or(&r.name)
+            .to_ascii_lowercase();
+        if defined.contains(&name) {
+            continue; // defined somewhere: a resolution gap, not a missing create
+        }
+        missing
+            .entry(name)
+            .or_default()
+            .push((r.file.clone(), r.span.start));
+    }
+    out.never_created = missing.into_iter().collect();
+    out
+}
+
+/// SQL statements the grammar cannot parse (CREATE PROCEDURE misparses in
+/// tree-sitter-sequel 0.3) leave the file flagged as a partial syntax tree
+/// but the skipped objects themselves used to vanish silently. Count them
+/// so the gap is a number, not a shrug.
+fn skipped_sql_constructs(r: &mut Report, repo: &Path, coverage: &serde_json::Value) {
+    let sql_files: Vec<&str> = coverage["graph"]["syntax_error_files"]
+        .as_array()
+        .map(|files| {
+            files
+                .iter()
+                .filter_map(|f| f.as_str())
+                .filter(|f| f.ends_with(".sql"))
+                .collect()
+        })
+        .unwrap_or_default();
+    if sql_files.is_empty() {
+        return;
+    }
+    // ponytail: line-level text heuristic, not a parse — a real count needs
+    // extraction to record skipped statements, which lives outside doctor.
+    let mut skipped = 0usize;
+    for file in &sql_files {
+        let Ok(content) = std::fs::read_to_string(repo.join(file)) else {
+            continue;
+        };
+        skipped += content
+            .lines()
+            .map(str::to_ascii_uppercase)
+            .filter(|line| line.contains("CREATE") && line.contains("PROCEDURE"))
+            .count();
+    }
+    if skipped > 0 {
+        r.completeness(&format!(
+            "{skipped} SQL statement(s) skipped in {} partially parsed .sql file(s) (CREATE PROCEDURE is unsupported by the SQL grammar); those objects are absent from the graph",
+            sql_files.len()
+        ));
+    } else {
+        r.completeness(&format!(
+            "{} .sql file(s) indexed from partial syntax trees; unparsed statements are absent from the graph",
+            sql_files.len()
+        ));
+    }
 }
 
 /// Gaps `map` already reports as `partial`, surfaced here so `0 problems`
@@ -676,6 +963,132 @@ fn mcp_handshake(repo: &Path) -> anyhow::Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod schema_fold {
+        use super::super::schema_findings;
+        use sinter_core::{
+            Confidence, Edge, Evidence, Node, NodeId, Reference, Relation, Span, SymbolKind,
+            UnresolvedReason, UnresolvedReference,
+        };
+
+        fn table(name: &str, file: &str, start: u64) -> Node {
+            Node {
+                id: NodeId::new(format!("{file}#{name}@{start}")),
+                kind: SymbolKind::Table,
+                name: name.to_string(),
+                file: file.to_string(),
+                span: Span {
+                    start,
+                    end: start + 1,
+                },
+                signature: String::new(),
+                doc: None,
+            }
+        }
+
+        /// In-edge from a file node (id == path) into the table under test.
+        fn edge(src_file: &str, dst: &Node, relation: Relation, site: u64) -> Edge {
+            Edge {
+                src: NodeId::new(src_file),
+                dst: dst.id.clone(),
+                relation,
+                evidence: Evidence::Scope,
+                confidence: Confidence::Inferred,
+                site: Some(Span {
+                    start: site,
+                    end: site + 1,
+                }),
+            }
+        }
+
+        fn unresolved_read(file: &str, name: &str, start: u64) -> UnresolvedReference {
+            UnresolvedReference {
+                reference: Reference {
+                    file: file.to_string(),
+                    name: name.to_string(),
+                    path: None,
+                    relation: Relation::Reads,
+                    span: Span {
+                        start,
+                        end: start + 1,
+                    },
+                    enclosing: None,
+                    alias: None,
+                },
+                reason: UnresolvedReason::SyntaxAnchoredMiss,
+            }
+        }
+
+        #[test]
+        fn dropped_table_with_surviving_readers_is_found() {
+            let users = table("users", "db/001_users.sql", 10);
+            let in_edges = vec![
+                edge("db/001_users.sql", &users, Relation::Creates, 10),
+                edge("db/002_drop.sql", &users, Relation::Drops, 0),
+                edge("db/queries.sql", &users, Relation::Reads, 5),
+                // A backfill write from inside the migration sequence is
+                // history, not a live reference.
+                edge("db/002_drop.sql", &users, Relation::Writes, 3),
+            ];
+
+            let f = schema_findings(&[(users, in_edges)], &[]);
+            assert!(f.skipped.is_empty());
+            assert_eq!(f.dropped.len(), 1);
+            let d = &f.dropped[0];
+            assert_eq!((d.kind, d.name.as_str()), ("table", "users"));
+            assert_eq!(d.dropped_in, "db/002_drop.sql");
+            assert_eq!(d.sites, vec![("db/queries.sql".to_string(), 5)]);
+        }
+
+        #[test]
+        fn drop_then_recreate_in_order_stays_alive() {
+            let users = table("users", "db/001_users.sql", 10);
+            let in_edges = vec![
+                edge("db/001_users.sql", &users, Relation::Creates, 10),
+                // 002 drops at byte 0 and recreates at byte 40: create wins.
+                edge("db/002_redo.sql", &users, Relation::Drops, 0),
+                edge("db/002_redo.sql", &users, Relation::Creates, 40),
+                edge("db/queries.sql", &users, Relation::Reads, 5),
+            ];
+
+            let f = schema_findings(&[(users, in_edges)], &[]);
+            assert!(f.dropped.is_empty() && f.skipped.is_empty());
+        }
+
+        #[test]
+        fn unsortable_migration_names_skip_the_fold() {
+            let events = table("events", "db/setup.sql", 10);
+            let in_edges = vec![
+                edge("db/setup.sql", &events, Relation::Creates, 10),
+                edge("db/teardown.sql", &events, Relation::Drops, 0),
+                edge("db/queries.sql", &events, Relation::Reads, 5),
+            ];
+
+            let f = schema_findings(&[(events, in_edges)], &[]);
+            assert_eq!(f.skipped, vec!["db".to_string()]);
+            assert!(f.dropped.is_empty());
+        }
+
+        #[test]
+        fn never_created_tables_are_distinct_from_resolution_gaps() {
+            let users = table("users", "db/001_users.sql", 10);
+            let unresolved = [
+                unresolved_read("db/queries.sql", "ghosts", 7),
+                // Defined somewhere: a resolution gap, not a missing create.
+                unresolved_read("db/queries.sql", "users", 20),
+                // Non-SQL files never participate.
+                unresolved_read("src/db.rs", "phantoms", 3),
+            ];
+            let f = schema_findings(&[(users, vec![])], &unresolved);
+            assert_eq!(
+                f.never_created,
+                vec![(
+                    "ghosts".to_string(),
+                    vec![("db/queries.sql".to_string(), 7)]
+                )]
+            );
+        }
+    }
 
     #[test]
     fn completeness_warnings_count_but_never_fail() {

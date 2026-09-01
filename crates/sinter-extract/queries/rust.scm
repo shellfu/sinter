@@ -58,3 +58,41 @@
 (scoped_type_identifier name: (type_identifier) @ref.use) @refpath
 ((type_identifier) @ref.use (#not-match? @ref.use "^(Self|_|[A-Z])$"))
 ((scoped_identifier path: (identifier) @ref.use) (#match? @ref.use "^[A-Z]") (#not-eq? @ref.use "Self"))
+
+; Embedded SQL at known query sinks, literal strings only (dynamically
+; built SQL is never guessed). The engine re-parses each @sql node's
+; range with the SQL grammar and merges its captures through the same
+; contract .sql files use (see language.rs).
+
+; sqlx compile-checked macros: sqlx::query!("..."), query_as!(T, "..."),
+; query_scalar!("..."). The macro requires a literal, so literal-only
+; coverage is complete here.
+(macro_invocation
+  macro: [
+    (identifier) @_sql_sink
+    (scoped_identifier name: (identifier) @_sql_sink)
+  ]
+  (token_tree (string_literal (string_content) @sql))
+  (#any-of? @_sql_sink "query" "query_as" "query_scalar" "query_unchecked" "query_as_unchecked"))
+
+; Function sinks taking SQL as the first argument: sqlx::query("..."),
+; sqlx::query_as::<_, T>("..."), diesel's sql_query("...").
+(call_expression
+  function: [
+    (identifier) @_sql_sink
+    (scoped_identifier name: (identifier) @_sql_sink)
+    (generic_function function: (identifier) @_sql_sink)
+    (generic_function function: (scoped_identifier name: (identifier) @_sql_sink))
+  ]
+  arguments: (arguments . (string_literal (string_content) @sql))
+  (#any-of? @_sql_sink "query" "query_as" "query_scalar" "sql_query"))
+
+; Method sinks (tokio-postgres, rusqlite, connection pools): the SQL is
+; the first argument. `.fetch_*` on sqlx builders takes an executor, not
+; a string, so it never matches the literal-first-argument shape.
+(call_expression
+  function: (field_expression field: (field_identifier) @_sql_sink)
+  arguments: (arguments . (string_literal (string_content) @sql))
+  (#any-of? @_sql_sink
+    "query" "query_one" "query_opt" "query_row" "query_map" "query_scalar"
+    "execute" "execute_batch" "batch_execute" "prepare" "prepare_cached"))

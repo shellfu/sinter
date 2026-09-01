@@ -28,6 +28,9 @@ use tree_sitter::Language;
 /// - `@embed`          embedded/promoted type members (Go).
 /// - `@trait` + `@trait.impl` — an impl block (`@trait.impl`) naming the
 ///   trait it implements (`@trait`): dynamic-dispatch pairing input.
+/// - `@sql`            a node whose text is embedded SQL (a string literal
+///   at a known query sink): the engine re-parses its range with the SQL
+///   grammar and merges the captures through this same contract.
 /// - `@doc`            a node whose text IS the definition's doc (Python
 ///   docstrings): attached to the smallest containing definition,
 ///   overriding any sibling-comment doc.
@@ -591,15 +594,51 @@ fn java_absolutize(path: &str, _file: &str) -> Vec<String> {
         .collect()
 }
 
-/// All .sql files in a directory share one namespace (a database schema
-/// has no per-file scoping), so the module key is the directory alone:
-/// `db/schema.sql` and `db/queries.sql` both map to ["db"].
+/// SQL names share one namespace per *database root*, not per directory: a
+/// database schema has no per-file scoping, and real layouts split
+/// `migrations/` (definitions) from `queries/` (reads). The root is the
+/// file's directory with trailing conventional SQL-layout components
+/// stripped, so `db/migrations/001.sql` and `db/queries/q.sql` both key to
+/// [] (the repo root), while `svc_a/db/...` and `svc_b/db/...` stay
+/// distinct roots (["svc_a"] vs ["svc_b"]). A directory outside the
+/// convention list keeps the old per-directory namespace.
 fn sql_module_path(file: &str) -> Vec<String> {
+    // ponytail: fixed convention list; make it data-driven only if real
+    // repos surface layout names this misses.
+    const SQL_LAYOUT_DIRS: &[&str] = &[
+        "migrations",
+        "migration",
+        "queries",
+        "query",
+        "schema",
+        "schemas",
+        "seeds",
+        "seed",
+        "views",
+        "tables",
+        "functions",
+        "procedures",
+        "triggers",
+        "indexes",
+        "ddl",
+        "dml",
+        "sql",
+        "db",
+        "database",
+    ];
     let dir = file.rsplit_once('/').map_or("", |(dir, _)| dir);
-    dir.split('/')
+    let mut segments: Vec<String> = dir
+        .split('/')
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .collect()
+        .collect();
+    while segments
+        .last()
+        .is_some_and(|s| SQL_LAYOUT_DIRS.contains(&s.to_ascii_lowercase().as_str()))
+    {
+        segments.pop();
+    }
+    segments
 }
 
 /// Dotted absolute imports (C#/SQL style): already-absolute FQNs split
@@ -827,4 +866,22 @@ pub static LANGUAGES: &[LanguageSpec] = &[
 pub fn spec_for_path(path: &str) -> Option<&'static LanguageSpec> {
     let ext = path.rsplit('.').next()?;
     LANGUAGES.iter().find(|spec| spec.extensions.contains(&ext))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sql_module_path;
+
+    #[test]
+    fn sql_namespace_is_the_database_root() {
+        // Conventional layout directories strip down to the shared root.
+        assert!(sql_module_path("migrations/001.sql").is_empty());
+        assert!(sql_module_path("queries/q.sql").is_empty());
+        assert!(sql_module_path("db/Migrations/001.sql").is_empty());
+        assert_eq!(sql_module_path("svc_a/db/migrations/001.sql"), ["svc_a"]);
+        assert_eq!(sql_module_path("svc_a/db/queries/q.sql"), ["svc_a"]);
+        // Unconventional directories keep the per-directory namespace.
+        assert_eq!(sql_module_path("analytics/report.sql"), ["analytics"]);
+        assert!(sql_module_path("schema.sql").is_empty());
+    }
 }

@@ -1,0 +1,23 @@
+{
+  "nodes": [
+    ["file", "migrations/001.sql", "migrations/001.sql"],
+    ["table", "users", "migrations/001.sql", "Registered users."],
+    ["column", "users::id", "migrations/001.sql"],
+    ["column", "users::name", "migrations/001.sql"],
+    ["file", "queries/q.sql", "queries/q.sql"]
+  ],
+  "contains": [
+    ["migrations/001.sql", "users"],
+    ["users", "users::id"],
+    ["users", "users::name"]
+  ],
+  "references": [
+    ["creates", "users"],
+    ["reads", "users"]
+  ],
+  "resolved": [
+    ["scope", "creates", "migrations/001.sql", "users", "migrations/001.sql", "migrations/001.sql"],
+    ["scope", "reads", "queries/q.sql", "users", "queries/q.sql", "migrations/001.sql"]
+  ],
+  "unresolved_count": 0
+}

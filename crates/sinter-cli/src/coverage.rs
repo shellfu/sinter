@@ -337,6 +337,16 @@ pub(crate) fn repository_coverage(repo: &Path, store: &Store) -> Result<serde_js
     }
     if !health.syntax_error_files.is_empty() {
         limitations.push("one or more files were indexed from partial syntax trees".to_string());
+        if health
+            .syntax_error_files
+            .iter()
+            .any(|file| file.ends_with(".sql"))
+        {
+            limitations.push(
+                "partially parsed .sql files skip statements the SQL grammar cannot parse (e.g. CREATE PROCEDURE); those objects are absent from the graph"
+                    .to_string(),
+            );
+        }
     }
     if actionable > 0 {
         limitations.push(format!(
@@ -702,6 +712,60 @@ pub fn traversal_json(
         },
     });
     Ok(coverage)
+}
+
+/// Unresolved references inside the files a traversal actually touched.
+/// Repository-wide unresolved totals live in the envelope already; this is
+/// the loud, radius-scoped version: gaps in *these* files mean *this*
+/// answer may be missing rows.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RadiusUnresolved {
+    pub references: usize,
+    pub sql: usize,
+}
+
+/// Count unresolved references in the given (deduplicated) files, with a
+/// SQL breakdown by extension.
+pub fn radius_unresolved<'a>(
+    store: &Store,
+    files: impl IntoIterator<Item = &'a str>,
+) -> Result<RadiusUnresolved> {
+    let files: BTreeSet<&str> = files.into_iter().collect();
+    let mut out = RadiusUnresolved::default();
+    for file in files {
+        let count = store.unresolved_details_in(file)?.len();
+        out.references += count;
+        if file.ends_with(".sql") {
+            out.sql += count;
+        }
+    }
+    Ok(out)
+}
+
+/// Extend a traversal coverage envelope with the radius-scoped gap counts.
+/// Additive: the existing `evidence.unresolved` fields are untouched.
+pub fn attach_radius(coverage: &mut serde_json::Value, radius: RadiusUnresolved) {
+    coverage["evidence"]["unresolved"]["within_radius"] = serde_json::json!({
+        "references": radius.references,
+        "sql": radius.sql,
+    });
+}
+
+/// Human coverage line for radius-scoped gaps; `None` when the radius has
+/// no unresolved references (nothing degraded, nothing to say).
+pub fn radius_note(radius: RadiusUnresolved) -> Option<String> {
+    if radius.references == 0 {
+        return None;
+    }
+    let sql = if radius.sql > 0 {
+        format!(" ({} in SQL)", radius.sql)
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "  {} reference(s) unresolved within this radius{sql}; coverage partial — see `sinter unresolved`",
+        radius.references
+    ))
 }
 
 /// Text footer. Default: one `coverage:` line plus gaps specific to this

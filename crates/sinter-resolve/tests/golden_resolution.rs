@@ -595,6 +595,21 @@ fn resolution_sql_view_chain() {
     check("sql-view-chain");
 }
 
+/// Database-root namespace: migrations/ defines, queries/ reads — both
+/// strip to the same root, so the read binds across directories.
+#[test]
+fn resolution_sql_cross_dir() {
+    check("sql-cross-dir");
+}
+
+/// Two database roots each define `users`: reads inside a root bind to
+/// that root's table; a read outside any root hits the repo-wide fallback,
+/// finds two candidates, and stays unresolved (never a guess).
+#[test]
+fn resolution_sql_two_roots() {
+    check("sql-two-roots");
+}
+
 /// C# pack: path-derived, namespace-aligned module identity (directories
 /// mirror namespaces; `using Ns;` is a glob import of that directory).
 #[test]

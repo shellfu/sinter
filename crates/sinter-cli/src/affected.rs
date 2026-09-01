@@ -249,6 +249,15 @@ pub fn run(
         rows.iter().map(|row| row.reached.via.confidence),
         unresolved,
     );
+    // Gaps scoped to the files this radius actually touched: unresolved
+    // refs there mean dependents may be missing from *this* answer.
+    let radius = crate::coverage::radius_unresolved(
+        &store,
+        seeds
+            .iter()
+            .map(|(_, node)| node.file.as_str())
+            .chain(rows.iter().map(|row| row.reached.node.file.as_str())),
+    )?;
     if json {
         // Same shape as the MCP `affected` tool (terse entries).
         let entries: Vec<Value> = rows
@@ -318,6 +327,7 @@ pub fn run(
         }
         out["coverage"] =
             crate::coverage::traversal_json(&root, &store, filter, evidence, total > 0)?;
+        crate::coverage::attach_radius(&mut out["coverage"], radius);
         crate::agent_protocol::write_json(&out)?;
         return Ok(total > 0);
     }
@@ -400,6 +410,9 @@ pub fn run(
             "  note: {unresolved} unresolved ref(s) also name `{names}` — dependents may be missing; {}",
             crate::coverage::unresolved_hint(&root)
         );
+    }
+    if let Some(note) = crate::coverage::radius_note(radius) {
+        println!("{note}");
     }
     crate::coverage::print_footer(&root, &store, filter, evidence, total > 0, Some(&snapshot))?;
     Ok(total > 0)

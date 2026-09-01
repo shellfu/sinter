@@ -39,6 +39,11 @@ pub fn run(
         reached.iter().map(|item| item.via.confidence),
         unresolved,
     );
+    // Gaps scoped to the files this radius actually touched.
+    let radius = crate::coverage::radius_unresolved(
+        &store,
+        std::iter::once(node.file.as_str()).chain(reached.iter().map(|r| r.node.file.as_str())),
+    )?;
     if json {
         // Same shape as the MCP `deps` tool (terse entries, like affected).
         let entries: Vec<serde_json::Value> = reached
@@ -91,6 +96,7 @@ pub fn run(
         }
         out["coverage"] =
             crate::coverage::traversal_json(&root, &store, filter, evidence, total > 0)?;
+        crate::coverage::attach_radius(&mut out["coverage"], radius);
         crate::agent_protocol::write_json(&out)?;
         return Ok(total > 0);
     }
@@ -169,6 +175,9 @@ pub fn run(
             node.name,
             crate::coverage::unresolved_hint(&root)
         );
+    }
+    if let Some(note) = crate::coverage::radius_note(radius) {
+        println!("{note}");
     }
     crate::coverage::print_footer(&root, &store, filter, evidence, total > 0, Some(&snapshot))?;
     Ok(total > 0)

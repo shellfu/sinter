@@ -614,6 +614,32 @@ enum Assertion {
         #[arg(long)]
         if_snapshot: Option<String>,
     },
+    /// Assert that nothing writes, alters, or drops a table in scope
+    NoWriters {
+        /// Table (or other database object): stable key, name, or name@file
+        table: String,
+        /// Repository to query
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// Assert across a declared multi-repository workspace
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+        /// Corpus roles writers may be in (production by default)
+        #[arg(long, value_delimiter = ',', default_value = "production")]
+        scope: Vec<String>,
+        /// Count only compiler-grade (Certain) write edges
+        #[arg(long)]
+        certain: bool,
+        /// Maximum writer rows to print (the decision always counts all)
+        #[arg(long, default_value_t = no_callers::DEFAULT_LIMIT)]
+        limit: usize,
+        /// Compact `sinter.agent.v1` assertion data
+        #[arg(long)]
+        json: bool,
+        /// Fail if the repository/workspace graph changed since this token
+        #[arg(long)]
+        if_snapshot: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -880,46 +906,84 @@ fn main() -> ExitCode {
                 grep_exit(result)
             };
         }
-        Command::Assert { assertion } => match assertion {
-            Assertion::NoCallers {
-                symbol,
-                repo,
-                workspace,
-                scope,
-                certain,
-                limit,
-                json,
-                if_snapshot,
-            } => {
-                let result =
-                    corpus::ScopeSelection::parse(&scope, corpus::ScopeSelection::agent_default())
-                        .and_then(|selection| match workspace {
-                            Some(manifest) => no_callers::run_workspace(
-                                &manifest,
-                                &symbol,
-                                selection.as_set(),
-                                certain,
-                                limit,
-                                json,
-                                if_snapshot.as_deref(),
-                            ),
-                            None => no_callers::run_repository(
-                                &repo,
-                                &symbol,
-                                selection.as_set(),
-                                certain,
-                                limit,
-                                json,
-                                if_snapshot.as_deref(),
-                            ),
-                        });
-                return if json {
-                    grep_exit_json("assert_no_callers", result)
-                } else {
-                    grep_exit(result)
+        Command::Assert { assertion } => {
+            // Both assertions share the relation-parameterized machinery;
+            // only the spec (forbidden relations, naming) differs.
+            let (spec, tool, symbol, repo, workspace, scope, certain, limit, json, if_snapshot) =
+                match assertion {
+                    Assertion::NoCallers {
+                        symbol,
+                        repo,
+                        workspace,
+                        scope,
+                        certain,
+                        limit,
+                        json,
+                        if_snapshot,
+                    } => (
+                        &no_callers::NO_CALLERS,
+                        "assert_no_callers",
+                        symbol,
+                        repo,
+                        workspace,
+                        scope,
+                        certain,
+                        limit,
+                        json,
+                        if_snapshot,
+                    ),
+                    Assertion::NoWriters {
+                        table,
+                        repo,
+                        workspace,
+                        scope,
+                        certain,
+                        limit,
+                        json,
+                        if_snapshot,
+                    } => (
+                        &no_callers::NO_WRITERS,
+                        "assert_no_writers",
+                        table,
+                        repo,
+                        workspace,
+                        scope,
+                        certain,
+                        limit,
+                        json,
+                        if_snapshot,
+                    ),
                 };
-            }
-        },
+            let result =
+                corpus::ScopeSelection::parse(&scope, corpus::ScopeSelection::agent_default())
+                    .and_then(|selection| match workspace {
+                        Some(manifest) => no_callers::run_workspace(
+                            &manifest,
+                            spec,
+                            &symbol,
+                            selection.as_set(),
+                            certain,
+                            limit,
+                            json,
+                            if_snapshot.as_deref(),
+                        ),
+                        None => no_callers::run_repository(
+                            &repo,
+                            spec,
+                            &symbol,
+                            selection.as_set(),
+                            certain,
+                            limit,
+                            json,
+                            if_snapshot.as_deref(),
+                        ),
+                    });
+            return if json {
+                grep_exit_json(tool, result)
+            } else {
+                grep_exit(result)
+            };
+        }
         Command::Cite {
             symbol,
             repo,

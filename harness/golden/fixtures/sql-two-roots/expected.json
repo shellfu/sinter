@@ -1,0 +1,30 @@
+{
+  "nodes": [
+    ["file", "analytics/report.sql", "analytics/report.sql"],
+    ["file", "svc_a/db/migrations/001.sql", "svc_a/db/migrations/001.sql"],
+    ["table", "users", "svc_a/db/migrations/001.sql"],
+    ["column", "users::id", "svc_a/db/migrations/001.sql"],
+    ["file", "svc_a/db/queries/q.sql", "svc_a/db/queries/q.sql"],
+    ["file", "svc_b/db/migrations/001.sql", "svc_b/db/migrations/001.sql"],
+    ["table", "users", "svc_b/db/migrations/001.sql"],
+    ["column", "users::id", "svc_b/db/migrations/001.sql"]
+  ],
+  "contains": [
+    ["svc_a/db/migrations/001.sql", "users"],
+    ["svc_b/db/migrations/001.sql", "users"],
+    ["users", "users::id"],
+    ["users", "users::id"]
+  ],
+  "references": [
+    ["creates", "users", "svc_a/db/migrations/001.sql"],
+    ["creates", "users", "svc_b/db/migrations/001.sql"],
+    ["reads", "users", "svc_a/db/queries/q.sql"],
+    ["reads", "users", "analytics/report.sql"]
+  ],
+  "resolved": [
+    ["scope", "creates", "svc_a/db/migrations/001.sql", "users", "svc_a/db/migrations/001.sql", "svc_a/db/migrations/001.sql"],
+    ["scope", "creates", "svc_b/db/migrations/001.sql", "users", "svc_b/db/migrations/001.sql", "svc_b/db/migrations/001.sql"],
+    ["scope", "reads", "svc_a/db/queries/q.sql", "users", "svc_a/db/queries/q.sql", "svc_a/db/migrations/001.sql"]
+  ],
+  "unresolved_count": 1
+}

@@ -571,6 +571,19 @@ fn golden_sql_view_chain() {
     check("sql-view-chain");
 }
 
+/// Database-root layout: definitions in migrations/, reads in queries/.
+#[test]
+fn golden_sql_cross_dir() {
+    check("sql-cross-dir");
+}
+
+/// Two database roots defining the same table name, plus a reader
+/// outside both roots.
+#[test]
+fn golden_sql_two_roots() {
+    check("sql-two-roots");
+}
+
 /// C# pack: path-derived, namespace-aligned module identity (directories
 /// mirror namespaces; `using Ns;` is a glob import of that directory).
 #[test]

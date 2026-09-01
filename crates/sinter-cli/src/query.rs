@@ -95,7 +95,7 @@ pub fn run(
     scopes.narrow(&mut nodes, &scope_index);
     if json {
         // Same shape as the MCP `query` tool.
-        crate::agent_protocol::write_json(&serde_json::json!({
+        let mut out = serde_json::json!({
             "exact": exact,
             "resolution": resolution,
             "snapshot": snapshot,
@@ -105,7 +105,11 @@ pub fn run(
                 value["scope"] = serde_json::json!(scope_index.scope_of(node).as_str());
                 value
             }).collect::<Vec<_>>(),
-        }))?;
+        });
+        if nodes.len() > limit {
+            out["truncated"] = serde_json::json!(nodes.len() - limit);
+        }
+        crate::agent_protocol::write_json(&out)?;
         return Ok(!nodes.is_empty());
     }
     if nodes.is_empty() {
@@ -124,6 +128,13 @@ pub fn run(
         for node in nodes.iter().take(limit) {
             print_node(repo, node);
         }
+    }
+    if nodes.len() > limit {
+        println!(
+            "{} more matches below cutoff · `sinter query --limit {}` to widen",
+            nodes.len() - limit,
+            nodes.len(),
+        );
     }
     Ok(!nodes.is_empty())
 }

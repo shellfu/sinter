@@ -33,6 +33,9 @@ pub struct Extractor {
     /// container-node ranges of the primary tree; captures merge into
     /// the same facts through the same contract.
     inline: Option<(Parser, Query)>,
+    /// SQL parser + query for `@sql` captures (embedded SQL at query
+    /// sinks): built on first use, shared across files.
+    embedded_sql: Option<(Parser, Query)>,
 }
 
 /// A definition or scope-only entry, pre-qualification.
@@ -83,6 +86,9 @@ struct Collected {
     /// Definition name spans: a blanket type-reference capture also lands
     /// on `struct Foo`'s own name, which is a definition, not a use.
     def_name_spans: Vec<(usize, usize)>,
+    /// `@sql` capture ranges: string-literal content at known query sinks,
+    /// each re-parsed with the SQL grammar (spans stay file-absolute).
+    sql_ranges: Vec<tree_sitter::Range>,
     /// Explicit doc captures (`@doc`, e.g. Python docstrings): (span, text).
     /// Attached to the smallest containing definition, overriding any
     /// sibling-comment doc.
@@ -127,6 +133,7 @@ impl Extractor {
             parser,
             query,
             inline,
+            embedded_sql: None,
         })
     }
 
@@ -173,6 +180,76 @@ impl Extractor {
                     &mut entries,
                     &mut collected,
                 );
+            }
+        }
+        // Embedded SQL (`@sql` captures at known query sinks): re-parse
+        // each captured literal's range with the SQL grammar and merge its
+        // captures through the same contract .sql files use — edge-kind
+        // logic (reads/writes/creates/...) is shared, never duplicated.
+        // Literal-only by construction: the query patterns match string
+        // literals, so dynamically built SQL records nothing.
+        if !collected.sql_ranges.is_empty() {
+            if self.embedded_sql.is_none() {
+                let sql_spec = sql_language_spec();
+                let language = (sql_spec.grammar)();
+                let mut parser = Parser::new();
+                parser
+                    .set_language(&language)
+                    .map_err(|e| ExtractError::Query {
+                        language: sql_spec.name,
+                        message: e.to_string(),
+                    })?;
+                let query = Query::new(&language, sql_spec.query_source).map_err(|e| {
+                    ExtractError::Query {
+                        language: sql_spec.name,
+                        message: e.to_string(),
+                    }
+                })?;
+                self.embedded_sql = Some((parser, query));
+            }
+            let sql_spec = sql_language_spec();
+            let (parser, query) = self.embedded_sql.as_mut().expect("built above");
+            for range in std::mem::take(&mut collected.sql_ranges) {
+                // One range per parse: separate literals must never
+                // concatenate into a single SQL document.
+                if parser.set_included_ranges(&[range]).is_err() {
+                    continue;
+                }
+                let Some(tree) = parser.parse(source, None) else {
+                    continue;
+                };
+                let refs_before = collected.refs.len();
+                collect(
+                    query,
+                    sql_spec,
+                    tree.root_node(),
+                    source,
+                    &mut entries,
+                    &mut collected,
+                );
+                // Unparseable or fragmentary embedded SQL: record one
+                // conservative, never-binding reference (it surfaces in
+                // `sinter unresolved` at this site) rather than guessing a
+                // table. Gated on a statement keyword so a non-SQL string
+                // argument reaching a sink pattern stays silent.
+                if collected.refs.len() == refs_before && tree.root_node().has_error() {
+                    let text = &source[range.start_byte..range.end_byte];
+                    let head = text.split_whitespace().next().unwrap_or("");
+                    if SQL_STATEMENT_KEYWORDS
+                        .iter()
+                        .any(|k| head.eq_ignore_ascii_case(k))
+                    {
+                        let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                        collected.refs.push(RawRef {
+                            start: range.start_byte,
+                            end: range.end_byte,
+                            name: collapsed.chars().take(60).collect(),
+                            path: None,
+                            alias: None,
+                            relation: Relation::Uses,
+                        });
+                    }
+                }
             }
         }
         entries.sort_by_key(|e| (e.start, usize::MAX - e.end));
@@ -458,6 +535,24 @@ impl Extractor {
     }
 }
 
+/// The registered SQL language spec — grammar and query for embedded-SQL
+/// (`@sql`) ranges. The row is data in LANGUAGES; panicking on absence is
+/// a broken build, not a runtime condition.
+fn sql_language_spec() -> &'static LanguageSpec {
+    crate::language::LANGUAGES
+        .iter()
+        .find(|s| s.name == "sql")
+        .expect("sql language registered in LANGUAGES")
+}
+
+/// Statement keywords gating the fragmentary-embedded-SQL marker: text at
+/// a query sink that starts with one of these but yields no SQL facts is
+/// recorded as a never-binding reference instead of being dropped.
+const SQL_STATEMENT_KEYWORDS: &[&str] = &[
+    "SELECT", "INSERT", "UPDATE", "DELETE", "WITH", "CREATE", "ALTER", "DROP", "TRUNCATE", "MERGE",
+    "REPLACE",
+];
+
 /// Bare Rust names that always come from the prelude or are primitive
 /// types: a reference to one is noise unless the file shadows it.
 const RUST_PRELUDE: &[&str] = &[
@@ -555,6 +650,7 @@ fn collect(
                             cap.node.end_byte(),
                             text(cap.node, source).to_string(),
                         )),
+                        "sql" => out.sql_ranges.push(cap.node.range()),
                         "embed" => out.embeds.push((
                             cap.node.start_byte(),
                             cap.node.end_byte(),

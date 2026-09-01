@@ -1234,6 +1234,19 @@ pub fn run(
             println!("  {}  — {}", step.command, step.reason);
         }
     }
+    let capped = [
+        report.changed_symbols.len(),
+        report.blast_radius.len(),
+        report.affected_tests.len(),
+    ]
+    .iter()
+    .map(|&total| truncated_count(total, limit))
+    .sum::<usize>();
+    if capped > 0 {
+        println!(
+            "{capped} row(s) truncated by the default cap · `sinter impact --limit 0` returns all"
+        );
+    }
     Ok(())
 }
 

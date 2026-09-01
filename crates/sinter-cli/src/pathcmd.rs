@@ -106,6 +106,21 @@ pub fn run(
         miss.as_ref()
             .map_or(0, |miss| miss.unresolved_matching_target),
     );
+    // Gaps scoped to the files the found route runs through: unresolved
+    // refs there mean a shorter or different route may be missing. A miss
+    // carries its own gap evidence (`miss.unresolved_matching_target`).
+    let radius = match &path {
+        Some(edges) => Some(crate::coverage::radius_unresolved(
+            &store,
+            std::iter::once(from_node.file.as_str()).chain(
+                edges
+                    .iter()
+                    .flat_map(|e| [e.src.as_str(), e.dst.as_str()])
+                    .map(|id| id.split_once('#').map_or(id, |(file, _)| file)),
+            ),
+        )?),
+        None => None,
+    };
     if json {
         // Same shape as the MCP `path` tool.
         let mut out = serde_json::json!({
@@ -131,6 +146,9 @@ pub fn run(
         }
         out["coverage"] =
             crate::coverage::traversal_json(&root, &store, filter, evidence, path.is_some())?;
+        if let Some(radius) = radius {
+            crate::coverage::attach_radius(&mut out["coverage"], radius);
+        }
         crate::agent_protocol::write_json(&out)?;
         return Ok(path.is_some());
     }
@@ -166,6 +184,9 @@ pub fn run(
                 );
             }
             println!();
+            if let Some(note) = radius.and_then(crate::coverage::radius_note) {
+                println!("{note}");
+            }
             crate::coverage::print_footer(&root, &store, filter, evidence, true, Some(&snapshot))?;
             Ok(true)
         }
