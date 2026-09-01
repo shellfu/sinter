@@ -106,6 +106,103 @@ fn verify_command(seeds: &[(String, Node)]) -> String {
     format!("sinter unresolved --name {names}")
 }
 
+/// Above this many direct dependents, a truncated text answer rolls up by
+/// file instead of printing rows.
+const HUB_DIRECT_THRESHOLD: usize = 50;
+
+/// Per-file rollup: direct and transitive counts plus the first dependent
+/// names, callers before imports, largest files first.
+fn print_file_rollup(rows: &[Row], is_import: impl Fn(&Reached) -> bool) {
+    let mut by_file: std::collections::BTreeMap<&str, Vec<&Row>> =
+        std::collections::BTreeMap::new();
+    for row in rows {
+        by_file
+            .entry(row.reached.node.file.as_str())
+            .or_default()
+            .push(row);
+    }
+    let mut files: Vec<_> = by_file.into_iter().collect();
+    files.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(b.0)));
+    for (file, mut rows) in files {
+        let direct = rows.iter().filter(|r| r.reached.depth == 1).count();
+        // Symbols before file nodes: a file name is not a dependent name.
+        rows.sort_by_key(|r| {
+            (
+                is_import(&r.reached) || r.reached.node.kind == sinter_core::SymbolKind::File,
+                r.reached.depth,
+            )
+        });
+        let top = rows
+            .iter()
+            .take(3)
+            .map(|r| r.reached.node.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!(
+            "  {file}  direct {direct}  transitive {}  {top}",
+            rows.len() - direct
+        );
+    }
+}
+
+/// Render as a real tree: each dependent indents under the node it
+/// actually reaches (via.dst), not under whatever BFS printed last.
+/// Callers (calls/uses/...) print before file-import rows.
+fn print_tree(
+    root: &Path,
+    seeds: &[(String, Node)],
+    rows: &[Row],
+    multi: bool,
+    is_import: impl Fn(&Reached) -> bool,
+) {
+    let mut children: std::collections::HashMap<&str, Vec<&Row>> = std::collections::HashMap::new();
+    for row in rows {
+        children
+            .entry(row.reached.via.dst.as_str())
+            .or_default()
+            .push(row);
+    }
+    for kids in children.values_mut() {
+        kids.sort_by_key(|row| is_import(&row.reached));
+    }
+    let mut stack: Vec<(&Row, usize)> = Vec::new();
+    for (_, node) in seeds.iter().rev() {
+        if let Some(roots) = children.get(node.id.as_str()) {
+            for row in roots.iter().rev() {
+                stack.push((row, 1));
+            }
+        }
+    }
+    while let Some((row, depth)) = stack.pop() {
+        let r = &row.reached;
+        // The call site (in the dependent's own file) replaces the bare
+        // file — "depends on it at file:line", not just "depends on it".
+        let place =
+            crate::render::site_location(root, &r.via).unwrap_or_else(|| r.node.file.clone());
+        // Provenance: which seed(s) reached this row. Omitted for
+        // single-seed calls, whose output must not change.
+        let from = if multi {
+            format!("  <- {}", row.seeds.join(", "))
+        } else {
+            String::new()
+        };
+        println!(
+            "  {}{} {}  {}  [{}/{}]{from}",
+            "  ".repeat(depth - 1),
+            qualified_of(r.node.id.as_str()),
+            r.node.kind.as_str(),
+            place,
+            r.via.relation.as_str(),
+            r.via.evidence.as_str(),
+        );
+        if let Some(kids) = children.get(r.node.id.as_str()) {
+            for kid in kids.iter().rev() {
+                stack.push((kid, depth + 1));
+            }
+        }
+    }
+}
+
 /// `sinter affected`: reverse blast radius — everything transitively
 /// depending on the seed symbols, cross-file, unioned and deduplicated.
 /// Ok(true) when any dependent (or external reference site) was found
@@ -252,6 +349,7 @@ pub fn run(
     // Gaps scoped to the files this radius actually touched: unresolved
     // refs there mean dependents may be missing from *this* answer.
     let radius = crate::coverage::radius_unresolved(
+        &root,
         &store,
         seeds
             .iter()
@@ -331,7 +429,6 @@ pub fn run(
         crate::agent_protocol::write_json(&out)?;
         return Ok(total > 0);
     }
-    rows.truncate(limit);
     let label = seed_label(&seeds);
     if total == 0 {
         println!("not proven: 0 dependents observed for {label}");
@@ -348,57 +445,21 @@ pub fn run(
             total - direct - importing_files,
         );
     }
-    // Render as a real tree: each dependent indents under the node it
-    // actually reaches (via.dst), not under whatever BFS printed last.
-    let mut children: std::collections::HashMap<&str, Vec<&Row>> = std::collections::HashMap::new();
-    for row in &rows {
-        children
-            .entry(row.reached.via.dst.as_str())
-            .or_default()
-            .push(row);
-    }
-    let mut stack: Vec<(&Row, usize)> = Vec::new();
-    for (_, node) in seeds.iter().rev() {
-        if let Some(roots) = children.get(node.id.as_str()) {
-            for row in roots.iter().rev() {
-                stack.push((row, 1));
-            }
+    // A hub that does not fit the limit is read by file, not by row:
+    // `--limit <total>` (or `--json`) still yields every row.
+    if direct > HUB_DIRECT_THRESHOLD && total > limit {
+        print_file_rollup(&rows, is_import);
+        println!("{total} rows; --limit {total} / --json for rows");
+    } else {
+        rows.truncate(limit);
+        print_tree(&root, &seeds, &rows, multi, is_import);
+        if total > limit {
+            println!(
+                "{} more dependents below cutoff · `sinter affected --limit {}` to widen",
+                total - limit,
+                total,
+            );
         }
-    }
-    while let Some((row, depth)) = stack.pop() {
-        let r = &row.reached;
-        // The call site (in the dependent's own file) replaces the bare
-        // file — "depends on it at file:line", not just "depends on it".
-        let place =
-            crate::render::site_location(&root, &r.via).unwrap_or_else(|| r.node.file.clone());
-        // Provenance: which seed(s) reached this row. Omitted for
-        // single-seed calls, whose output must not change.
-        let from = if multi {
-            format!("  <- {}", row.seeds.join(", "))
-        } else {
-            String::new()
-        };
-        println!(
-            "  {}{} {}  {}  [{}/{}]{from}",
-            "  ".repeat(depth - 1),
-            qualified_of(r.node.id.as_str()),
-            r.node.kind.as_str(),
-            place,
-            r.via.relation.as_str(),
-            r.via.evidence.as_str(),
-        );
-        if let Some(kids) = children.get(r.node.id.as_str()) {
-            for kid in kids.iter().rev() {
-                stack.push((kid, depth + 1));
-            }
-        }
-    }
-    if total > limit {
-        println!(
-            "{} more dependents below cutoff · `sinter affected --limit {}` to widen",
-            total - limit,
-            total,
-        );
     }
     if unresolved > 0 {
         let names = seeds

@@ -111,6 +111,7 @@ pub fn run(
     // carries its own gap evidence (`miss.unresolved_matching_target`).
     let radius = match &path {
         Some(edges) => Some(crate::coverage::radius_unresolved(
+            &root,
             &store,
             std::iter::once(from_node.file.as_str()).chain(
                 edges

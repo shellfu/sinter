@@ -190,45 +190,69 @@ const fn calibration_bucket(level: RankingBucket) -> (usize, usize) {
     }
 }
 
+impl RankingBucket {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+            Self::Unrated => "unrated",
+        }
+    }
+}
+
+/// One-line confidence caveat for text output, or None when the top hit
+/// stands clear. Abstain means "candidates listed, no confidence bucket
+/// claimed", never "no answer": the ranked list still follows this line.
 pub(crate) fn advice(assessment: Assessment, family_size: usize) -> Option<String> {
     let family = if family_size > 1 {
         format!("; {family_size} returned symbols share the top name")
     } else {
         String::new()
     };
-    // Abstain means "candidates listed, no confidence bucket claimed",
-    // never "no answer": the ranked list still follows this line.
-    if assessment.abstain {
-        return Some(match assessment.reason {
-            "weak_term_coverage" => {
-                format!("confidence: unrated (weak term coverage){family}; verify top hit")
-            }
-            _ => format!("confidence: unrated{family}; verify top hit"),
-        });
-    }
-    if assessment.verify_required {
-        let calibration = assessment.calibration;
-        let [low, high] = calibration.precision_interval_95;
-        return Some(format!(
-            "verification required: {} ranking-margin bucket; holdout top-1 {}/{} correct (95% interval {:.0}-{:.0}%, small sample){family}",
-            match assessment.ranking_bucket {
-                RankingBucket::High => "high",
-                RankingBucket::Medium => "medium",
-                RankingBucket::Low => "low",
-                RankingBucket::Unrated => "unrated",
-            },
-            calibration.correct,
-            calibration.sample_size,
-            low * 100.0,
-            high * 100.0,
-        ));
-    }
-    None
+    let line = match (assessment.abstain, assessment.reason) {
+        (true, "weak_term_coverage") => "confidence: unrated (weak term coverage)".to_owned(),
+        // An undersampled bucket keeps its name; only the holdout backing is missing.
+        (true, "insufficient_calibration_sample") => {
+            format!("confidence: {}", assessment.ranking_bucket.label())
+        }
+        (true, _) => "confidence: unrated".to_owned(),
+        (false, _) if assessment.verify_required => {
+            format!(
+                "confidence: {} — verify top hit",
+                assessment.ranking_bucket.label()
+            )
+        }
+        (false, _) => return None,
+    };
+    Some(format!("{line}{family}"))
+}
+
+/// Calibration detail behind `advice`, for `--explain` text output.
+pub(crate) fn explain_line(assessment: Assessment) -> String {
+    let calibration = assessment.calibration;
+    let [low, high] = calibration.precision_interval_95;
+    format!(
+        "calibration: {} ranking-margin bucket (margin {}‰, term coverage {}/{}); holdout top-1 {}/{} correct (95% interval {:.0}-{:.0}%); {} · {}",
+        assessment.ranking_bucket.label(),
+        assessment
+            .ranking_margin
+            .permille
+            .map_or("n/a".to_owned(), |p| p.to_string()),
+        assessment.term_coverage.matched,
+        assessment.term_coverage.total,
+        calibration.correct,
+        calibration.sample_size,
+        low * 100.0,
+        high * 100.0,
+        assessment.reason,
+        calibration.version,
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{RankingBucket, advice, assess_top, wilson_95};
+    use super::{RankingBucket, advice, assess_top, explain_line, wilson_95};
 
     #[test]
     fn wilson_interval_widens_for_small_samples() {
@@ -253,9 +277,10 @@ mod tests {
         assert!(!assessment.abstain);
         assert_eq!(
             advice(assessment, 1).as_deref(),
-            Some(
-                "verification required: high ranking-margin bucket; holdout top-1 22/25 correct (95% interval 70-96%, small sample)"
-            )
+            Some("confidence: high — verify top hit")
+        );
+        assert!(
+            explain_line(assessment).contains("holdout top-1 22/25 correct (95% interval 70-96%)")
         );
     }
 
@@ -281,7 +306,7 @@ mod tests {
         assert_eq!(assessment.reason, "insufficient_calibration_sample");
         assert!(assessment.abstain);
         let line = advice(assessment, 1).unwrap();
-        assert_eq!(line, "confidence: unrated; verify top hit");
+        assert_eq!(line, "confidence: low");
     }
 
     #[test]
@@ -289,9 +314,6 @@ mod tests {
         let assessment = assess_top(&[1000, 100], 1, 4);
         assert_eq!(assessment.reason, "weak_term_coverage");
         let line = advice(assessment, 1).unwrap();
-        assert_eq!(
-            line,
-            "confidence: unrated (weak term coverage); verify top hit"
-        );
+        assert_eq!(line, "confidence: unrated (weak term coverage)");
     }
 }

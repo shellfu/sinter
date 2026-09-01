@@ -27,9 +27,9 @@ while [ "$d" != "/" ]; do
 done
 [ -z "$root" ] && exit 0
 
-NUDGE="sinter graph: unfamiliar repo -> map; starting a task -> context; vague discovery -> ask; exact symbol -> query/show; relations -> affected/deps/path; no-production-caller proof -> assert no-callers (accept only holds_for_indexed_snapshot and retain universe/limitations); graph gaps -> unresolved, and treat not_proven as non-conclusive; citations -> cite/verify-doc; text inside a blast radius -> grep --within affected(SYM). Grep remains for repo-wide content; for function bodies use show --body."
-GIT_NUDGE="sinter graph: use impact <rev-range> for changed symbols, downstream effects, and tests; use overlap for collision risk; add --workspace for cross-repo analysis."
-DENY_REASON="This repo has a sinter graph. Run sinter map first if unfamiliar or sinter context <task> when starting work; use sinter ask for vague discovery, sinter query/show for exact symbols, sinter affected/deps/path for relations, sinter assert no-callers for a production-caller proof (accept only holds_for_indexed_snapshot and retain universe/limitations), sinter unresolved for graph gaps and treat not_proven as non-conclusive, sinter cite/verify-doc for citations, sinter grep --within affected(SYM) for bounded text, or sinter impact for diffs. If insufficient, rerun this exact search."
+NUDGE="sinter graph present: for symbol/caller/dependency/blast-radius questions use sinter query/show/affected/deps/path or sinter grep --within; rg only for unbounded text."
+GIT_NUDGE="sinter graph: impact <rev-range> for changed symbols and downstream effects; overlap for collision risk; --workspace for cross-repo."
+DENY_REASON="This repo has a sinter graph. Use sinter context <task>, sinter ask, query/show, affected/deps/path, assert no-callers (accept only holds_for_indexed_snapshot, retain universe/limitations), unresolved for graph gaps (not_proven is non-conclusive), cite/verify-doc, grep --within affected(SYM), or impact. If insufficient, rerun this exact search."
 
 # Print a marker path for a valid session without placing the raw session ID
 # in the filesystem. The per-user directory is private; refusing an unsafe
@@ -91,7 +91,7 @@ case "$1" in
     input=$(cat)
     mark_session_once prompt "$input"
     [ $? -eq 1 ] && exit 0
-    echo "This repo has a sinter graph. Unfamiliar repo: sinter map first; starting a task: sinter context <task>. Then use ask for vague discovery; query/show for exact symbols; affected/deps/path for relations; assert no-callers for production-caller proofs (accept only holds_for_indexed_snapshot and retain universe/limitations); unresolved for graph gaps and treat not_proven as non-conclusive; cite/verify-doc for citations; grep --within affected(SYM) for bounded text; impact --expect SYM for unfinished refactors; impact/overlap for changes; workspace/--workspace across repos. Use ensure/doctor/scip for setup or repair; show --body for function bodies."
+    echo "This repo has a sinter graph. Unfamiliar repo: sinter map; starting a task: sinter context <task>; vague discovery: ask; exact symbol: query/show; relations: affected/deps/path; production-caller proof: assert no-callers (accept only holds_for_indexed_snapshot, retain universe/limitations); unresolved for graph gaps, not_proven is non-conclusive; cite/verify-doc for citations; grep --within affected(SYM) for bounded text; impact/overlap for diffs."
     ;;
   grep|grep-strict)
     input=$(cat)

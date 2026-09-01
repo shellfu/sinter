@@ -61,6 +61,9 @@ const CALLEE_RERANK_DEPTH: usize = 30;
 /// callee argument, a comment): a quarter of a doc match at full IDF,
 /// scaled toward zero for words most bodies use.
 const PT_BODY: i64 = 10;
+/// A term matched only through a query synonym (`budget` for "cap") earns
+/// this share of its weight, so a literal match always outranks it.
+const SYNONYM_PERMILLE: i64 = 600;
 /// Body-only candidates pulled in per term variant; retrieval, not recall.
 const BODY_RETRIEVAL_CAP: usize = 50;
 /// A body word carried by more than this share of nodes is glue, not topic.
@@ -332,6 +335,8 @@ struct TermEvidence {
     path: bool,
     /// The term appears only inside the body (see `FileFacts::body_terms`).
     body: bool,
+    /// Every field hit came through a synonym; no literal form occurs.
+    synonym_only: bool,
 }
 
 impl TermEvidence {
@@ -393,6 +398,14 @@ fn gather(
                 body: body[index].ids.contains(node.id.as_str()),
                 ..TermEvidence::default()
             };
+            let literal = [&name, &owner, &doc, &signature]
+                .iter()
+                .any(|field| term.core_occurs_in(field))
+                || file
+                    .split(['/', '.'])
+                    .any(|segment| term.core_occurs_in(segment))
+                || name_tokens.iter().any(|token| term.abbreviates(token));
+            hit.synonym_only = hit.any() && !literal;
             for (token, flag) in name_tokens.iter().zip(matched_name_tokens.iter_mut()) {
                 if term.matches_token(token) {
                     *flag = true;
@@ -505,7 +518,11 @@ pub(super) fn score_candidates(
         let mut roles = Vec::new();
         for (index, term) in terms.iter().enumerate() {
             let hit = evidence[index];
-            let w = idf[index];
+            let w = if hit.synonym_only {
+                weigh(idf[index], SYNONYM_PERMILLE)
+            } else {
+                idf[index]
+            };
             if hit.name_exact {
                 breakdown.name += weigh(PT_EXACT_NAME, w);
                 channels.push("name");

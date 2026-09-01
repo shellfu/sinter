@@ -108,14 +108,14 @@ pub(crate) fn repository() -> Value {
     let mut list = json!({"tools": [
         {
             "name": "map",
-            "description": "Repo inventory: totals, modules, dependency hubs, doc entry points. Start here in an unfamiliar repo. e.g. {}",
+            "description": "Repo inventory: totals, modules, dependency hubs, doc entry points.",
             "inputSchema": {"type": "object", "properties": {
                 "scope": scope_filter(&["production", "docs"]),
             }},
         },
         {
             "name": "ask",
-            "description": "Concept search: ranked hits per topic with status/advice (abstain = refine). e.g. {question:\"where is retry backoff\"}",
+            "description": "Concept search: ranked hits per topic with status/advice; abstain = refine.",
             "inputSchema": {"type": "object", "properties": {
                 "question": {"type": "string"},
                 "limit": limit(),
@@ -125,14 +125,14 @@ pub(crate) fn repository() -> Value {
         },
         {
             "name": "context",
-            "description": "Evidence packet for a coding task: top symbols, deps, callers, tests, gaps, next commands. e.g. {task:\"add a retry to the fetcher\"}",
+            "description": "Evidence packet for a task: symbols, deps, callers, tests, gaps, next steps.",
             "inputSchema": {"type": "object", "properties": {
                 "task": {"type": "string"},
             }, "required": ["task"]},
         },
         {
             "name": "show",
-            "description": "One symbol: signature, doc, file, incoming/outgoing edges with site, capped per relation. e.g. {symbol:\"Store::in_edges\"}",
+            "description": "One symbol: signature, doc, file, in/out edges with site; optional body.",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": symbol(),
                 "limit": {"type": "integer", "description": "rows per relation (default 20)"},
@@ -145,7 +145,7 @@ pub(crate) fn repository() -> Value {
         },
         {
             "name": "query",
-            "description": "Find symbols by exact, qualified, or fuzzy name; returns signature, file, span. e.g. {symbol:\"in_edges\"}",
+            "description": "Find symbols by exact, qualified, or fuzzy name: signature, file, span.",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": symbol(),
                 "limit": limit(),
@@ -155,7 +155,7 @@ pub(crate) fn repository() -> Value {
         },
         {
             "name": "affected",
-            "description": "What breaks if a symbol changes: transitive dependents, by file. Batch via symbols:[]. e.g. {symbol:\"Store::in_edges\"}",
+            "description": "Transitive dependents of a symbol, by file; batch via symbols[].",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": symbol(),
                 "symbols": {"type": "array", "items": {"type": "string"}},
@@ -171,7 +171,7 @@ pub(crate) fn repository() -> Value {
         },
         {
             "name": "deps",
-            "description": "What a symbol transitively depends on, by file. e.g. {symbol:\"serve::run\",relations:[\"calls\"]}",
+            "description": "What a symbol transitively depends on, by file.",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": symbol(),
                 "max_depth": {"type": "integer"},
@@ -185,7 +185,7 @@ pub(crate) fn repository() -> Value {
         },
         {
             "name": "grep",
-            "description": "Regex over file text, bounded to a traversal not the tree; rows f/l/t. e.g. {pattern:\"retry\",within:[\"affected(Store::open)\"]}",
+            "description": "Regex over file text bounded to a traversal (within[]); rows f/l/t.",
             "inputSchema": {"type": "object", "properties": {
                 "pattern": {"type": "string"},
                 "within": {"type": "array", "items": {"type": "string"}, "minItems": 1,
@@ -200,7 +200,7 @@ pub(crate) fn repository() -> Value {
         },
         {
             "name": "path",
-            "description": "Shortest dependency path between two symbols, with evidence per step; found:false is not absence. e.g. {from:\"main\",to:\"Store::open\"}",
+            "description": "Shortest dependency path A->B with evidence per step; not found != absence.",
             "inputSchema": {"type": "object", "properties": {
                 "from": {"type": "string"},
                 "to": {"type": "string"},
@@ -213,7 +213,7 @@ pub(crate) fn repository() -> Value {
         },
         {
             "name": "unresolved",
-            "description": "Where the graph is blind: unbound references with file:line and reason. Check before trusting an empty result. e.g. {name:\"open\"}",
+            "description": "Unbound references (file:line, reason): check before trusting empty results.",
             "inputSchema": {"type": "object", "properties": {
                 "file": {"type": "string"},
                 "name": {"type": "string"},
@@ -222,7 +222,7 @@ pub(crate) fn repository() -> Value {
         },
         {
             "name": "impact",
-            "description": "Changed symbols, blast radius, affected tests for a git range; HEAD = working tree. e.g. {rev_range:\"HEAD~1..HEAD\"}",
+            "description": "Changed symbols, blast radius, tests for a git range; HEAD = working tree.",
             "inputSchema": {"type": "object", "properties": {
                 "rev_range": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 0, "default": 20,
@@ -233,7 +233,7 @@ pub(crate) fn repository() -> Value {
         },
         {
             "name": "overlap",
-            "description": "Pairwise merge risk between in-flight changes (direct/radius/file tiers). e.g. {ranges:[\"pr-1=main...a\",\"pr-2=main...b\"]}",
+            "description": "Pairwise merge risk between in-flight change ranges (direct/radius/file).",
             "inputSchema": {"type": "object", "properties": {
                 "ranges": {"type": "array", "items": {"type": "string"}, "minItems": 2},
             }, "required": ["ranges"]},
@@ -248,14 +248,14 @@ pub(crate) fn workspace() -> Value {
     let mut list = json!({"tools": [
         {
             "name": "context",
-            "description": "One bounded task packet across members: ranked symbols, callers, tests, gaps, and searched universe. e.g. {task:\"endpoint auth\"}",
+            "description": "Task packet across members: symbols, callers, tests, gaps, searched universe.",
             "inputSchema": {"type": "object", "properties": {
                 "task": {"type": "string"},
             }, "required": ["task"]},
         },
         {
             "name": "ask",
-            "description": "Concept search across all members: ranked hits per topic with status/advice. e.g. {question:\"retry backoff\"}",
+            "description": "Concept search across all members: ranked hits per topic with status/advice.",
             "inputSchema": {"type": "object", "properties": {
                 "question": {"type": "string"},
                 "limit": limit(),
@@ -265,7 +265,7 @@ pub(crate) fn workspace() -> Value {
         },
         {
             "name": "show",
-            "description": "One symbol: signature, doc, edges in its member, boundary links to other members. e.g. {symbol:\"common:Backoff\"}",
+            "description": "One symbol: signature, doc, member edges, boundary links to other members.",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": symbol(),
                 "limit": {"type": "integer", "description": "rows per relation (default 20)"},
@@ -276,7 +276,7 @@ pub(crate) fn workspace() -> Value {
         },
         {
             "name": "query",
-            "description": "Resolve a symbol across every member. e.g. {symbol:\"common:Backoff\"}",
+            "description": "Resolve a symbol (member:Symbol) across every member.",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": symbol(),
                 "scope": scope_filter(&["all"]),
@@ -285,7 +285,7 @@ pub(crate) fn workspace() -> Value {
         },
         {
             "name": "affected",
-            "description": "What breaks across all members if a symbol changes: transitive dependents, by file. e.g. {symbol:\"common:Backoff\"}",
+            "description": "Transitive dependents across all members, by file.",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": symbol(),
                 "max_depth": {"type": "integer"},
@@ -300,7 +300,7 @@ pub(crate) fn workspace() -> Value {
         },
         {
             "name": "deps",
-            "description": "What a symbol transitively depends on across members, by file. e.g. {symbol:\"auth:Login\"}",
+            "description": "What a symbol transitively depends on across members, by file.",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": symbol(),
                 "max_depth": {"type": "integer"},
@@ -314,7 +314,7 @@ pub(crate) fn workspace() -> Value {
         },
         {
             "name": "path",
-            "description": "Shortest dependency path between two symbols across member boundaries. e.g. {from:\"auth:login\",to:\"common:Backoff\"}",
+            "description": "Shortest dependency path A->B across member boundaries.",
             "inputSchema": {"type": "object", "properties": {
                 "from": {"type": "string"},
                 "to": {"type": "string"},
@@ -327,7 +327,7 @@ pub(crate) fn workspace() -> Value {
         },
         {
             "name": "unresolved",
-            "description": "Where the graph is blind across members: unbound references tagged member:path. e.g. {member:\"auth\"}",
+            "description": "Unbound references across members, tagged member:path.",
             "inputSchema": {"type": "object", "properties": {
                 "member": {"type": "string"},
                 "file": {"type": "string"},
@@ -337,7 +337,7 @@ pub(crate) fn workspace() -> Value {
         },
         {
             "name": "impact",
-            "description": "Changed symbols, blast radius, affected tests for a git range in one member, continued across members. e.g. {member:\"common\",rev_range:\"HEAD\"}",
+            "description": "Changed symbols, blast radius, tests for a git range in one member, and beyond.",
             "inputSchema": {"type": "object", "properties": {
                 "member": {"type": "string"},
                 "rev_range": {"type": "string"},
@@ -363,22 +363,26 @@ mod tests {
             .collect()
     }
 
+    /// Bytes of one scope's `tools/list` catalog, schemas included.
+    const BUDGET: usize = 10_150;
+
     #[test]
     fn catalog_stays_within_the_context_tax_budget() {
         for catalog in [repository(), workspace()] {
-            // One new verb is one new tax line: 8934 -> 10236 when `grep`
-            // joined the repository surface. Tight on purpose — raise it
-            // only for a verb, never for prose.
+            // One new verb is one new tax line. Tight on purpose — raise it
+            // only for a verb, never for prose. Examples and long-form
+            // guidance live in the `sinter://guide` resource, not here.
             let size = serde_json::to_string(&catalog).unwrap().len();
-            assert!(size <= 10300, "catalog is {size} bytes");
+            assert!(size <= BUDGET, "catalog is {size} bytes");
             for tool in catalog["tools"].as_array().unwrap() {
                 let description = tool["description"].as_str().unwrap();
-                assert!(description.len() <= 160, "{}: {description}", tool["name"]);
-                assert!(description.contains("e.g. {"), "{}", tool["name"]);
+                assert!(description.len() <= 80, "{}: {description}", tool["name"]);
+                assert!(!description.contains("e.g."), "{}", tool["name"]);
                 for (key, prop) in tool["inputSchema"]["properties"].as_object().unwrap() {
                     if let Some(d) = prop["description"].as_str() {
-                        assert!(d.len() <= 40, "{}.{key}: {d}", tool["name"]);
+                        assert!(d.len() <= 60, "{}.{key}: {d}", tool["name"]);
                     }
+                    assert!(prop.get("examples").is_none(), "{}.{key}", tool["name"]);
                 }
             }
         }

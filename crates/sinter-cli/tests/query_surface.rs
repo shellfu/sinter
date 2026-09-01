@@ -926,6 +926,16 @@ fn lookup_prefers_production_over_fixture_copies() {
     assert!(ok, "{out}");
     assert!(out.contains("src/lib.rs"), "{out}");
     assert!(out.contains("1 other `entry` ignored (fixture)"), "{out}");
+    // The pick leads the card, and the Next hint carries the selector
+    // that re-resolves to the same node.
+    assert!(
+        out.starts_with("resolved: entry@src/lib.rs (1 other ignored by fixture: "),
+        "{out}"
+    );
+    assert!(
+        out.contains("Next: sinter affected entry@src/lib.rs --max-depth 3"),
+        "{out}"
+    );
 
     // Explicit file suffix still reaches the fixture copy.
     let (ok, out) = sinter(repo, &["show", "entry@tests/fixtures/a/src/lib.rs"]);
@@ -995,4 +1005,77 @@ fn show_is_bounded_by_limit_relations_and_scope() {
     assert_eq!(uses, 2, "{out}");
     assert_eq!(v["totals"]["incoming"]["uses"], 6, "{out}");
     assert_eq!(v["truncated"]["incoming"]["uses"], 4, "{out}");
+}
+
+#[test]
+fn no_dependents_assertion_counts_non_call_edges_and_no_callers_hints_at_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(
+        repo.join("src/lib.rs"),
+        "pub const LIMIT: usize = 3;\npub struct Config;\npub fn build() -> Config { let _ = LIMIT; Config }\npub struct Unused;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname='fixture'\nversion='0.1.0'\nedition='2024'\n",
+    )
+    .unwrap();
+    git(repo, &["init", "-q"]);
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "init"]);
+    std::fs::write(
+        repo.join("index.scip"),
+        Index::default().write_to_bytes().unwrap(),
+    )
+    .unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+
+    // no-callers on a struct is not a useful question; say which is.
+    let (ok, out) = sinter(repo, &["assert", "no-callers", "Config", "--json"]);
+    let no_callers: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        no_callers["hint"],
+        "no-callers counts calls edges only; use assert no-dependents for struct",
+        "{ok} {out}"
+    );
+    let (_, text) = sinter(repo, &["assert", "no-callers", "Config"]);
+    assert!(
+        text.contains("hint: no-callers counts calls edges only"),
+        "{text}"
+    );
+    // The default payload drops the doctor-shaped graph block; --verbose keeps it.
+    assert!(no_callers["coverage"]["graph"].is_null(), "{out}");
+    assert!(!no_callers["coverage"]["completeness"].is_null(), "{out}");
+    assert!(!no_callers["coverage"]["universe"].is_null(), "{out}");
+    assert!(!no_callers["coverage"]["limitations"].is_null(), "{out}");
+    let (_, out) = sinter(
+        repo,
+        &["assert", "no-callers", "Config", "--json", "--verbose"],
+    );
+    let verbose: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(verbose["coverage"]["graph"].is_object(), "{out}");
+
+    let (ok, out) = sinter(repo, &["assert", "no-dependents", "Config", "--json"]);
+    assert!(!ok, "a used struct must violate no-dependents: {out}");
+    let violated: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(violated["status"], "violated");
+    assert_eq!(violated["assertion"]["kind"], "no_dependents");
+    assert!(
+        violated["observed_dependents"].as_u64().unwrap() >= 1,
+        "{out}"
+    );
+    assert_eq!(violated["dependents"][0]["name"], "build");
+    assert!(violated["hint"].is_null(), "{out}");
+
+    let (ok, out) = sinter(repo, &["assert", "no-dependents", "Unused", "--json"]);
+    assert!(ok, "{out}");
+    let holding: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(holding["status"], "holds_for_indexed_snapshot");
+    assert_eq!(holding["observed_dependents"], 0);
+    let (_, text) = sinter(repo, &["assert", "no-dependents", "Unused"]);
+    assert!(text.contains("assert no-dependents"), "{text}");
+    assert!(text.contains("0 observed dependent(s)"), "{text}");
 }

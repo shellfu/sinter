@@ -278,12 +278,8 @@ pub fn run_workspace(
         .take(limit)
         .filter(|(_, _, h)| h.node.name == all[0].2.node.name)
         .count();
-    if let Some(caveat) = confidence::advice(
-        confidence::assess_top(&scores, all[0].2.coverage().0, all[0].2.coverage().1),
-        family,
-    ) {
-        println!("{caveat}\n");
-    }
+    let assessment = confidence::assess_top(&scores, all[0].2.coverage().0, all[0].2.coverage().1);
+    print_caveat(assessment, family, explain);
     for (rank, (member, repo, hit)) in all.iter().take(limit).enumerate() {
         let line = line_of(repo, &hit.node.file, hit.node.span.start);
         println!(
@@ -304,6 +300,10 @@ pub fn run_workspace(
         }
         if !hit.node.signature.is_empty() {
             println!("   {}", ellipsize(&hit.node.signature, 100));
+        }
+        if explain {
+            let next = all.get(rank + 1).map(|(_, _, next)| next);
+            println!("   {}", explain_hit_line(hit, next));
         }
         println!();
     }
@@ -354,6 +354,48 @@ fn hit_json(repo: &Path, h: &Hit) -> serde_json::Value {
     })
 }
 
+/// Per-hit fields an agent needs to act on a result. Everything else
+/// (scores, spans, calibration, ranking diagnostics) is `--explain` detail.
+const LEAN_HIT_FIELDS: &[&str] = &[
+    "rank",
+    "id",
+    "name",
+    "qualified",
+    "kind",
+    "file",
+    "line",
+    "signature",
+    "doc",
+    "matched",
+    "channels",
+    "confidence",
+    "scope",
+    "member",
+];
+
+/// Strip a full response down to the default wire shape. Applied at the
+/// CLI/MCP boundary only; internal consumers (`context`, workspace merge)
+/// keep the full shape.
+fn lean_response(response: &mut serde_json::Value) {
+    for topic in response["topics"].as_array_mut().into_iter().flatten() {
+        let confidence = json!({
+            "level": topic["confidence"]["level"],
+            "reason": topic["confidence"]["reason"],
+        });
+        if let Some(object) = topic.as_object_mut() {
+            for field in ["ranking_margin", "term_coverage", "advice"] {
+                object.remove(field);
+            }
+            object.insert("confidence".into(), confidence);
+        }
+        for hit in topic["hits"].as_array_mut().into_iter().flatten() {
+            if let Some(object) = hit.as_object_mut() {
+                object.retain(|key, _| LEAN_HIT_FIELDS.contains(&key.as_str()));
+            }
+        }
+    }
+}
+
 pub fn ask_response_json(
     repo: &Path,
     question: &str,
@@ -363,7 +405,11 @@ pub fn ask_response_json(
 ) -> Result<serde_json::Value> {
     let repo = repo.canonicalize()?;
     let store = open_store(&repo)?;
-    ask_response_with_store(&repo, &store, question, limit, scopes, explain)
+    let mut response = ask_response_with_store(&repo, &store, question, limit, scopes, explain)?;
+    if !explain {
+        lean_response(&mut response);
+    }
+    Ok(response)
 }
 
 pub(crate) fn ask_response_json_current(
@@ -375,7 +421,11 @@ pub(crate) fn ask_response_json_current(
 ) -> Result<serde_json::Value> {
     let repo = repo.canonicalize()?;
     let store = crate::lookup::open_current(&repo)?;
-    ask_response_with_store(&repo, &store, question, limit, scopes, explain)
+    let mut response = ask_response_with_store(&repo, &store, question, limit, scopes, explain)?;
+    if !explain {
+        lean_response(&mut response);
+    }
+    Ok(response)
 }
 
 pub(crate) fn ask_response_with_store(
@@ -617,7 +667,11 @@ pub(crate) fn merge_workspace_responses(
             topic_from_rendered(&label, terms, hits, topic_limit, candidate_count, explain)
         })
         .collect();
-    response_json(question, limit, scopes, topics, Vec::new())
+    let mut response = response_json(question, limit, scopes, topics, Vec::new());
+    if !explain {
+        lean_response(&mut response);
+    }
+    response
 }
 
 pub(crate) fn workspace_candidate_limit(question: &str, limit: usize) -> usize {
@@ -626,7 +680,39 @@ pub(crate) fn workspace_candidate_limit(question: &str, limit: usize) -> usize {
         .saturating_mul(clauses_of(question).len().max(1))
 }
 
-fn print_hit(repo: &Path, store: &Store, rank: usize, hit: &Hit) -> Result<()> {
+/// `--explain` per-hit line: where the terms matched, the score, and the
+/// lead over the next hit.
+fn explain_hit_line(hit: &Hit, next: Option<&Hit>) -> String {
+    format!(
+        "explain: channels {} · score {} · margin {}",
+        hit.channels.join("+"),
+        hit.score,
+        next.map_or("n/a".to_owned(), |n| (hit.score - n.score).to_string()),
+    )
+}
+
+/// Confidence line (one word) and, under `--explain`, the calibration
+/// statistics behind it.
+fn print_caveat(assessment: confidence::Assessment, family: usize, explain: bool) {
+    let caveat = confidence::advice(assessment, family);
+    if let Some(caveat) = &caveat {
+        println!("{caveat}");
+    }
+    if explain {
+        println!("{}", confidence::explain_line(assessment));
+    }
+    if caveat.is_some() || explain {
+        println!();
+    }
+}
+
+fn print_hit(
+    repo: &Path,
+    store: &Store,
+    rank: usize,
+    hit: &Hit,
+    explain: Option<Option<&Hit>>,
+) -> Result<()> {
     let line = line_of(repo, &hit.node.file, hit.node.span.start);
     println!(
         "{}. {} {}    [{} {}/{} terms]",
@@ -667,6 +753,9 @@ fn print_hit(repo: &Path, store: &Store, rank: usize, hit: &Hit) -> Result<()> {
             hit.variants.join(", ")
         );
     }
+    if let Some(next) = explain {
+        println!("   {}", explain_hit_line(hit, next));
+    }
     println!();
     Ok(())
 }
@@ -678,6 +767,7 @@ fn run_multi(
     store: &Store,
     clauses: &[(String, Query)],
     limit: usize,
+    explain: bool,
     scopes: &ScopeSelection,
 ) -> Result<bool> {
     let (groups, connects) = multi_hits(store, clauses, scopes)?;
@@ -702,14 +792,13 @@ fn run_multi(
             .take(topic_limit.saturating_add(1))
             .map(|hit| hit.score)
             .collect::<Vec<_>>();
-        if let Some(caveat) = confidence::advice(
+        print_caveat(
             confidence::assess_top(&scores, hits[0].coverage().0, hits[0].coverage().1),
             family_size(&hits[..topic_limit.min(hits.len())], 0),
-        ) {
-            println!("{caveat}\n");
-        }
+            explain,
+        );
         for (rank, hit) in hits.iter().take(topic_limit).enumerate() {
-            print_hit(repo, store, rank, hit)?;
+            print_hit(repo, store, rank, hit, explain.then(|| hits.get(rank + 1)))?;
             if best.is_none_or(|(s, _)| hit.score > s) {
                 best = Some((hit.score, hit));
             }
@@ -744,7 +833,7 @@ pub fn run(
     let store = open_store(&repo)?;
     let clauses = clauses_of(question);
     if clauses.len() >= 2 {
-        return run_multi(&repo, &store, &clauses, limit, scopes);
+        return run_multi(&repo, &store, &clauses, limit, explain, scopes);
     }
     let query = Query::parse(question);
     if query.is_empty() {
@@ -773,13 +862,12 @@ pub fn run(
         .map(|h| h.score)
         .collect::<Vec<_>>();
     let shown = limit.min(hits.len());
-    if shown > 0
-        && let Some(caveat) = confidence::advice(
+    if shown > 0 {
+        print_caveat(
             confidence::assess_top(&scores, hits[0].coverage().0, hits[0].coverage().1),
             family_size(&hits[..shown], 0),
-        )
-    {
-        println!("{caveat}\n");
+            explain,
+        );
     }
     // Verbose multi-topic questions dilute term coverage; a top hit
     // matching almost nothing is noise wearing a ranking. Say so instead
@@ -794,7 +882,13 @@ pub fn run(
         );
     }
     for (rank, hit) in hits.iter().take(limit).enumerate() {
-        print_hit(&repo, &store, rank, hit)?;
+        print_hit(
+            &repo,
+            &store,
+            rank,
+            hit,
+            explain.then(|| hits.get(rank + 1)),
+        )?;
     }
     if hits.len() > limit {
         println!(
@@ -851,10 +945,7 @@ mod tests {
             "family_size": 1
         })];
 
-        assert_eq!(
-            advice_for(&hits).as_deref(),
-            Some("confidence: unrated; verify top hit")
-        );
+        assert_eq!(advice_for(&hits).as_deref(), Some("confidence: unrated"));
     }
 
     #[test]

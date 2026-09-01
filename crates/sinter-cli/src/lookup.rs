@@ -412,15 +412,58 @@ pub fn unique_symbol_in(
     symbol: &str,
     scopes: Option<&BTreeSet<CorpusScope>>,
 ) -> Result<Node> {
-    let mut candidates = candidates_in(store, symbol, scopes)?;
-    if candidates.len() > 1 {
+    resolve_symbol_in(store, symbol, scopes).map(|r| r.node)
+}
+
+/// A symbol that resolved to one node, plus the same-name candidates the
+/// tie-break set aside (empty when the name was unique). Verbs that print
+/// a card show these so a quiet pick is never mistaken for a unique one.
+pub struct Resolved {
+    pub node: Node,
+    pub ignored: Vec<Node>,
+    /// Why the others lost: `in-degree`, `language`, or the scope kinds
+    /// (`fixture/test`). Empty when nothing was ignored.
+    pub reason: String,
+}
+
+impl Resolved {
+    /// The handle a follow-up should paste: the bare qualified name when
+    /// it was unique, otherwise the shortest selector (`Name@file`, or
+    /// `Name@file:line`) that beats every ignored candidate.
+    pub fn selector(&self) -> String {
+        if self.ignored.is_empty() {
+            return qualified_of(self.node.id.as_str()).to_string();
+        }
+        let mut all = Vec::with_capacity(self.ignored.len() + 1);
+        all.push(self.node.clone());
+        all.extend(self.ignored.iter().cloned());
+        selectors_from(&all, 1, line_of).swap_remove(0)
+    }
+}
+
+/// [`unique_symbol_in`] that also reports which candidates were ignored.
+pub fn resolve_symbol_in(
+    store: &Store,
+    symbol: &str,
+    scopes: Option<&BTreeSet<CorpusScope>>,
+) -> Result<Resolved> {
+    let Narrowed {
+        mut keep,
+        ignored,
+        reason,
+    } = narrowed(store, symbol, scopes)?;
+    if keep.len() > 1 {
         return Err(SymbolLookupError::Ambiguous {
             requested: symbol.to_string(),
-            candidates,
+            candidates: keep,
         }
         .into());
     }
-    Ok(candidates.remove(0))
+    Ok(Resolved {
+        node: keep.remove(0),
+        ignored,
+        reason,
+    })
 }
 
 /// The best-tier candidates for a symbol: one node when it resolves, or
@@ -431,8 +474,29 @@ pub fn candidates_in(
     symbol: &str,
     scopes: Option<&BTreeSet<CorpusScope>>,
 ) -> Result<Vec<Node>> {
+    narrowed(store, symbol, scopes).map(|n| n.keep)
+}
+
+struct Narrowed {
+    keep: Vec<Node>,
+    ignored: Vec<Node>,
+    reason: String,
+}
+
+/// Exact matches split into the survivors and the candidates the scope
+/// tiering and tie-break dropped. Emits the "N other ignored" note once, so
+/// every caller (text stderr or the JSON `warnings` field) sees it.
+fn narrowed(
+    store: &Store,
+    symbol: &str,
+    scopes: Option<&BTreeSet<CorpusScope>>,
+) -> Result<Narrowed> {
     match find_symbol(store, symbol)? {
-        Found::Exact(nodes) if nodes.len() == 1 => Ok(nodes),
+        Found::Exact(nodes) if nodes.len() == 1 => Ok(Narrowed {
+            keep: nodes,
+            ignored: Vec::new(),
+            reason: String::new(),
+        }),
         Found::Exact(nodes) => {
             let preferred = scopes
                 .cloned()
@@ -475,7 +539,11 @@ pub fn candidates_in(
                     short_list(&ignored)
                 ));
             }
-            Ok(keep)
+            Ok(Narrowed {
+                keep,
+                ignored,
+                reason,
+            })
         }
         Found::Relocated(nodes) => Err(SymbolLookupError::Relocated {
             requested: symbol.to_string(),

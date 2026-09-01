@@ -717,29 +717,51 @@ pub fn traversal_json(
 /// Unresolved references inside the files a traversal actually touched.
 /// Repository-wide unresolved totals live in the envelope already; this is
 /// the loud, radius-scoped version: gaps in *these* files mean *this*
-/// answer may be missing rows.
+/// answer may be missing rows. Only `actionable` gaps degrade the answer;
+/// the rest are external names, unsupported syntax, or refs a compiler
+/// index would settle.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RadiusUnresolved {
     pub references: usize,
     pub sql: usize,
+    pub actionable: usize,
+    pub missing_compiler_index: usize,
 }
 
-/// Count unresolved references in the given (deduplicated) files, with a
-/// SQL breakdown by extension.
+/// Classify a set of unresolved references into radius counts.
+pub fn tally(repo: &Path, store: &Store, refs: &[UnresolvedReference]) -> Result<RadiusUnresolved> {
+    let classifier = Classifier::new(repo, store, refs)?;
+    let mut out = RadiusUnresolved {
+        references: refs.len(),
+        ..RadiusUnresolved::default()
+    };
+    for item in refs {
+        if item.reference.file.ends_with(".sql") {
+            out.sql += 1;
+        }
+        let category = classifier.classify(item);
+        if category.is_actionable() {
+            out.actionable += 1;
+        } else if category == UnresolvedCategory::MissingCompilerIndex {
+            out.missing_compiler_index += 1;
+        }
+    }
+    Ok(out)
+}
+
+/// Count and classify unresolved references in the given (deduplicated)
+/// files.
 pub fn radius_unresolved<'a>(
+    repo: &Path,
     store: &Store,
     files: impl IntoIterator<Item = &'a str>,
 ) -> Result<RadiusUnresolved> {
     let files: BTreeSet<&str> = files.into_iter().collect();
-    let mut out = RadiusUnresolved::default();
+    let mut refs = Vec::new();
     for file in files {
-        let count = store.unresolved_details_in(file)?.len();
-        out.references += count;
-        if file.ends_with(".sql") {
-            out.sql += count;
-        }
+        refs.extend(store.unresolved_details_in(file)?);
     }
-    Ok(out)
+    tally(repo, store, &refs)
 }
 
 /// Extend a traversal coverage envelope with the radius-scoped gap counts.
@@ -748,23 +770,45 @@ pub fn attach_radius(coverage: &mut serde_json::Value, radius: RadiusUnresolved)
     coverage["evidence"]["unresolved"]["within_radius"] = serde_json::json!({
         "references": radius.references,
         "sql": radius.sql,
+        "actionable": radius.actionable,
+        "missing_compiler_index": radius.missing_compiler_index,
     });
 }
 
 /// Human coverage line for radius-scoped gaps; `None` when the radius has
-/// no unresolved references (nothing degraded, nothing to say).
+/// no unresolved references (nothing degraded, nothing to say). Only
+/// actionable gaps read as partial coverage.
 pub fn radius_note(radius: RadiusUnresolved) -> Option<String> {
     if radius.references == 0 {
         return None;
     }
+    if radius.actionable > 0 {
+        let sql = if radius.sql > 0 {
+            format!(" ({} in SQL)", radius.sql)
+        } else {
+            String::new()
+        };
+        return Some(format!(
+            "  {} reference(s) unresolved within this radius{sql}; coverage partial — see `sinter unresolved`",
+            radius.actionable
+        ));
+    }
     let sql = if radius.sql > 0 {
-        format!(" ({} in SQL)", radius.sql)
+        format!(", {} in SQL", radius.sql)
+    } else {
+        String::new()
+    };
+    let index = if radius.missing_compiler_index > 0 {
+        format!(
+            "; {} waiting on `sinter scip`",
+            radius.missing_compiler_index
+        )
     } else {
         String::new()
     };
     Some(format!(
-        "  {} reference(s) unresolved within this radius{sql}; coverage partial — see `sinter unresolved`",
-        radius.references
+        "  coverage: complete for indexed sources ({} external/unsupported refs excluded{sql}{index})",
+        radius.references - radius.missing_compiler_index
     ))
 }
 

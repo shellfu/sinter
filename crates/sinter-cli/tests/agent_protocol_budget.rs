@@ -83,9 +83,9 @@ fn ask_respects_budget_and_exposes_cursor() {
             "skill card hooks",
             "--json",
             "--budget-bytes",
-            "2000",
+            "1200",
         ],
-        2000,
+        1200,
     );
     let hits = value["topics"][0]["hits"].as_array().unwrap();
     assert!(!hits.is_empty());

@@ -29,6 +29,9 @@ pub fn run_workspace(manifest: &Path) -> Result<()> {
 }
 
 fn serve(scope: Scope) -> Result<()> {
+    // Diagnostics ride inside every envelope; stderr stays silent on a
+    // stdio transport.
+    crate::agent_protocol::set_json_mode();
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
     // The repository-wide coverage half already sent in this session. One
@@ -84,6 +87,15 @@ fn error_response(id: Value, method: &str, params: &Value, error: &anyhow::Error
     };
     let mut data = crate::agent_protocol::failure(operation, error);
     data["error"]["message"] = json!(message);
+    // A lookup that ran and found nothing is a tool outcome, delivered in
+    // `result` with `isError` so clients keep the candidates. Protocol
+    // faults (unknown tool, bad arguments, stale handles) stay JSON-RPC
+    // errors.
+    if data["outcome"]["status"] == "not_found" {
+        let subject = params.pointer("/arguments/symbol").and_then(Value::as_str);
+        let result = crate::agent_protocol::mcp_failure(subject, data);
+        return json!({"jsonrpc": "2.0", "id": id, "result": result});
+    }
     json!({
         "jsonrpc": "2.0",
         "id": id,

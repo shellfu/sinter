@@ -242,8 +242,8 @@ enum Command {
         /// Compact `sinter.agent.v1` data (MCP `structuredContent.data`)
         #[arg(long)]
         json: bool,
-        /// Include per-hit scoring diagnostics in JSON output
-        #[arg(long, requires = "json")]
+        /// Include per-hit scoring diagnostics
+        #[arg(long)]
         explain: bool,
     },
     /// Evidence packet for a coding task: edit candidates, direct
@@ -587,6 +587,7 @@ enum ScipAction {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::enum_variant_names)]
 enum Assertion {
     /// Assert that a symbol has no observed depth-one call edges in scope
     NoCallers {
@@ -610,6 +611,39 @@ enum Assertion {
         /// Compact `sinter.agent.v1` assertion data
         #[arg(long)]
         json: bool,
+        /// Keep the repository-wide `coverage.graph` block (doctor detail)
+        #[arg(long)]
+        verbose: bool,
+        /// Fail if the repository/workspace graph changed since this token
+        #[arg(long)]
+        if_snapshot: Option<String>,
+    },
+    /// Assert that a symbol has no observed depth-one incoming edges of any
+    /// non-containment relation (imports count only as possible)
+    NoDependents {
+        /// Symbol: stable key, name, qualified suffix, or name@file
+        symbol: String,
+        /// Repository to query
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// Assert across a declared multi-repository workspace
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+        /// Corpus roles dependents may be in (production by default)
+        #[arg(long, value_delimiter = ',', default_value = "production")]
+        scope: Vec<String>,
+        /// Count only compiler-grade (Certain) edges; drops imports rows
+        #[arg(long)]
+        certain: bool,
+        /// Maximum dependent rows to print (the decision always counts all)
+        #[arg(long, default_value_t = no_callers::DEFAULT_LIMIT)]
+        limit: usize,
+        /// Compact `sinter.agent.v1` assertion data
+        #[arg(long)]
+        json: bool,
+        /// Keep the repository-wide `coverage.graph` block (doctor detail)
+        #[arg(long)]
+        verbose: bool,
         /// Fail if the repository/workspace graph changed since this token
         #[arg(long)]
         if_snapshot: Option<String>,
@@ -636,6 +670,9 @@ enum Assertion {
         /// Compact `sinter.agent.v1` assertion data
         #[arg(long)]
         json: bool,
+        /// Keep the repository-wide `coverage.graph` block (doctor detail)
+        #[arg(long)]
+        verbose: bool,
         /// Fail if the repository/workspace graph changed since this token
         #[arg(long)]
         if_snapshot: Option<String>,
@@ -876,6 +913,10 @@ fn main() -> ExitCode {
             json,
             explain,
         } => {
+            if explain && !json {
+                // The text renderer lives in ask.rs and does not yet take
+                // `explain`; `--json --explain` carries the diagnostics.
+            }
             let result =
                 corpus::ScopeSelection::parse(&scope, corpus::ScopeSelection::ask_default())
                     .and_then(|scopes| match workspace {
@@ -907,53 +948,91 @@ fn main() -> ExitCode {
             };
         }
         Command::Assert { assertion } => {
-            // Both assertions share the relation-parameterized machinery;
+            // All assertions share the relation-parameterized machinery;
             // only the spec (forbidden relations, naming) differs.
-            let (spec, tool, symbol, repo, workspace, scope, certain, limit, json, if_snapshot) =
-                match assertion {
-                    Assertion::NoCallers {
-                        symbol,
-                        repo,
-                        workspace,
-                        scope,
-                        certain,
-                        limit,
-                        json,
-                        if_snapshot,
-                    } => (
-                        &no_callers::NO_CALLERS,
-                        "assert_no_callers",
-                        symbol,
-                        repo,
-                        workspace,
-                        scope,
-                        certain,
-                        limit,
-                        json,
-                        if_snapshot,
-                    ),
-                    Assertion::NoWriters {
-                        table,
-                        repo,
-                        workspace,
-                        scope,
-                        certain,
-                        limit,
-                        json,
-                        if_snapshot,
-                    } => (
-                        &no_callers::NO_WRITERS,
-                        "assert_no_writers",
-                        table,
-                        repo,
-                        workspace,
-                        scope,
-                        certain,
-                        limit,
-                        json,
-                        if_snapshot,
-                    ),
-                };
+            let (
+                spec,
+                tool,
+                symbol,
+                repo,
+                workspace,
+                scope,
+                certain,
+                limit,
+                json,
+                verbose,
+                if_snapshot,
+            ) = match assertion {
+                Assertion::NoCallers {
+                    symbol,
+                    repo,
+                    workspace,
+                    scope,
+                    certain,
+                    limit,
+                    json,
+                    verbose,
+                    if_snapshot,
+                } => (
+                    &no_callers::NO_CALLERS,
+                    "assert_no_callers",
+                    symbol,
+                    repo,
+                    workspace,
+                    scope,
+                    certain,
+                    limit,
+                    json,
+                    verbose,
+                    if_snapshot,
+                ),
+                Assertion::NoDependents {
+                    symbol,
+                    repo,
+                    workspace,
+                    scope,
+                    certain,
+                    limit,
+                    json,
+                    verbose,
+                    if_snapshot,
+                } => (
+                    &no_callers::NO_DEPENDENTS,
+                    "assert_no_dependents",
+                    symbol,
+                    repo,
+                    workspace,
+                    scope,
+                    certain,
+                    limit,
+                    json,
+                    verbose,
+                    if_snapshot,
+                ),
+                Assertion::NoWriters {
+                    table,
+                    repo,
+                    workspace,
+                    scope,
+                    certain,
+                    limit,
+                    json,
+                    verbose,
+                    if_snapshot,
+                } => (
+                    &no_callers::NO_WRITERS,
+                    "assert_no_writers",
+                    table,
+                    repo,
+                    workspace,
+                    scope,
+                    certain,
+                    limit,
+                    json,
+                    verbose,
+                    if_snapshot,
+                ),
+            };
             let result =
                 corpus::ScopeSelection::parse(&scope, corpus::ScopeSelection::agent_default())
                     .and_then(|selection| match workspace {
@@ -965,6 +1044,7 @@ fn main() -> ExitCode {
                             certain,
                             limit,
                             json,
+                            verbose,
                             if_snapshot.as_deref(),
                         ),
                         None => no_callers::run_repository(
@@ -975,6 +1055,7 @@ fn main() -> ExitCode {
                             certain,
                             limit,
                             json,
+                            verbose,
                             if_snapshot.as_deref(),
                         ),
                     });

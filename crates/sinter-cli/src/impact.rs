@@ -497,6 +497,19 @@ fn file_reason(
     })
 }
 
+/// Whether an unmapped file is a hole in the analysis. Manifests, lockfiles,
+/// and other unsupported or excluded paths were never going to be in the
+/// graph, so they cannot make it incomplete; a source file in an indexed
+/// language that still failed to map can.
+fn mapping_gap(file: &UnmappedFile) -> bool {
+    // ponytail: `.sinterignore` exclusions are not consulted here; an ignored
+    // source file still reads as a gap. Thread the ignore matcher through if
+    // that ever misleads.
+    file.reason != UnmappedReason::NotIndexed
+        || (sinter_extract::spec_for_path(&file.path).is_some()
+            && !crate::corpus::excluded(&file.path))
+}
+
 fn unmapped(change: &ChangedFile, reason: UnmappedReason) -> UnmappedFile {
     UnmappedFile {
         path: change.path.clone(),
@@ -1037,7 +1050,7 @@ fn compute_with_store_mode(
     let changed: Vec<Node> = changed.into_iter().filter(|n| !is_test_node(n)).collect();
 
     let mut partial_reasons = Vec::new();
-    if !unmapped_files.is_empty() {
+    if unmapped_files.iter().any(mapping_gap) {
         partial_reasons.push("one_or_more_changed_files_are_not_fully_mapped");
     }
     if historical && working_tree_dirty {
@@ -1193,35 +1206,7 @@ pub fn run(
         );
         print_expect_sites("  changed", &expected.changed, expected.changed_total);
     }
-    println!("changed files:");
-    for file in &report.changed_files {
-        if let Some(old) = &file.old_path {
-            println!(
-                "  {}  {} -> {}  ({} graph symbols) — {}",
-                file.git_status, old, file.path, file.mapped_symbols, file.reason
-            );
-        } else {
-            println!(
-                "  {}  {}  ({} graph symbols) — {}",
-                file.git_status, file.path, file.mapped_symbols, file.reason
-            );
-        }
-    }
-    if !report.unmapped_files.is_empty() {
-        println!("unmapped files:");
-        for file in &report.unmapped_files {
-            println!("  {:?}  {}  — {}", file.reason, file.path, file.detail);
-        }
-    }
-    print_symbols("changed", &report.changed_symbols, limit);
-    if report.blast_radius.is_empty() && !report.changed_symbols.is_empty() {
-        let scope = filter.scopes.as_ref().map_or("all".to_string(), |set| {
-            set.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(",")
-        });
-        println!("blast radius empty: changed symbols have no dependents in scope {scope}");
-    } else {
-        print_symbols("blast radius", &report.blast_radius, limit);
-    }
+    print_blast_radius(&report, &filter, limit);
     print_symbols_with_commands(
         "affected tests",
         &report.affected_tests,
@@ -1234,9 +1219,26 @@ pub fn run(
             println!("  {}  — {}", step.command, step.reason);
         }
     }
+    print_symbols("changed", &report.changed_symbols, limit);
+    println!("changed files: {}", report.changed_files.len());
+    for file in &report.changed_files {
+        let path = match &file.old_path {
+            Some(old) => format!("{old} -> {}", file.path),
+            None => file.path.clone(),
+        };
+        // Drop the long-form explanations: `(5 symbols, 12 dependents)`,
+        // `(not indexed)`, `(new file, 0 inbound edges)`.
+        let reason = file
+            .reason
+            .strip_prefix("indexed, ")
+            .unwrap_or(&file.reason);
+        let reason = reason.split(" (").next().unwrap_or(reason);
+        println!("  {}  {path}  ({reason})", file.git_status);
+    }
+    print_unmapped(&report.unmapped_files);
     let capped = [
         report.changed_symbols.len(),
-        report.blast_radius.len(),
+        by_file(&report.blast_radius).len(),
         report.affected_tests.len(),
     ]
     .iter()
@@ -1248,6 +1250,69 @@ pub fn run(
         );
     }
     Ok(())
+}
+
+/// Blast radius grouped by file, as `(file, symbols in it, first names)`,
+/// busiest file first. A file row is what a reader acts on; 500 symbol rows
+/// are not.
+fn by_file(symbols: &[SymbolRef]) -> Vec<(&str, usize, Vec<&str>)> {
+    let mut files: BTreeMap<&str, (usize, Vec<&str>)> = BTreeMap::new();
+    for symbol in symbols {
+        let entry = files.entry(&symbol.file).or_default();
+        entry.0 += 1;
+        // The file node is the row itself; naming it again says nothing.
+        if entry.1.len() < 3 && symbol.kind != "file" {
+            entry.1.push(&symbol.qualified);
+        }
+    }
+    let mut rows: Vec<_> = files
+        .into_iter()
+        .map(|(file, (count, names))| (file, count, names))
+        .collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    rows
+}
+
+fn print_blast_radius(report: &ImpactReport, filter: &EdgeFilter, limit: usize) {
+    if report.blast_radius.is_empty() && !report.changed_symbols.is_empty() {
+        let scope = filter.scopes.as_ref().map_or("all".to_string(), |set| {
+            set.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(",")
+        });
+        println!("blast radius empty: changed symbols have no dependents in scope {scope}");
+        return;
+    }
+    let rows = by_file(&report.blast_radius);
+    let returned = returned_count(rows.len(), limit);
+    println!(
+        "blast radius: {} symbols in {} files, {returned} files shown, {} truncated",
+        report.blast_radius.len(),
+        rows.len(),
+        rows.len() - returned
+    );
+    for (file, count, names) in rows.iter().take(returned) {
+        let more = count - names.len();
+        let names = names.join(", ");
+        if more > 0 {
+            println!("  {count:>4}  {file}  {names}, +{more} more");
+        } else {
+            println!("  {count:>4}  {file}  {names}");
+        }
+    }
+}
+
+/// One line per unmapped reason: `unmapped: a, b (not indexed)`.
+fn print_unmapped(files: &[UnmappedFile]) {
+    let mut by_reason: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for file in files {
+        let reason = serde_json::to_value(file.reason)
+            .ok()
+            .and_then(|v| v.as_str().map(|s| s.replace('_', " ")))
+            .unwrap_or_default();
+        by_reason.entry(reason).or_default().push(&file.path);
+    }
+    for (reason, paths) in by_reason {
+        println!("unmapped: {} ({reason})", paths.join(", "));
+    }
 }
 
 fn print_expect_sites(label: &str, sites: &[ExpectSite], total: usize) {
@@ -1701,6 +1766,36 @@ mod tests {
 
         assert_eq!(report.analysis_status, AnalysisStatus::Complete);
         assert!(report.partial_reasons.is_empty());
+    }
+
+    #[test]
+    fn manifest_and_lockfile_changes_are_unmapped_but_not_partial() {
+        let repo = repository();
+        write(repo.path(), "Cargo.lock", "# lockfile\n");
+        git(repo.path(), &["add", "Cargo.lock"]);
+        git(repo.path(), &["commit", "-qm", "lock"]);
+        crate::pipeline::build(repo.path(), None).expect("build fixture graph");
+
+        let report = compute(repo.path(), "HEAD~1..HEAD").expect("compute lockfile impact");
+
+        assert_eq!(report.analysis_status, AnalysisStatus::Complete);
+        assert!(report.partial_reasons.is_empty());
+        assert!(report.unmapped_files.iter().any(|file| {
+            file.path == "Cargo.lock" && file.reason == UnmappedReason::NotIndexed
+        }));
+    }
+
+    #[test]
+    fn blast_radius_rolls_up_by_file_busiest_first() {
+        let mut radius = symbols("a", 4);
+        radius.iter_mut().for_each(|s| s.file = "a.rs".to_string());
+        radius[3].kind = "file";
+        radius.extend(symbols("b", 1));
+        let rows = super::by_file(&radius);
+        assert_eq!(rows[0].0, "a.rs");
+        assert_eq!(rows[0].1, 4);
+        assert_eq!(rows[0].2, vec!["a_0", "a_1", "a_2"]);
+        assert_eq!(rows[1], ("b_0.rs", 1, vec!["b_0"]));
     }
 
     #[test]

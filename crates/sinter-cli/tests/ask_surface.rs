@@ -177,12 +177,35 @@ fn ask_json_is_compact_unless_explanation_is_requested() {
     let compact: serde_json::Value = serde_json::from_str(&out).expect("valid json");
     let first = &compact["topics"][0]["hits"][0];
     assert_eq!(first["name"], "PlayerCharacterV2");
-    assert!(first["span"]["end"].as_u64().unwrap() > 0);
-    assert!(first["score"].as_i64().unwrap() > 0);
+    assert!(first["line"].as_u64().unwrap() > 0);
     assert!(first["matched"].as_array().unwrap().len() == 2);
-    assert!(first.get("score_breakdown").is_none(), "{out}");
-    assert!(first.get("calibration").is_none(), "{out}");
-    assert!(compact["topics"][0]["confidence"]["calibration"].is_object());
+    assert!(first["confidence"].is_string(), "{out}");
+    assert!(
+        first["id"].as_str().unwrap().starts_with("symbol:"),
+        "{out}"
+    );
+    // Lean by default: scores, spans, ids, and calibration are --explain detail.
+    for field in [
+        "score",
+        "span",
+        "snapshot_id",
+        "symbol_key",
+        "score_breakdown",
+        "calibration",
+        "ranking_margin",
+        "ranking_bucket",
+        "abstain",
+        "family_size",
+        "roles",
+    ] {
+        assert!(first.get(field).is_none(), "{field} leaked: {out}");
+    }
+    let topic = &compact["topics"][0];
+    assert!(topic["confidence"]["level"].is_string(), "{out}");
+    assert!(topic["confidence"]["reason"].is_string(), "{out}");
+    assert!(topic.get("advice").is_none(), "{out}");
+    assert!(topic["confidence"].get("calibration").is_none(), "{out}");
+    assert!(topic["verify_required"].is_boolean(), "{out}");
 
     let (ok, out) = sinter(
         repo,
@@ -196,13 +219,42 @@ fn ask_json_is_compact_unless_explanation_is_requested() {
         explained_first["score_breakdown"]["final_score"]
     );
     assert!(explained_first.get("calibration").is_none(), "{out}");
+    assert!(explained_first["span"]["end"].as_u64().unwrap() > 0);
+    assert!(explained_first["snapshot_id"].is_string(), "{out}");
+    assert!(
+        explained["topics"][0]["confidence"]["calibration"].is_object(),
+        "{out}"
+    );
+    assert!(explained["topics"][0]["advice"].is_string(), "{out}");
 
-    for topic in explained["topics"].as_array_mut().unwrap() {
-        for hit in topic["hits"].as_array_mut().unwrap() {
-            hit.as_object_mut().unwrap().remove("score_breakdown");
+    // --explain only adds fields: every lean field is unchanged.
+    for (topic, lean_topic) in explained["topics"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .zip(compact["topics"].as_array().unwrap())
+    {
+        for (hit, lean_hit) in topic["hits"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .zip(lean_hit_list(lean_topic))
+        {
+            for (key, value) in lean_hit.as_object().unwrap() {
+                assert_eq!(&hit[key], value, "--explain changed {key}: {out}");
+            }
         }
+        assert_eq!(topic["status"], lean_topic["status"]);
+        assert_eq!(topic["verify_required"], lean_topic["verify_required"]);
+        assert_eq!(
+            topic["confidence"]["level"],
+            lean_topic["confidence"]["level"]
+        );
     }
-    assert_eq!(explained, compact, "--explain changed semantic decisions");
+}
+
+fn lean_hit_list(topic: &serde_json::Value) -> &[serde_json::Value] {
+    topic["hits"].as_array().map(Vec::as_slice).unwrap_or(&[])
 }
 
 /// Abstain never hides the candidates: the text list and the JSON hits are
@@ -264,12 +316,76 @@ fn ask_singleton_abstains_instead_of_claiming_high_confidence() {
     assert_eq!(topic["status"], "abstain", "{out}");
     assert_eq!(topic["confidence"]["level"], "unrated", "{out}");
     assert_eq!(topic["confidence"]["reason"], "no_runner_up", "{out}");
-    assert!(topic["ranking_margin"]["permille"].is_null(), "{out}");
     assert_eq!(topic["verify_required"], true, "{out}");
+    let (ok, out) = sinter(repo, &["ask", "singular quartz", "--json", "--explain"]);
+    assert!(ok, "{out}");
+    let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let topic = &value["topics"][0];
+    assert!(topic["ranking_margin"]["permille"].is_null(), "{out}");
     assert_eq!(
         topic["confidence"]["calibration"]["version"],
         "ask-holdout-2026-08-23.v2"
     );
+}
+
+/// Agent vocabulary: "cap ... output size" reaches a constant named with
+/// budget/bytes through query synonyms, without a literal term match.
+#[test]
+fn ask_synonyms_reach_budget_constant_without_outranking_literal_matches() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::write(
+        repo.join("protocol.rs"),
+        "/// Default MCP byte budget. Tool results land in an agent's context window.\n\
+         pub const MCP_DEFAULT_BUDGET_BYTES: usize = 8000;\n\n\
+         /// Register the sinter server in every client's MCP config.\n\
+         pub fn mcp_server_register() {}\n\n\
+         /// Cap the output size of one text block.\n\
+         pub fn cap_output_size(text: &str) -> String { text.to_owned() }\n\n\
+         /// Serve requests over stdio.\n\
+         pub fn serve() {}\n",
+    )
+    .unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+    let (ok, out) = sinter(
+        repo,
+        &[
+            "ask",
+            "how does the MCP server cap output size",
+            "--json",
+            "--limit",
+            "3",
+        ],
+    );
+    assert!(ok, "{out}");
+    let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let names = value["topics"][0]["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["name"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        names.contains(&"MCP_DEFAULT_BUDGET_BYTES".to_owned()),
+        "synonyms must reach the budget constant: {names:?}\n{out}"
+    );
+    // A literal match on the same terms still outranks the synonym match.
+    assert_eq!(names[0], "cap_output_size", "{names:?}\n{out}");
+
+    // Text --explain: calibration under the confidence line, one
+    // `explain:` line per hit; neither leaks without the flag.
+    let (ok, plain) = sinter(repo, &["ask", "cap output size"]);
+    assert!(ok, "{plain}");
+    assert!(
+        !plain.contains("explain:") && !plain.contains("calibration:"),
+        "{plain}"
+    );
+    let (ok, explained) = sinter(repo, &["ask", "cap output size", "--explain"]);
+    assert!(ok, "{explained}");
+    assert!(explained.contains("calibration:"), "{explained}");
+    assert!(explained.contains("explain: channels"), "{explained}");
+    assert!(explained.contains("· margin "), "{explained}");
 }
 
 /// The machine contract is transport-stable: CLI `--json` is precisely the
@@ -635,9 +751,14 @@ fn show_card_and_ambiguity() {
         ],
     );
     assert!(ok, "{two}");
-    assert_eq!(
-        two.lines().filter(|l| l.starts_with("  | ")).count(),
-        2,
+    let shown: Vec<&str> = two
+        .lines()
+        .filter(|l| l.starts_with("  | ") && !l.starts_with("  | …"))
+        .collect();
+    assert_eq!(shown.len(), 2, "{two}");
+    // The cut is announced, with the count that would show everything.
+    assert!(
+        two.contains("  | … 4 more lines (--context-lines 6 for all)"),
         "{two}"
     );
 
@@ -648,6 +769,24 @@ fn show_card_and_ambiguity() {
     let (ok, with_body) = sinter(repo, &["show", "PlayerCharacterV2", "--json", "--body"]);
     assert!(ok, "{with_body}");
     assert!(with_body.contains("\"excerpt\""), "{with_body}");
+    let v: serde_json::Value = serde_json::from_str(&with_body).unwrap();
+    assert_eq!(v["excerpt_truncated"], false, "{with_body}");
+    assert_eq!(v["excerpt_total_lines"], 6, "{with_body}");
+    let (ok, cut) = sinter(
+        repo,
+        &[
+            "show",
+            "PlayerCharacterV2",
+            "--json",
+            "--body",
+            "--context-lines",
+            "2",
+        ],
+    );
+    assert!(ok, "{cut}");
+    let v: serde_json::Value = serde_json::from_str(&cut).unwrap();
+    assert_eq!(v["excerpt_truncated"], true, "{cut}");
+    assert_eq!(v["excerpt_total_lines"], 6, "{cut}");
 
     // File-node card.
     let (ok, out) = sinter(repo, &["show", "player/traversal/climb.ts"]);
@@ -1543,13 +1682,15 @@ fn ask_multi_topic_groups_hits_per_clause() {
     assert_eq!(topics.len(), 2, "{js}");
     assert!(parsed["returned"].as_u64().unwrap() <= 3, "{js}");
     assert!(
-        topics.iter().all(|topic| topic["advice"].is_string()),
+        topics
+            .iter()
+            .all(|topic| topic["confidence"]["level"].is_string()),
         "{js}"
     );
     assert!(
         topics
             .iter()
-            .all(|topic| topic["term_coverage"].is_object()),
+            .all(|topic| topic["verify_required"].is_boolean()),
         "{js}"
     );
     assert!(
@@ -1855,16 +1996,15 @@ fn hook_scripts_share_compact_agent_routing() {
     ];
     for body in scripts {
         for route in [
-            "map first",
-            "vague discovery",
+            "sinter context",
+            "sinter ask",
             "query/show",
             "affected/deps/path",
+            "assert no-callers",
             "unresolved",
             "not_proven",
-            "impact/overlap",
-            "--workspace",
-            "ensure/doctor/scip",
-            "function bodies",
+            "grep --within",
+            "impact",
         ] {
             assert!(body.contains(route), "hook lost `{route}`: {body}");
         }

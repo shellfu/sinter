@@ -368,9 +368,16 @@ fn map_tool_and_error_hints() {
         "partial"
     );
 
-    // Unknown symbol with no close names: point at concept search —
-    // the MCP hint, and only that one (no leftover CLI-flavored hint).
-    let msg = responses[2]["error"]["message"].as_str().unwrap();
+    // Unknown symbol with no close names: a tool outcome (`isError`), not a
+    // JSON-RPC error, pointing at concept search — the MCP hint, and only
+    // that one (no leftover CLI-flavored hint).
+    assert!(responses[2].get("error").is_none(), "{}", responses[2]);
+    let miss = &responses[2]["result"];
+    assert_eq!(miss["isError"], true, "{miss}");
+    assert_eq!(miss["structuredContent"]["outcome"]["status"], "not_found");
+    let msg = miss["structuredContent"]["error"]["message"]
+        .as_str()
+        .unwrap();
     assert!(msg.contains("ask tool"), "no recovery hint: {msg}");
     assert!(
         !msg.contains("sinter ask"),
@@ -383,6 +390,97 @@ fn map_tool_and_error_hints() {
 
     let all: serde_json::Value = body(&responses[4]);
     assert_eq!(all["scope"].as_array().unwrap().len(), 7, "{all}");
+}
+
+/// A near-miss lookup is a tool result with `isError`: the close names
+/// reach the summary text and `structuredContent`, never `error.data`
+/// (most clients drop that). A tie-break note leads the summary line and
+/// is mirrored under `outcome.warnings`. Stderr stays clean throughout.
+#[test]
+fn lookup_miss_and_tie_break_notes_are_visible_to_mcp_clients() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = build_repo(dir.path());
+    // Same-name symbol in another language so `show Helper` must tie-break
+    // (the dominant language wins, the other is reported as ignored).
+    std::fs::write(
+        repo.join("extra.ts"),
+        "/** Helper duplicated in another language. */\nexport function Helper(): number { return 3; }\n",
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sinter"))
+        .args(["serve", "--repo", repo.to_str().unwrap()])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn serve");
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        for request in [
+            call_tool(1, "show", serde_json::json!({"symbol": "Helpr"})),
+            call_tool(2, "show", serde_json::json!({"symbol": "Helper"})),
+            call_tool(3, "nope", serde_json::json!({})),
+        ] {
+            writeln!(stdin, "{request}").unwrap();
+        }
+    }
+    drop(child.stdin.take());
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.stderr.is_empty(),
+        "stderr must stay silent on stdio: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let responses: Vec<serde_json::Value> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+
+    assert!(responses[0].get("error").is_none(), "{}", responses[0]);
+    let miss = &responses[0]["result"];
+    assert_eq!(miss["isError"], true, "{miss}");
+    let text = miss["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("show Helpr: not found; close names: Helper"),
+        "{text}"
+    );
+    let structured = &miss["structuredContent"];
+    assert_eq!(structured["operation"], "show");
+    assert_eq!(structured["outcome"]["status"], "not_found");
+    assert_eq!(structured["outcome"]["partial"], false);
+    assert_eq!(structured["error"]["code"], "no_match");
+    assert_eq!(structured["error"]["retryable"], false);
+    assert!(
+        structured["error"]["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c.as_str().unwrap().starts_with("Helper")),
+        "{structured}"
+    );
+
+    let hit = &responses[1]["result"];
+    assert_eq!(hit["isError"], false, "{hit}");
+    let text = hit["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("show Helper: 1 other `Helper` ignored ("),
+        "{text}"
+    );
+    let outcome = &hit["structuredContent"]["outcome"];
+    assert_eq!(outcome["status"], "complete");
+    assert_eq!(outcome["warnings"], hit["structuredContent"]["warnings"]);
+    assert_eq!(
+        outcome["warnings"].as_array().unwrap().len(),
+        1,
+        "{outcome}"
+    );
+
+    // A protocol fault is still a JSON-RPC error.
+    assert_eq!(responses[2]["error"]["code"], -32000, "{}", responses[2]);
+    assert_eq!(
+        responses[2]["error"]["data"]["error"]["code"],
+        "unknown_operation"
+    );
 }
 
 /// Two identical rev ranges collide on every touched symbol: risk high.

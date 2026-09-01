@@ -314,6 +314,12 @@ impl QueryTerm {
         self.core.iter().any(|core| core == token)
     }
 
+    /// True when `haystack` (lowercased) contains a literal form of this
+    /// term (surface or stem, no synonym).
+    pub(super) fn core_occurs_in(&self, haystack: &str) -> bool {
+        self.core.iter().any(|core| haystack.contains(core))
+    }
+
     /// True when `haystack` (lowercased) contains any variant.
     pub(super) fn occurs_in(&self, haystack: &str) -> bool {
         self.variants
@@ -332,7 +338,7 @@ impl QueryTerm {
         }) || self.abbreviates(token)
     }
 
-    fn abbreviates(&self, token: &str) -> bool {
+    pub(super) fn abbreviates(&self, token: &str) -> bool {
         token.len() >= 3
             && self
                 .core
@@ -576,15 +582,38 @@ fn add_query_synonyms(variants: &mut Vec<String>) {
             "authentication" => &["auth"],
             "calculate" => &["get", "compute"],
             "check" => &["validate"],
+            "cap" => &["limit", "budget", "truncate", "max"],
+            "limit" => &["cap", "budget", "max"],
+            "budget" => &["limit", "cap"],
+            "truncate" => &["cap", "limit", "budget"],
+            "size" => &["bytes", "length", "len"],
+            "bytes" => &["size", "length"],
+            "caller" => &["dependent", "user"],
+            "dependent" => &["caller", "user"],
+            "user" => &["caller", "dependent"],
+            "setting" => &["config", "option", "cfg"],
+            "option" => &["config", "setting"],
+            "failure" => &["error", "err"],
+            "err" => &["error", "failure"],
+            "result" => &["output", "response"],
+            "delete" => &["remove"],
+            "remove" => &["delete"],
+            "new" => &["create", "init"],
+            "init" => &["create", "new"],
+            "read" => &["load", "fetch"],
+            "fetch" => &["read", "load"],
+            "write" => &["save", "store"],
+            "save" => &["write", "store"],
+            "store" => &["write", "save"],
             "compute" => &["calculate"],
             "configuration" => &["config"],
-            "create" => &["new", "make"],
+            "create" => &["new", "make", "init"],
             "deserialize" => &["fromjson", "read", "decode"],
             "exactly" => &["exact"],
             "flag" => &["arg", "args"],
             "look" => &["lookup", "find", "get"],
             "lookup" => &["find", "get"],
-            "load" => &["open", "read"],
+            "load" => &["open", "read", "fetch"],
             "extract" => &["get"],
             "run" => &["execute", "exec"],
             "execute" => &["run", "exec"],
@@ -592,12 +621,12 @@ fn add_query_synonyms(variants: &mut Vec<String>) {
             "throw" => &["raise"],
             "template" => &["tmpl"],
             "command" => &["cmd"],
-            "config" => &["cfg"],
+            "config" => &["cfg", "settings", "options"],
             "context" => &["ctx"],
             "message" => &["msg"],
             "request" => &["req"],
-            "response" => &["res", "resp"],
-            "error" => &["err"],
+            "response" => &["res", "resp", "output"],
+            "error" => &["err", "failure"],
             "function" => &["fn", "func"],
             "initialize" => &["init"],
             "directory" => &["dir"],
@@ -618,13 +647,13 @@ fn add_query_synonyms(variants: &mut Vec<String>) {
             "variable" => &["var"],
             "reference" => &["ref"],
             "pointer" => &["ptr"],
-            "length" => &["len"],
+            "length" => &["len", "size", "bytes"],
             "maximum" => &["max"],
             "minimum" => &["min"],
             "previous" => &["prev"],
             "current" => &["cur", "curr"],
             "temporary" => &["tmp", "temp"],
-            "output" => &["sink"],
+            "output" => &["sink", "response"],
             "register" => &["add"],
             "route" => &["rule"],
             "serialize" => &["tojson", "write", "encode"],

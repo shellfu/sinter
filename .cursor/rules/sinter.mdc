@@ -5,112 +5,64 @@ alwaysApply: false
 
 # sinter
 
-This project uses sinter: a code knowledge graph with typed, evidence-backed
-cross-file relationships, stored at `.sinter/` in the repository. All logic
-lives in the binary — this card only routes questions to the right verb and
-reads the output. Never re-implement chunking, retries, or graph traversal
-in prose. If the user types `/sinter`, use this card before anything else.
+`.sinter/` holds a derived code graph: never commit or edit it, and
+never treat it as stale-proof (`sinter doctor` names the fix). When
+`.sinter/graph.redb` exists, query sinter before any filesystem search. If it
+is missing, `sinter ensure <repo>` creates it (writes only `.sinter/`); run
+`sinter init` only when full onboarding is requested. Queries self-sync;
+`sinter build` stays for CI.
 
-## Rules
+## Routing (full table: the sinter block in AGENTS.md)
 
-- For codebase questions, query sinter first whenever `.sinter/` exists:
-  `sinter ask` for concepts, `sinter path` for how two symbols relate,
-  `sinter affected` for blast radius. Results are scoped and ranked —
-  usually much smaller than raw grep output, and content-bearing enough
-  to answer without opening files.
-- Queries self-sync: every command refreshes the graph incrementally
-  before answering, so results reflect uncommitted edits with no manual
-  step. `sinter build <repo>` remains for CI, scripting, and hooks.
-- `.sinter/` is derived local state: never commit it, never edit it, and
-  never treat it as stale-proof — `sinter doctor` reports freshness and
-  names the fix for anything wrong.
-- Only skip sinter when the task is about the graph itself being stale or
-  wrong, or the user explicitly says not to use it.
-
-## Setup check
-
-If `.sinter/graph.redb` does not exist in the target repo, onboard it —
-one command builds the graph, installs git hooks, and registers agent
-integration, ending with a doctor report:
-
-    sinter init <repo>
-
-(`sinter build <repo>` alone refreshes an existing graph.)
-
-`sinter install enforce --strict` opts into strict enforcement: the first
-raw recursive search (grep/rg or the Grep tool) of a Claude Code session
-is blocked with a redirect to `sinter ask/show/affected/deps/path/impact`;
-running the same search again passes with an advisory nudge, as does
-every later one — sinter-first, grep-second, never grep-never. Strict mode only
-ever denies (it never auto-approves anything); default installs remain
-advisory context injection only.
-
-## Routing
-
-| Question shape | Command |
+| Need | Verb |
 |---|---|
-| Orient in an unfamiliar repo (modules, hubs, doc entry points) | `sinter map --repo <repo>` |
-| Vague/conceptual: "where is the X", "how does Y work" | `sinter ask "<question>" --repo <repo>` |
-| Orient on a found symbol or file | `sinter show <symbol> --repo <repo>` |
-| Exact/fuzzy symbol lookup | `sinter query <symbol> --repo <repo>` |
-| What depends on X / blast radius (reverse) | `sinter affected <symbol> --repo <repo>` |
-| What does X depend on (forward, before touching X) | `sinter deps <symbol> --repo <repo>` |
-| Where is the graph blind (honesty check, negative proofs) | `sinter unresolved [--file <f>] [--name <n>] --repo <repo>` |
-| How does A reach B | `sinter path <A> <B> --repo <repo>` |
-| What does this commit/diff/PR affect downstream ("what changed recently and what does it touch") | `sinter impact <rev-range> --repo <repo>` (e.g. `HEAD~1..HEAD`) — prefer over `git show`/`git log` archaeology |
-| Where do open PRs collide / merge risk | `sinter overlap <base...prA> <base...prB> ... --repo <repo>` |
-| Cross-repo (distributed system) versions of the above | add `--workspace <manifest.toml>`; symbols may be `member:Symbol` |
-
-Ask one topic per `ask` call, phrased with the words you expect in an
-identifier or doc comment — a multi-topic question ("what documentation
-describes X, Y, or Z?") dilutes ranking and earns a weak-match warning.
-
-Every read verb takes `--json` (same shape as the MCP tool; repo scope
-only — conflicts with `--workspace`) and exits grep-style: 0 results
-found, 1 valid query with no results, 2 error — branch on the exit code
-instead of parsing. `affected`/`path`/`deps` accept
-`--evidence scip,import,scope,dynamic` and `--certain` (stronger evidence
-tiers) plus `--relations calls,uses,imports,implements,extends` —
-`--relations calls,uses` cuts file-level import noise from a blast
-radius; implements/extends follows interface fan-out.
+| Orient in an unfamiliar repo | `sinter map` (first) |
+| Start a coding task | `sinter context "<task>"` (name real symbols) |
+| Vague discovery | `sinter ask "<question>"` (`--explain` adds ranking diagnostics) |
+| Exact/fuzzy symbol; members | `sinter query <sym>`, `'Type::*'`, `'*::method'` |
+| Inspect a symbol / its body | `sinter show <sym> [--body [--context-lines N]]` |
+| Blast radius / forward deps / route | `sinter affected <sym>...`, `sinter deps <sym>`, `sinter path <A> <B>` |
+| Text inside a blast radius | `sinter grep '<re>' --within 'affected(SYM)'` (also `deps(SYM)`, `file(PATH)`; repeatable) |
+| Graph gaps | `sinter unresolved [--file f] [--name n]` |
+| No-production-caller proof | `sinter assert no-callers <sym> --json`: accept only `holds_for_indexed_snapshot` |
+| Nothing-depends-on proof (const/type/trait) | `sinter assert no-dependents <sym> --json` (`no-callers` counts `calls` only) |
+| Citations | `sinter cite <sym>`; gate with `sinter verify-doc <f.md> --json` |
+| Diff/PR impact; unfinished refactor | `sinter impact [rev-range]` (`--limit 0` = all); `sinter impact --expect <sym>` |
+| PR collisions | `sinter overlap <rangeA> <rangeB>` |
+| Cross-repo | `sinter workspace <manifest.toml>`, then `--workspace <manifest.toml>`; symbols `member:Symbol` |
+| Setup, repair, compiler evidence | `sinter ensure`, `sinter doctor`, `sinter scip` |
 
 ## Reading results
 
-- Every `ask` hit shows match provenance (`[name+doc 2/2 terms]`) and
-  file:line with signature/doc — usually no file read is needed to answer.
-- Edges carry the call site: dependents and path steps print the
-  `file:line` where the reference occurs (`site` in JSON) — jump straight
-  there instead of re-searching.
-- Edges carry evidence; "unresolved" is a real answer meaning no evidence
-  binds the reference — say so rather than guessing. `affected`/`deps`
-  print an unresolved-refs note when their list may be incomplete;
-  `sinter unresolved` lists the gaps themselves.
-- `affected`/`deps` cap output at `--limit` (default 200) and print a
-  footer with the exact `--limit` rerun that widens it.
-- Symbol ambiguity returns a candidate list; pick the qualified name or
-  node id and rerun rather than assuming.
+- Always pass `--json` (`sinter.agent.v1`). Read verbs exit 0 results, 1
+  none, 2 error; gates exit 0 pass, 1 fail, 2 error. Branch on the code, then
+  read `status`: exit 1 conflates `not_found` with `not_proven`.
+- `not_proven`, `partial`, `conclusive: false`, and unresolved references
+  forbid negative claims. Run `sinter unresolved`, a `not_proven` path's
+  `suggested_retries`, or `sinter scip` before saying "no callers"/"no path".
+- Ambiguous name: rerun as `Name@file` or `Name@file:line`
+  (`run@doctor.rs:175`); lookup otherwise prefers `production`.
+- Edges carry `site` (`file:line`): jump there instead of re-searching.
+  `coverage.universe` names what was searched; anything absent was not.
+- `--relations calls,uses,reads,writes,creates,alters,drops` on
+  affected/deps/path drops import noise.
+- Traversal scope defaults to `production,test,docs`, `ask` to
+  `production,docs`; MCP `scope` defaults to `all`.
 
-## Orchestrating subagents
+## MCP
 
-When writing prompts for subagents, mandate sinter for every structure
-claim — callers, dependencies, blast radius, and especially negative
-proofs ("no production caller") — and scope grep/rg to content-only
-searches. A subagent told to use rg will not discover sinter on its own.
+`mcp__sinter__*` tools (ask, show, query, context, affected, deps, path, grep,
+unresolved, impact, overlap, map; `--workspace` servers omit grep, overlap,
+map) mirror the flags: `grep{pattern, within[]}`, `show{body, context_lines}`,
+`impact{expect[]}`. Read `structuredContent` (`{protocol, operation, outcome,
+data}`; `data` is the CLI `--json` payload), not `content[0].text`, and check
+`outcome.status` before acting. Long-form guidance: resource `sinter://guide`.
 
-## Workspaces (cross-repo)
+## Hooks and subagents
 
-If a workspace manifest exists (TOML with [members] mapping names to repo
-paths), `sinter workspace <manifest>` builds every member and refreshes
-boundary links; `affected`/`path`/`ask`/`impact`/`doctor` accept
-`--workspace <manifest>` to traverse across repos. Cross-repo edges carry
-import evidence (or `declared` for manifest-declared runtime coupling) and
-are filterable like any other.
-
-## Boundaries
-
-Symbol-level structure only — plus markdown structure: headings index as
-section nodes (13 languages total), so `ask` finds where something is
-documented with file:line. Not for summarization or content questions
-inside a single function body — read the file for those. For agent clients that cannot run shell commands, `sinter serve`
-exposes the same graph over MCP stdio (`--workspace <manifest>` serves a
-cross-repo scope with the same tool names).
+`sinter init` installs strict Claude Code hooks: the first raw recursive search
+(grep/rg or the Grep tool) of a session is denied with a redirect, the retry
+gets one nudge, later ones are silent. Advisory installs nudge each
+class at most once per session. Calls without a session ID remain nudge-only.
+Subagent prompts must mandate sinter for structure claims and reserve rg
+for unbounded text.

@@ -63,8 +63,9 @@ thread_local! {
 /// Outside `--json` no envelope is ever written, so the note goes straight
 /// to stderr with the wording terminals already show.
 ///
-/// ponytail: JSON mode is read once off argv; set it explicitly from `main`
-/// if a verb ever gains a JSON switch other than `--json`.
+/// ponytail: JSON mode is read once off argv unless `set_json_mode` ran
+/// first; set it explicitly from `main` if a verb ever gains a JSON switch
+/// other than `--json`.
 pub fn warn(message: impl Into<String>) {
     let message = message.into();
     if !json_mode() {
@@ -73,9 +74,18 @@ pub fn warn(message: impl Into<String>) {
     WARNINGS.with_borrow_mut(|buffer| buffer.push(message));
 }
 
+static JSON_MODE: OnceLock<bool> = OnceLock::new();
+
+/// Declare that every diagnostic reaches the caller inside an envelope, so
+/// nothing is echoed to stderr. `serve` calls this: an MCP stdio transport
+/// has no terminal, and a stray line on stderr is noise a client may log
+/// as a failure.
+pub fn set_json_mode() {
+    let _ = JSON_MODE.set(true);
+}
+
 fn json_mode() -> bool {
-    static JSON: OnceLock<bool> = OnceLock::new();
-    *JSON.get_or_init(|| std::env::args().any(|arg| arg == "--json"))
+    *JSON_MODE.get_or_init(|| std::env::args().any(|arg| arg == "--json"))
 }
 
 /// Drain the sink. Called once per emitted envelope, so a warning is
@@ -161,9 +171,13 @@ pub fn mcp_success(operation: &str, payload: &Value, budget: Budget) -> Result<V
         {
             data["legend"] = json!(legend);
         }
-        let summary = summary(operation, &data);
+        let summary = summary(operation, &data, &warnings);
         let mut structured = success(operation, data);
         insert_warnings(&mut structured, warnings.clone());
+        // Mirrored under `outcome`: a client that reads only the verdict
+        // must still see that the answer rests on a tie-break or a
+        // degraded resolution.
+        insert_warnings(&mut structured["outcome"], warnings.clone());
         Ok(json!({
             "content": [{"type": "text", "text": summary}],
             "structuredContent": structured,
@@ -209,8 +223,53 @@ fn first_terse_row(value: &Value, depth: usize) -> Option<&Map<String, Value>> {
     }
 }
 
-/// One plain line (<= 200 bytes): operation, subject, shown/total per list.
-fn summary(operation: &str, data: &Value) -> String {
+/// MCP tool result for a lookup that ran and found nothing. Per the MCP
+/// spec this is an execution outcome (`isError: true` in `result`), not a
+/// JSON-RPC error: most clients surface only `error.message` and drop
+/// `error.data`, which is where the close-name candidates would have gone.
+/// `structured` is the `failure` document; `subject` is the symbol asked for.
+pub fn mcp_failure(subject: Option<&str>, structured: Value) -> Value {
+    let operation = structured["operation"].as_str().unwrap_or("unknown");
+    let status = structured["outcome"]["status"]
+        .as_str()
+        .unwrap_or("error")
+        .replace('_', " ");
+    let mut text = operation.to_string();
+    if let Some(subject) = subject {
+        text.push_str(&format!(" {subject}"));
+    }
+    text.push_str(&format!(": {status}"));
+    let names: Vec<&str> = structured["error"]["candidates"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c.as_str().or_else(|| c["name"].as_str()))
+        .collect();
+    if names.is_empty() {
+        if let Some(line) = structured["error"]["message"]
+            .as_str()
+            .and_then(|m| m.lines().next())
+        {
+            text.push_str(&format!("; {line}"));
+        }
+    } else {
+        let shown = names.len().min(5);
+        text.push_str(&format!("; close names: {}", names[..shown].join(", ")));
+        if names.len() > shown {
+            text.push_str(&format!(" (+{} more)", names.len() - shown));
+        }
+    }
+    json!({
+        "content": [{"type": "text", "text": text}],
+        "structuredContent": structured,
+        "isError": true,
+    })
+}
+
+/// One plain line (<= 200 bytes): operation, subject, warnings, shown/total
+/// per list. Warnings lead: a tie-break or degraded resolution changes what
+/// the counts mean, and many clients show only this line.
+fn summary(operation: &str, data: &Value, warnings: &[String]) -> String {
     let subject = data.get("symbol").map_or_else(String::new, |s| match s {
         Value::String(s) => format!(" {s}"),
         Value::Object(o) => o
@@ -229,6 +288,9 @@ fn summary(operation: &str, data: &Value) -> String {
         Some(other) => format!(" status {other};"),
     };
     let mut line = format!("{operation}{subject}:");
+    for warning in warnings {
+        line.push_str(&format!(" {warning};"));
+    }
     if let Some(total) = data.get("total").and_then(Value::as_u64) {
         line.push_str(&format!(" total {total};"));
     }
@@ -903,6 +965,69 @@ mod tests {
         let second =
             super::mcp_success("query", &json!({"results": []}), Budget::default()).unwrap();
         assert!(second["structuredContent"].get("warnings").is_none());
+    }
+
+    #[test]
+    fn warnings_lead_the_summary_line_and_mirror_under_outcome() {
+        super::take_warnings();
+        super::warn("2 other `to_json` ignored (in-degree): to_json@a.rs, to_json@b.rs");
+        let result = super::mcp_success(
+            "show",
+            &json!({"symbol": "to_json", "incoming": [{"s": "x", "f": "a.rs"}]}),
+            Budget::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            result["content"][0]["text"],
+            "show to_json: 2 other `to_json` ignored (in-degree): to_json@a.rs, to_json@b.rs; \
+             incoming 1/1; see structuredContent"
+        );
+        let outcome = &result["structuredContent"]["outcome"];
+        assert_eq!(outcome["status"], "complete");
+        assert_eq!(outcome["warnings"].as_array().unwrap().len(), 1);
+        assert_eq!(result["structuredContent"]["warnings"], outcome["warnings"]);
+        let clean = super::mcp_success("show", &json!({"symbol": "x"}), Budget::default()).unwrap();
+        assert!(
+            clean["structuredContent"]["outcome"]
+                .get("warnings")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_lookup_miss_is_a_tool_result_with_candidates_in_the_text() {
+        let miss = failure(
+            "show",
+            &crate::lookup::NoMatch(
+                "no exact match for `take_budgt`; close names:\n  take_budget\n  take_budgets"
+                    .to_string(),
+            )
+            .into(),
+        );
+        let result = super::mcp_failure(Some("take_budgt"), miss);
+        assert_eq!(result["isError"], true);
+        assert_eq!(
+            result["content"][0]["text"],
+            "show take_budgt: not found; close names: take_budget, take_budgets"
+        );
+        assert_eq!(
+            result["structuredContent"]["outcome"]["status"],
+            "not_found"
+        );
+        assert_eq!(result["structuredContent"]["error"]["code"], "no_match");
+        assert_eq!(
+            result["structuredContent"]["error"]["candidates"],
+            json!(["take_budget", "take_budgets"])
+        );
+
+        let bare = failure(
+            "show",
+            &crate::lookup::NoMatch("no symbol matches `Zz` — try the ask tool".to_string()).into(),
+        );
+        assert_eq!(
+            super::mcp_failure(Some("Zz"), bare)["content"][0]["text"],
+            "show Zz: not found; no symbol matches `Zz` — try the ask tool"
+        );
     }
 
     #[test]

@@ -31,20 +31,23 @@ fn sinter(repo: &Path, args: &[&str]) -> (bool, String) {
     (code == Some(0), out)
 }
 
-/// entry (lib.rs) -> core_fn (util.rs); util.rs also calls a function
-/// nobody defines, so the radius of anything touching util.rs has a gap.
+/// entry (lib.rs) -> core_fn (util.rs); util.rs also calls `twin`, which
+/// two modules define and nothing picks (an actionable gap), so the radius
+/// of anything touching util.rs is partial.
 fn rust_fixture_with_gap(repo: &Path) {
     std::fs::create_dir_all(repo.join("src")).unwrap();
     std::fs::write(
         repo.join("src/lib.rs"),
-        "mod util;\nuse crate::util::core_fn;\n\npub fn entry() -> u32 {\n    core_fn()\n}\n",
+        "mod util;\nmod a;\nmod b;\nuse crate::util::core_fn;\n\npub fn entry() -> u32 {\n    core_fn()\n}\n",
     )
     .unwrap();
     std::fs::write(
         repo.join("src/util.rs"),
-        "pub fn core_fn() -> u32 {\n    missing_fn()\n}\n",
+        "pub fn core_fn() -> u32 {\n    twin()\n}\n",
     )
     .unwrap();
+    std::fs::write(repo.join("src/a.rs"), "pub fn twin() -> u32 { 1 }\n").unwrap();
+    std::fs::write(repo.join("src/b.rs"), "pub fn twin() -> u32 { 2 }\n").unwrap();
     let (ok, out) = sinter(repo, &["build"]);
     assert!(ok, "{out}");
 }
@@ -72,7 +75,106 @@ fn affected_names_unresolved_refs_within_its_radius() {
         radius["references"].as_u64().unwrap() >= 1,
         "structured radius gap missing: {out}"
     );
+    assert!(radius["actionable"].as_u64().unwrap() >= 1, "{out}");
     assert_eq!(radius["sql"], 0, "{out}");
+}
+
+#[test]
+fn affected_radius_with_only_external_refs_is_not_partial() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(
+        repo.join("src/lib.rs"),
+        "pub fn core_fn() -> u32 {\n    missing_fn()\n}\npub fn entry() -> u32 {\n    core_fn()\n}\n",
+    )
+    .unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+
+    // Nothing defines missing_fn: not a gap a maintainer can close, so the
+    // text answer must not read as partial; the raw count stays in JSON.
+    let (ok, out) = sinter(repo, &["affected", "core_fn"]);
+    assert!(ok, "{out}");
+    assert!(!out.contains("unresolved within this radius"), "{out}");
+    assert!(
+        out.contains(
+            "coverage: complete for indexed sources (1 external/unsupported refs excluded)"
+        ),
+        "{out}"
+    );
+
+    let (ok, out) = sinter(repo, &["affected", "core_fn", "--json"]);
+    assert!(ok, "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+    let radius = &v["coverage"]["evidence"]["unresolved"]["within_radius"];
+    assert_eq!(radius["references"], 1, "{out}");
+    assert_eq!(radius["actionable"], 0, "{out}");
+
+    // deps: the inside-symbol note is silent for the same reason, and the
+    // raw count survives in JSON.
+    let (ok, out) = sinter(repo, &["deps", "core_fn"]);
+    assert!(!ok, "{out}");
+    assert!(!out.contains("dependencies may be missing"), "{out}");
+    let (_, out) = sinter(repo, &["deps", "core_fn", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+    assert_eq!(v["unresolved_refs_in_symbol"], 1, "{out}");
+    assert_eq!(v["actionable_unresolved_in_symbol"], 0, "{out}");
+}
+
+#[test]
+fn affected_hub_rolls_up_by_file_and_orders_callers_before_imports() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    let mut lib = String::from("mod hub;\nmod many;\nmod few;\n");
+    lib.push_str("pub fn hub_fn() -> u32 { 1 }\n");
+    std::fs::write(repo.join("src/hub.rs"), "pub fn hub_fn() -> u32 { 1 }\n").unwrap();
+    let mut many = String::from("use crate::hub::hub_fn;\n");
+    for i in 0..60 {
+        many.push_str(&format!("pub fn caller_{i:02}() -> u32 {{ hub_fn() }}\n"));
+    }
+    std::fs::write(repo.join("src/many.rs"), many).unwrap();
+    std::fs::write(
+        repo.join("src/few.rs"),
+        "use crate::hub::hub_fn;\npub fn lone() -> u32 { hub_fn() }\n",
+    )
+    .unwrap();
+    std::fs::write(repo.join("src/lib.rs"), lib).unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+
+    // Over the limit with many direct dependents: one line per file, no
+    // rows, and the row-widening retry named.
+    let (ok, out) = sinter(repo, &["affected", "hub_fn@hub.rs", "--limit", "10"]);
+    assert!(ok, "{out}");
+    assert!(
+        !out.contains("caller_05 function"),
+        "rows must roll up: {out}"
+    );
+    assert!(out.contains("src/many.rs  direct 6"), "{out}");
+    assert!(out.contains("src/few.rs  direct "), "{out}");
+    assert!(out.contains("/ --json for rows"), "{out}");
+    let many_at = out.find("src/many.rs  direct").unwrap();
+    let few_at = out.find("src/few.rs  direct").unwrap();
+    assert!(many_at < few_at, "largest file first: {out}");
+
+    // Widened to every row: rows print, callers before the import rows.
+    let (ok, out) = sinter(repo, &["affected", "hub_fn@hub.rs", "--limit", "100"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("caller_05 function"), "{out}");
+    let first_call = out.find("[calls/").unwrap();
+    let first_import = out.find("[imports/").unwrap();
+    assert!(first_call < first_import, "{out}");
+
+    // JSON keeps the row shape regardless of size.
+    let (ok, out) = sinter(
+        repo,
+        &["affected", "hub_fn@hub.rs", "--limit", "10", "--json"],
+    );
+    assert!(ok, "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+    assert_eq!(v["dependents"].as_array().unwrap().len(), 10, "{out}");
 }
 
 #[test]

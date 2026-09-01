@@ -27,7 +27,7 @@
         {
           "kind": "cli",
           "id": "ask-entry",
-          "args": ["ask", "public entry point for the request flow", "--limit", "5"],
+          "args": ["ask", "public entry point for the request flow", "--limit", "5", "--explain"],
           "expect": [
             {"pointer": "/topics/0/hits", "predicate": "contains", "value": {"qualified": "entry"}},
             {"pointer": "/topics/0/verify_required", "predicate": "exists"},

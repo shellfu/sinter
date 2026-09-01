@@ -61,6 +61,7 @@ by structure, `sinter grep --within` is that search, not rg.
 | Find text only inside a blast radius | `sinter grep '<regex>' --within 'affected(<sym>)'` (`--within` also takes `deps(SYM)`/`file(PATH)`, is repeatable, unions the bounds) |
 | Check gaps before a negative proof | `sinter unresolved [--file <f>] [--name <n>]` |
 | Prove no production callers in this indexed snapshot | `sinter assert no-callers <symbol> --json` — accept only `holds_for_indexed_snapshot`; retain scope, snapshot, universe, and limitations |
+| Prove nothing depends on a const/struct/enum/trait | `sinter assert no-dependents <symbol> --json` — all non-containment relations (`no-callers` counts `calls` only and hints at this for non-functions); `--verbose` keeps the `coverage.graph` block |
 | Emit a durable source citation | `sinter cite <symbol>` — paste the complete Markdown line and metadata comment |
 | Gate citations in a document | `sinter verify-doc <file.md> --json` — bare path/line references remain `not_proven` |
 | What does this commit/diff/PR affect downstream | `sinter impact <rev-range>` (default is capped; `--limit 0` returns all) |

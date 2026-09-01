@@ -101,10 +101,14 @@ pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
                     as usize;
                 // Same producer as CLI `--body`, so the excerpt is the same
                 // bytes; absent (unreadable file) it stays absent, not empty.
-                if let Some(body) =
-                    crate::show::excerpt(repo, &node.file, node.span.start, node.span.end, lines)
-                {
-                    out["excerpt"] = json!(body);
+                if let Some(body) = crate::show::excerpt_lines(
+                    repo,
+                    &node.file,
+                    node.span.start,
+                    node.span.end,
+                    lines,
+                ) {
+                    crate::show::excerpt_json(&mut out, &body);
                 }
             }
             Ok(out)

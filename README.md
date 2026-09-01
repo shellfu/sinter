@@ -240,6 +240,7 @@ the issue.
 | `sinter grep <regex> --within <traversal>` | Text search bounded by a graph traversal: `affected(SYM)`, `deps(SYM)`, `file(PATH)`, repeatable and unioned |
 | `sinter context "<task>"` | Evidence packet for a coding task: edit candidates, deps/dependents, relevant tests, gaps, next commands (`--workspace <manifest>` federates member packets) |
 | `sinter assert no-callers <symbol>` | Check for production callers by default; exits 0 only for `holds_for_indexed_snapshot`, with `--scope`, `--workspace`, `--certain`, and `--json` controls |
+| `sinter assert no-dependents <symbol>` | Same contract over every non-containment relation (uses, reads, writes, implements, …) for constants, types, and traits; `no-callers` counts `calls` edges only |
 | `sinter cite <symbol>` | Emit a repository-root-relative Markdown `file#Lline` citation carrying a stable symbol key |
 | `sinter verify-doc <file.md>` | Re-resolve managed citations; bare `path:line` references return `not_proven` even when the location exists |
 | `sinter impact <rev-range>` | Changed symbols → blast radius → affected tests (`--expect <symbol>` reports direct dependents the diff did not touch) |

@@ -8,7 +8,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use serde_json::{Value, json};
-use sinter_core::{Confidence, Node, NodeId, Relation};
+use sinter_core::{Confidence, Node, NodeId, Relation, SymbolKind};
 use sinter_resolve::qualified_of;
 use sinter_store::{EdgeFilter, Reached, Store};
 
@@ -36,6 +36,64 @@ const MAX_IDENTIFIERS: usize = 12;
 const MAX_ANCHOR_NODES: usize = 3;
 /// Content terms (already stop-filtered by the `ask` parser) offered to `rg`.
 const RG_TERMS: usize = 4;
+/// Symbols a file anchor contributes as candidates, highest in-degree first.
+const FILE_CANDIDATES: usize = 10;
+/// A bare token ending in one of these names a file, never a symbol.
+const SOURCE_EXTENSIONS: &[&str] = &[
+    "rs", "go", "py", "ts", "tsx", "js", "java", "cs", "c", "cc", "cpp", "h", "hpp", "sql",
+    "proto", "md", "sh",
+];
+/// Task-prose filler that would otherwise become lexical ranking terms;
+/// the `ask` parser's own list covers the rest.
+const TASK_STOPWORDS: &[&str] = &[
+    "a", "an", "the", "in", "on", "for", "to", "of", "and", "or", "make", "add", "new", "use",
+    "it", "this", "that", "with", "from", "by", "per", "into", "honor", "account",
+];
+/// Shortest hyphen fragment (`multi-thread` -> `multi`, `thread`) kept as a
+/// term; shorter fragments (`per` of `per-tool`) are noise.
+const MIN_FRAGMENT_LEN: usize = 4;
+
+/// `serve.rs`, `src/placement.rs`: names a file by path suffix.
+fn is_path_like(token: &str) -> bool {
+    token.contains('/')
+        || token
+            .rsplit_once('.')
+            .is_some_and(|(stem, ext)| !stem.is_empty() && SOURCE_EXTENSIONS.contains(&ext))
+}
+
+fn is_task_stopword(word: &str) -> bool {
+    TASK_STOPWORDS.contains(&word) || crate::ask::query::is_stopword(word)
+}
+
+/// The task with file names, filler words and short hyphen fragments
+/// removed: what `ask` ranks on. Falls back to the task itself when
+/// nothing survives so `ask` can still abstain honestly.
+fn lexical_query(task: &str) -> String {
+    let mut words: Vec<&str> = Vec::new();
+    for raw in task.split_whitespace() {
+        let token = raw.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
+        if token.is_empty() || is_path_like(token) {
+            continue;
+        }
+        if token.contains('-') {
+            words.extend(
+                token
+                    .split('-')
+                    .filter(|part| part.chars().count() >= MIN_FRAGMENT_LEN)
+                    .filter(|part| !is_task_stopword(&part.to_lowercase())),
+            );
+            continue;
+        }
+        if !is_task_stopword(&token.to_lowercase()) {
+            words.push(token);
+        }
+    }
+    if words.is_empty() {
+        task.to_owned()
+    } else {
+        words.join(" ")
+    }
+}
 
 /// Runner-up within the `ask` high-margin band of the top score is still a
 /// plausible edit target and gets expanded too.
@@ -66,17 +124,19 @@ fn shape_of(token: &str) -> Option<Shape> {
     {
         return None;
     }
-    let path_like = token.contains('/')
-        || token
-            .rsplit_once('.')
-            .is_some_and(|(stem, ext)| !stem.is_empty() && ext.chars().all(char::is_alphanumeric));
-    if token.contains("::") || path_like {
+    if token.contains("::") || is_path_like(token) {
         return Some(Shape::Explicit);
+    }
+    // A hyphenated or dotted word (`per-tool`, `e.g`, `notes.txt`) is prose;
+    // its fragments are terms, not names, and `lexical_query` keeps the
+    // long ones.
+    if token.contains('-') || token.contains('.') {
+        return None;
     }
     if token.contains('_') || token.contains(char::is_uppercase) {
         return Some(Shape::Shaped);
     }
-    if token.chars().count() < MIN_WORD_LEN || crate::ask::query::is_stopword(token) {
+    if token.chars().count() < MIN_WORD_LEN || is_task_stopword(token) {
         return None;
     }
     Some(Shape::Bare)
@@ -107,22 +167,103 @@ fn identifier_candidates(task: &str) -> Vec<(Shape, String)> {
 struct Anchor {
     term: String,
     node: Node,
+    /// Symbols defined in an anchored file, highest in-degree first.
+    contained: Vec<Node>,
+}
+
+/// What the task's identifiers grounded to, and what they did not.
+#[derive(Default)]
+struct Grounding {
+    anchors: Vec<Anchor>,
+    unresolved: Vec<String>,
+    /// `(term, matching paths)` for a file name that fits several files.
+    ambiguous_files: Vec<(String, Vec<String>)>,
+}
+
+/// `Name@file` for a symbol, the bare path for a file node (whose name is
+/// already its path).
+fn handle_of(node: &Node) -> String {
+    if node.kind == SymbolKind::File {
+        node.file.clone()
+    } else {
+        format!("{}@{}", node.name, node.file)
+    }
+}
+
+/// Resolve a file-name token against indexed paths by suffix. `Ok(Err(paths))`
+/// is the ambiguous case; `Ok(Ok(None))` names no indexed file.
+fn file_anchor(store: &Store, term: &str) -> Result<Result<Option<Anchor>, Vec<String>>> {
+    let wanted = term.trim_start_matches("./");
+    let suffix = format!("/{wanted}");
+    let mut paths: Vec<String> = store
+        .file_hashes()?
+        .into_iter()
+        .map(|(path, _)| path)
+        .filter(|path| path == wanted || path.ends_with(&suffix))
+        .collect();
+    paths.sort();
+    let path = match paths.as_slice() {
+        [] => return Ok(Ok(None)),
+        [path] => path.clone(),
+        _ => return Ok(Err(paths)),
+    };
+    let Some(facts) = store.facts(&path)? else {
+        return Ok(Ok(None));
+    };
+    let (files, symbols): (Vec<Node>, Vec<Node>) = facts
+        .nodes
+        .into_iter()
+        .partition(|n| n.kind == SymbolKind::File);
+    let Some(node) = files.into_iter().next() else {
+        return Ok(Ok(None));
+    };
+    let ids: Vec<NodeId> = symbols.iter().map(|n| n.id.clone()).collect();
+    let in_edges = store.in_edges_many(&ids)?;
+    let degree = |n: &Node| {
+        in_edges.get(&n.id).map_or(0, |edges| {
+            edges
+                .iter()
+                .filter(|e| e.relation != Relation::Contains)
+                .count()
+        })
+    };
+    let mut contained: Vec<(usize, Node)> = symbols.into_iter().map(|n| (degree(&n), n)).collect();
+    contained.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
+    Ok(Ok(Some(Anchor {
+        term: term.to_owned(),
+        node,
+        contained: contained
+            .into_iter()
+            .take(FILE_CANDIDATES)
+            .map(|(_, n)| n)
+            .collect(),
+    })))
 }
 
 /// Resolve the task string's identifiers against real node names before any
 /// lexical scoring runs. Exact and qualified-suffix matches only — the fuzzy
 /// path is the guessing this pre-pass exists to replace. Whatever fails to
 /// ground is returned so the caller can report it instead of dropping it.
-fn anchors_of(store: &Store, task: &str) -> Result<(Vec<Anchor>, Vec<String>)> {
+fn anchors_of(store: &Store, task: &str) -> Result<Grounding> {
     let scope_index = store.scope_index()?;
     let preferred = ScopeSelection::agent_default().as_set();
-    let mut anchors: Vec<Anchor> = Vec::new();
-    let mut unresolved: Vec<String> = Vec::new();
+    let mut g = Grounding::default();
     for (shape, term) in identifier_candidates(task) {
+        if g.anchors.len() == MAX_FOCUS {
+            break;
+        }
+        if is_path_like(&term) {
+            match file_anchor(store, &term)? {
+                Ok(Some(anchor)) => g.anchors.push(anchor),
+                Ok(None) => g.unresolved.push(term),
+                Err(paths) => g.ambiguous_files.push((term, paths)),
+            }
+            continue;
+        }
         let nodes = match find_symbol(store, &term)? {
             Found::Exact(nodes) if nodes.len() <= MAX_ANCHOR_NODES => nodes,
             _ => {
-                unresolved.push(term);
+                g.unresolved.push(term);
                 continue;
             }
         };
@@ -136,22 +277,23 @@ fn anchors_of(store: &Store, task: &str) -> Result<(Vec<Anchor>, Vec<String>)> {
             .filter(|n| preferred.contains(&scope_index.scope_of(n)))
             .collect();
         if grounded.is_empty() {
-            unresolved.push(term);
+            g.unresolved.push(term);
             continue;
         }
         for node in grounded {
-            if anchors.len() == MAX_FOCUS {
+            if g.anchors.len() == MAX_FOCUS {
                 break;
             }
-            if anchors.iter().all(|a| a.node.id != node.id) {
-                anchors.push(Anchor {
+            if g.anchors.iter().all(|a| a.node.id != node.id) {
+                g.anchors.push(Anchor {
                     term: term.clone(),
                     node,
+                    contained: Vec::new(),
                 });
             }
         }
     }
-    Ok((anchors, unresolved))
+    Ok(g)
 }
 
 /// `card` reads its provenance from an `ask` hit; an anchor states its own.
@@ -242,7 +384,7 @@ fn card(
     let dep_refs: Vec<&Reached> = deps.iter().collect();
     Ok(json!({
         "id": hit["id"],
-        "handle": format!("{}@{}", node.name, node.file),
+        "handle": handle_of(node),
         "qualified": qualified_of(node.id.as_str()),
         "name": node.name,
         "kind": node.kind.as_str(),
@@ -271,7 +413,7 @@ pub(crate) fn response(repo: &Path, store: &Store, task: &str) -> Result<Value> 
     let ask = crate::ask::ask_response_with_store(
         &root,
         store,
-        task,
+        &lexical_query(task),
         ASK_LIMIT,
         &ScopeSelection::ask_default(),
         false,
@@ -284,7 +426,11 @@ pub(crate) fn response(repo: &Path, store: &Store, task: &str) -> Result<Value> 
         .find(|topic| topic["status"] == "abstain")
         .map(|topic| topic["confidence"]["reason"].clone())
         .unwrap_or(Value::Null);
-    let (anchors, unresolved_intents) = anchors_of(store, task)?;
+    let Grounding {
+        anchors,
+        unresolved: unresolved_intents,
+        ambiguous_files,
+    } = anchors_of(store, task)?;
     let hits = ranked_hits(&ask);
     let top = hits.first().and_then(|h| h["score"].as_i64()).unwrap_or(0);
 
@@ -306,9 +452,31 @@ pub(crate) fn response(repo: &Path, store: &Store, task: &str) -> Result<Value> 
         focus.push(anchor.node.clone());
         candidates.push(entry);
     }
+    // A file anchor's own symbols: context rows, never edit targets.
+    for anchor in &anchors {
+        for node in &anchor.contained {
+            if candidates.iter().any(|c| c["handle"] == handle_of(node)) {
+                continue;
+            }
+            rank += 1;
+            candidates.push(json!({
+                "id": node.symbol_key().as_str(),
+                "handle": handle_of(node),
+                "qualified": qualified_of(node.id.as_str()),
+                "kind": node.kind.as_str(),
+                "file": node.file,
+                "line": line_of(&root, &node.file, node.span.start),
+                "why": {"matched": [anchor.term], "roles": ["contained"], "channels": ["file"]},
+                "rank": rank,
+                "score": Value::Null,
+                "focus": false,
+            }));
+        }
+    }
     let anchored: BTreeSet<String> = anchors
         .iter()
-        .map(|a| a.node.id.as_str().to_owned())
+        .flat_map(|a| std::iter::once(&a.node).chain(a.contained.iter()))
+        .map(|n| n.id.as_str().to_owned())
         .collect();
     for hit in &hits {
         let id = NodeId::new(hit["snapshot_id"].as_str().unwrap_or(""));
@@ -382,7 +550,7 @@ pub(crate) fn response(repo: &Path, store: &Store, task: &str) -> Result<Value> 
         next_actions.push("sinter ask \"<one concrete term from the task>\"".to_string());
     }
     for node in &focus {
-        let handle = format!("{}@{}", node.name, node.file);
+        let handle = handle_of(node);
         next_actions.push(format!("sinter show {handle}"));
         next_actions.push(format!("sinter affected {handle} --max-depth 3"));
     }
@@ -408,6 +576,10 @@ pub(crate) fn response(repo: &Path, store: &Store, task: &str) -> Result<Value> 
         "tests_total": tests_total,
         "gaps": {
             "abstain_reason": abstain_reason,
+            "ambiguous_files": ambiguous_files
+                .iter()
+                .map(|(term, paths)| json!({"term": term, "candidates": paths}))
+                .collect::<Vec<_>>(),
             "unresolved_refs_matching_candidates": unresolved,
             "ask_advice": ask["topics"][0]["advice"],
         },
@@ -427,6 +599,22 @@ pub fn run(repo: &Path, task: &str, json: bool) -> Result<bool> {
     }
     print_packet(&packet);
     Ok(ranked)
+}
+
+/// Multi-line text as one line, cut at a word boundary past `max` chars.
+fn one_line(text: &str, max: usize) -> String {
+    let mut out = String::new();
+    for word in text.split_whitespace() {
+        if !out.is_empty() && out.chars().count() + 1 + word.chars().count() > max {
+            out.push('\u{2026}');
+            break;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out
 }
 
 /// Compact human rendering, bounded to roughly forty lines.
@@ -473,6 +661,23 @@ fn print_packet(p: &Value) {
     if !intents.is_empty() {
         println!("unresolved intents: {}", intents.join(", "));
     }
+    for a in p["gaps"]["ambiguous_files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let paths: Vec<&str> = a["candidates"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        println!(
+            "ambiguous file: {} -> {}",
+            a["term"].as_str().unwrap_or(""),
+            ellipsize(&paths.join(", "), 100)
+        );
+    }
     for c in p["candidates"].as_array().into_iter().flatten() {
         let marker = if c["anchor"].is_string() {
             "@"
@@ -503,7 +708,7 @@ fn print_packet(p: &Value) {
             println!("     {}", ellipsize(sig, 100));
         }
         if let Some(doc) = c["doc"].as_str() {
-            println!("     /// {}", ellipsize(doc, 100));
+            println!("     /// {}", one_line(doc, 100));
         }
         let deps = list(&c["deps"]["direct"]);
         println!(
@@ -554,7 +759,7 @@ fn print_packet(p: &Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Shape, identifier_candidates};
+    use super::{Shape, identifier_candidates, lexical_query, one_line};
 
     fn terms(task: &str) -> Vec<String> {
         identifier_candidates(task)
@@ -604,6 +809,39 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         assert_eq!(terms(&many).len(), super::MAX_IDENTIFIERS);
+    }
+
+    #[test]
+    fn lexical_query_drops_files_filler_and_short_fragments() {
+        assert_eq!(
+            lexical_query("make take_budget honor a per-tool default budget in serve.rs"),
+            "take_budget tool default budget"
+        );
+        assert_eq!(
+            lexical_query("add a new placement Policy variant in src/placement.rs"),
+            "placement Policy variant"
+        );
+        assert_eq!(lexical_query("multi-thread it"), "multi thread");
+        // Nothing left: `ask` gets the task and abstains on its own terms.
+        assert_eq!(lexical_query("add a new"), "add a new");
+    }
+
+    #[test]
+    fn extraction_treats_hyphenated_prose_and_filler_as_noise() {
+        assert_eq!(
+            terms("honor a per-tool budget in serve.rs"),
+            ["serve.rs", "budget"]
+        );
+        assert!(terms("notes.txt").is_empty());
+    }
+
+    #[test]
+    fn one_line_joins_and_cuts_on_words() {
+        assert_eq!(
+            one_line("Pull `x`\n(never\nsees them)", 100),
+            "Pull `x` (never sees them)"
+        );
+        assert_eq!(one_line("alpha beta gamma", 10), "alpha beta\u{2026}");
     }
 
     #[test]

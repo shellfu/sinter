@@ -440,6 +440,13 @@ fn graph_checks(r: &mut Report, repo: &Path) -> Result<()> {
             pipeline::build(repo, None).map(drop)
         }),
     }
+    // Re-read: `--fix` may have just rebuilt. Values under an old schema
+    // only decode with the codecs of that schema, so every read below
+    // would die mid-report with a codec error; the mismatch row above
+    // already names the one fix.
+    if Store::schema_of(&db)? != Some(Store::CURRENT_SCHEMA) {
+        return Ok(());
+    }
 
     let store = Store::open(&db)?;
     let stored: HashMap<String, sinter_store::FileStamp> =

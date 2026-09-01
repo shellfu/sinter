@@ -10,7 +10,7 @@ use sinter_core::{Edge, Evidence, Node, Relation};
 use sinter_resolve::qualified_of;
 use sinter_store::{EdgeFilter, Store};
 
-use crate::lookup::{ensure_snapshot, open_store, unique_symbol_in};
+use crate::lookup::{ensure_snapshot, open_store, resolve_symbol_in, short_list};
 use crate::render::{ellipsize, line_of, location, node_json, site_json, site_location};
 
 /// Rows shown per relation group before collapsing to `… (+N)`.
@@ -19,21 +19,44 @@ pub const DEFAULT_LIMIT: usize = 20;
 /// Lines of source printed by `--body` when `--context-lines` is absent.
 pub const DEFAULT_BODY_LINES: usize = 10;
 
-/// First `lines` lines of the exact source at `file[start..end]`.
-/// Any failure — missing file, out-of-range or non-UTF8 span — degrades
-/// to `None` rather than panicking. Same approach as `context::excerpt`.
-pub(crate) fn excerpt(
+/// A bounded source excerpt plus how much of the span it left out, so a
+/// cut is never silent: the card says "N more lines" and the JSON carries
+/// `excerpt_truncated`/`excerpt_total_lines`.
+pub(crate) struct Excerpt {
+    pub text: String,
+    /// Lines in the whole span, shown or not.
+    pub total_lines: usize,
+    pub truncated: bool,
+}
+
+/// Set `excerpt`, `excerpt_truncated` and `excerpt_total_lines` on a
+/// `show` envelope. The one writer for CLI `--json` and MCP `show`, so the
+/// two stay byte-identical.
+pub(crate) fn excerpt_json(out: &mut Value, body: &Excerpt) {
+    out["excerpt"] = json!(body.text);
+    out["excerpt_truncated"] = json!(body.truncated);
+    out["excerpt_total_lines"] = json!(body.total_lines);
+}
+
+/// [`excerpt`] that also reports whether `lines` cut the span short.
+pub(crate) fn excerpt_lines(
     repo: &Path,
     file: &str,
     start: u64,
     end: u64,
     lines: usize,
-) -> Option<String> {
+) -> Option<Excerpt> {
     let source = std::fs::read_to_string(repo.join(file)).ok()?;
     let start = (start as usize).min(source.len());
     let end = (end as usize).min(source.len()).max(start);
     let body = source.get(start..end)?;
-    Some(body.lines().take(lines).collect::<Vec<_>>().join("\n"))
+    let all: Vec<&str> = body.lines().collect();
+    let total_lines = all.len();
+    Some(Excerpt {
+        text: all[..lines.min(total_lines)].join("\n"),
+        total_lines,
+        truncated: total_lines > lines,
+    })
 }
 
 /// The symbol's edges after `--relations` / `--scope`: outgoing first,
@@ -154,30 +177,43 @@ pub fn run(
     limit: usize,
     json: bool,
     if_snapshot: Option<&str>,
-    excerpt_lines: Option<usize>,
+    body_lines: Option<usize>,
 ) -> Result<bool> {
     let repo = repo.canonicalize()?;
     let store = open_store(&repo)?;
     let snapshot = ensure_snapshot(&store, if_snapshot)?;
-    let node = unique_symbol_in(&store, symbol, filter.scopes.as_ref())?;
+    let resolved = resolve_symbol_in(&store, symbol, filter.scopes.as_ref())?;
+    let node = &resolved.node;
     let scope = store.file_scope(&node.file)?;
-    let body =
-        excerpt_lines.and_then(|n| excerpt(&repo, &node.file, node.span.start, node.span.end, n));
+    let body = body_lines
+        .and_then(|n| excerpt_lines(&repo, &node.file, node.span.start, node.span.end, n));
     if json {
         // Same shape as the MCP `show` tool.
-        let mut out = edges_json(&repo, &store, &node, filter, limit)?;
-        let mut symbol_json = node_json(&node);
+        let mut out = edges_json(&repo, &store, node, filter, limit)?;
+        let mut symbol_json = node_json(node);
         symbol_json["scope"] = json!(scope.as_str());
         out["symbol"] = symbol_json;
         out["snapshot"] = json!(snapshot);
         if let Some(body) = &body {
-            out["excerpt"] = json!(body);
+            excerpt_json(&mut out, body);
         }
         crate::agent_protocol::write_json(&out)?;
         return Ok(true);
     }
     let line = line_of(&repo, &node.file, node.span.start);
 
+    // A tie-broken pick is part of the answer, not a stderr aside: say
+    // which one won, and hand back the selector that re-resolves to it.
+    let selector = resolved.selector();
+    if !resolved.ignored.is_empty() {
+        println!(
+            "resolved: {selector} ({} other{} ignored by {}: {})",
+            resolved.ignored.len(),
+            if resolved.ignored.len() == 1 { "" } else { "s" },
+            resolved.reason,
+            short_list(&resolved.ignored)
+        );
+    }
     println!(
         "{} {}    {} ({}..{}) [{scope}]",
         node.kind.as_str(),
@@ -195,13 +231,20 @@ pub fn run(
         println!("  {}", ellipsize(&node.signature, 110));
     }
     if let Some(body) = &body {
-        for l in body.lines() {
+        for l in body.text.lines() {
             println!("  | {l}");
+        }
+        if body.truncated {
+            println!(
+                "  | … {} more lines (--context-lines {} for all)",
+                body.total_lines - body.text.lines().count(),
+                body.total_lines
+            );
         }
     }
     println!();
 
-    let (out, inn) = edges(&store, &node, filter)?;
+    let (out, inn) = edges(&store, node, filter)?;
 
     let group =
         |rel: Relation| -> Vec<&Edge> { out.iter().filter(|e| e.relation == rel).collect() };
@@ -343,16 +386,13 @@ pub fn run(
     }
 
     println!();
-    println!(
-        "Next: sinter affected {} --max-depth 3",
-        qualified_of(node.id.as_str())
-    );
+    println!("Next: sinter affected {selector} --max-depth 3");
     Ok(true)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::excerpt;
+    use super::excerpt_lines;
 
     fn fixture(body: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -363,23 +403,53 @@ mod tests {
     #[test]
     fn excerpt_caps_lines_and_slices_the_span() {
         let dir = fixture("fn a() {\n1\n2\n3\n}\n");
-        let got = excerpt(dir.path(), "a.rs", 0, 15, 2).unwrap();
+        let got = excerpt_lines(dir.path(), "a.rs", 0, 15, 2)
+            .map(|e| e.text)
+            .unwrap();
         assert_eq!(got, "fn a() {\n1");
+    }
+
+    #[test]
+    fn excerpt_lines_reports_the_cut() {
+        let dir = fixture("fn a() {\n1\n2\n3\n}\n");
+        let cut = excerpt_lines(dir.path(), "a.rs", 0, 17, 2).unwrap();
+        assert_eq!((cut.total_lines, cut.truncated), (5, true));
+        let whole = excerpt_lines(dir.path(), "a.rs", 0, 17, 5).unwrap();
+        assert_eq!((whole.total_lines, whole.truncated), (5, false));
+        assert_eq!(whole.text, "fn a() {\n1\n2\n3\n}");
     }
 
     #[test]
     fn excerpt_clamps_out_of_range_spans() {
         let dir = fixture("fn a() {}\n");
-        assert_eq!(excerpt(dir.path(), "a.rs", 3, 9_999, 10).unwrap(), "a() {}");
+        assert_eq!(
+            excerpt_lines(dir.path(), "a.rs", 3, 9_999, 10)
+                .map(|e| e.text)
+                .unwrap(),
+            "a() {}"
+        );
         // Reversed span clamps to empty instead of panicking.
-        assert_eq!(excerpt(dir.path(), "a.rs", 8, 2, 10).unwrap(), "");
+        assert_eq!(
+            excerpt_lines(dir.path(), "a.rs", 8, 2, 10)
+                .map(|e| e.text)
+                .unwrap(),
+            ""
+        );
     }
 
     #[test]
     fn excerpt_degrades_on_missing_file_and_char_boundaries() {
         let dir = fixture("// \u{e9}\n");
-        assert!(excerpt(dir.path(), "missing.rs", 0, 4, 10).is_none());
+        assert!(
+            excerpt_lines(dir.path(), "missing.rs", 0, 4, 10)
+                .map(|e| e.text)
+                .is_none()
+        );
         // Byte 4 lands inside the two-byte \u{e9}.
-        assert!(excerpt(dir.path(), "a.rs", 0, 4, 10).is_none());
+        assert!(
+            excerpt_lines(dir.path(), "a.rs", 0, 4, 10)
+                .map(|e| e.text)
+                .is_none()
+        );
     }
 }

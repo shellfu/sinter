@@ -30,17 +30,20 @@ pub fn run(
     let root = crate::pipeline::discover_root(repo);
     // Honest-empty signal: unresolved refs inside this definition mean the
     // dependency list may be incomplete, never authoritative.
-    let unresolved = store
-        .references_in(&node.file)?
-        .iter()
-        .filter(|r| r.enclosing.as_ref() == Some(&node.id))
-        .count();
+    let inside: Vec<_> = store
+        .unresolved_details_in(&node.file)?
+        .into_iter()
+        .filter(|r| r.reference.enclosing.as_ref() == Some(&node.id))
+        .collect();
+    let unresolved = inside.len();
+    let inside = crate::coverage::tally(&root, &store, &inside)?;
     let evidence = crate::coverage::TraversalEvidence::from_confidences(
         reached.iter().map(|item| item.via.confidence),
         unresolved,
     );
     // Gaps scoped to the files this radius actually touched.
     let radius = crate::coverage::radius_unresolved(
+        &root,
         &store,
         std::iter::once(node.file.as_str()).chain(reached.iter().map(|r| r.node.file.as_str())),
     )?;
@@ -84,6 +87,7 @@ pub fn run(
             "snapshot": snapshot,
             "total": total,
             "unresolved_refs_in_symbol": unresolved,
+            "actionable_unresolved_in_symbol": inside.actionable,
             "by_file": pairs,
             "dependencies": entries,
         });
@@ -169,9 +173,10 @@ pub fn run(
             total,
         );
     }
-    if unresolved > 0 {
+    if inside.actionable > 0 {
         println!(
-            "  note: {unresolved} unresolved ref(s) inside {} — dependencies may be missing; {}",
+            "  note: {} unresolved ref(s) inside {} — dependencies may be missing; {}",
+            inside.actionable,
             node.name,
             crate::coverage::unresolved_hint(&root)
         );

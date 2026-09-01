@@ -169,7 +169,17 @@ fn workspace_end_to_end() {
     let first = out.lines().find(|l| l.starts_with("1. ")).unwrap();
     assert!(first.contains("common:"), "{out}");
     assert!(first.contains("Backoff"), "{out}");
-    let (ok, json) = sinter(root, &["ask", "retry backoff", "--workspace", m, "--json"]);
+    let (ok, json) = sinter(
+        root,
+        &[
+            "ask",
+            "retry backoff",
+            "--workspace",
+            m,
+            "--json",
+            "--explain",
+        ],
+    );
     assert!(ok, "{json}");
     let json: serde_json::Value = serde_json::from_str(&json).unwrap();
     let hit = &json["topics"][0]["hits"][0];

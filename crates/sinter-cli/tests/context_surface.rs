@@ -12,6 +12,11 @@ fn build_repo(root: &Path) -> PathBuf {
         "lib.go",
         "package main\n\n// Base is the root of the blast radius.\nfunc Base() int {\n\treturn 1\n}\n\n// A1 calls Base.\nfunc A1() int { return Base() }\n\n// A2 calls Base.\nfunc A2() int { return Base() }\n\n// NewThreadField is lexical bait: its name is the task's English.\nfunc NewThreadField() int { return 2 }\n",
     );
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    write(
+        "sub/lib.go",
+        "package sub\n\n// Helper lives in a second lib.go.\nfunc Helper() int { return 3 }\n",
+    );
     write(
         "lib_test.go",
         "package main\n\nimport \"testing\"\n\n// TestBase covers Base.\nfunc TestBase(t *testing.T) { Base() }\n",
@@ -214,4 +219,73 @@ fn resolved_identifiers_anchor_the_packet_over_lexical_bait() {
         "{tests:?}"
     );
     assert!(tests.iter().all(|t| t.get("cmd").is_some()), "{tests:?}");
+}
+
+#[test]
+fn file_names_anchor_by_path_suffix_and_list_contained_symbols() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = build_repo(dir.path());
+    let (_, packet) = cli(&repo, "add a per-tool helper in sub/lib.go", &[]);
+    assert_eq!(packet["outcome"], "ranked", "{packet}");
+    let anchors = packet["anchors"].as_array().unwrap();
+    assert_eq!(anchors.len(), 1, "{packet}");
+    assert_eq!(anchors[0]["term"], "sub/lib.go");
+    assert_eq!(anchors[0]["qualified"], "sub/lib.go");
+    assert_eq!(anchors[0]["k"], "file");
+    let candidates = packet["candidates"].as_array().unwrap();
+    assert_eq!(candidates[0]["handle"], "sub/lib.go", "{packet}");
+    let contained: Vec<&str> = candidates
+        .iter()
+        .filter(|c| c["why"]["channels"][0] == "file")
+        .map(|c| c["qualified"].as_str().unwrap())
+        .collect();
+    assert_eq!(contained, ["Helper"], "{packet}");
+    let intents = packet["unresolved_intents"].as_array().unwrap();
+    assert!(
+        !intents.iter().any(|v| v == "sub/lib.go" || v == "per-tool"),
+        "{intents:?}"
+    );
+    assert!(
+        packet["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a == "sinter show sub/lib.go"),
+        "{packet}"
+    );
+
+    // `lib.go` fits two indexed files: neither is guessed.
+    let (_, packet) = cli(&repo, "add a helper in lib.go", &[]);
+    assert!(packet["anchors"].as_array().unwrap().is_empty(), "{packet}");
+    let ambiguous = &packet["gaps"]["ambiguous_files"][0];
+    assert_eq!(ambiguous["term"], "lib.go", "{packet}");
+    assert_eq!(
+        ambiguous["candidates"],
+        serde_json::json!(["lib.go", "sub/lib.go"]),
+        "{packet}"
+    );
+}
+
+#[test]
+fn ranking_terms_skip_extensions_filler_and_hyphen_fragments() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = build_repo(dir.path());
+    let (_, packet) = cli(
+        &repo,
+        "make Base honor a per-tool default budget in lib_test.go",
+        &[],
+    );
+    let matched: Vec<&str> = packet["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        // Anchors state their own term; only `ask`'s scored hits rank on terms.
+        .filter(|c| !c["score"].is_null())
+        .flat_map(|c| c["why"]["matched"].as_array().into_iter().flatten())
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(!matched.is_empty(), "{packet}");
+    for junk in ["go", "rs", "per", "honor", "make", "lib_test.go"] {
+        assert!(!matched.contains(&junk), "ranked on `{junk}`: {matched:?}");
+    }
 }
