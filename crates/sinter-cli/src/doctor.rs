@@ -396,8 +396,80 @@ pub fn run(repo: &Path, fix: bool, json: bool) -> Result<bool> {
             ),
         }
     }
+    // Leaked MCP servers from finished agent sessions keep answering with
+    // the binary they were started with. An older one rewrites the graph
+    // in its own format on every self-sync, so two versions ping-pong full
+    // rebuilds and hold the store lock for the duration.
+    let stale = stale_servers();
+    if !stale.is_empty() {
+        let pids: Vec<String> = stale.iter().map(|(pid, _, _)| pid.to_string()).collect();
+        let detail: Vec<String> = stale
+            .iter()
+            .map(|(pid, version, cwd)| format!("{pid} ({version}) in {cwd}"))
+            .collect();
+        r.warn(
+            &format!(
+                "{} `sinter serve` process(es) run a different sinter than this binary: {}",
+                stale.len(),
+                detail.join("; ")
+            ),
+            &format!(
+                "restart those agent sessions, or `kill {}`; every version rewrites the graph in its own format and holds the lock while doing so",
+                pids.join(" ")
+            ),
+        );
+    }
     r.summary();
     Ok(r.problems == 0)
+}
+
+/// Running `sinter serve` processes whose binary version differs from this
+/// one: (pid, version, working directory). Linux only (reads /proc); other
+/// platforms report nothing.
+#[cfg(target_os = "linux")]
+fn stale_servers() -> Vec<(u32, String, String)> {
+    let mut out = Vec::new();
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return out;
+    };
+    for entry in dir.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        if pid == std::process::id() {
+            continue;
+        }
+        let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let args: Vec<&[u8]> = cmdline.split(|b| *b == 0).collect();
+        let is_serve = args
+            .first()
+            .is_some_and(|a| a.rsplit(|b| *b == b'/').next() == Some(b"sinter"))
+            && args.get(1) == Some(&&b"serve"[..]);
+        if !is_serve {
+            continue;
+        }
+        let version = std::process::Command::new(entry.path().join("exe"))
+            .arg("--version")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|| "unknown version".to_string());
+        if version == format!("sinter {}", env!("CARGO_PKG_VERSION")) {
+            continue;
+        }
+        let cwd = std::fs::read_link(entry.path().join("cwd"))
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        out.push((pid, version, cwd));
+    }
+    out
+}
+
+#[cfg(not(target_os = "linux"))]
+fn stale_servers() -> Vec<(u32, String, String)> {
+    Vec::new()
 }
 
 /// Graph-section findings. Returns early when there is no readable graph

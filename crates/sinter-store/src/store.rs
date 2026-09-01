@@ -170,21 +170,30 @@ impl Db {
 
 /// redb opens are exclusive, so a query racing a short-lived build (or a
 /// queue of sibling queries — parallel agents fan out dozens) sees
-/// AlreadyOpen. Backoff rides out the queue; a handle held by a
-/// long-lived process still errors after the budget. Windows gets a
-/// longer budget: file locks release lazily after process exit (handle
-/// teardown + AV scans), so a waiter there can outlive 5s of real
-/// contention that unix clears instantly.
+/// AlreadyOpen. Backoff rides out the queue (a full rebuild of a large
+/// repository, or Windows' lazy file-lock release); a handle held by a
+/// long-lived process still errors after the budget.
 pub(crate) fn open_retrying<D>(
     path: &Path,
     open: fn(&Path) -> Result<D, redb::DatabaseError>,
 ) -> Result<D, redb::DatabaseError> {
-    let budget = std::time::Duration::from_secs(if cfg!(windows) { 20 } else { 5 });
+    // A full rebuild of a large repository holds the writable handle for
+    // tens of seconds; queries queue behind it rather than failing.
+    let budget = std::time::Duration::from_secs(120);
+    let notice_after = std::time::Duration::from_secs(1);
     let started = std::time::Instant::now();
     let mut delay = std::time::Duration::from_millis(10);
+    let mut noticed = false;
     loop {
         match open(path) {
             Err(redb::DatabaseError::DatabaseAlreadyOpen) if started.elapsed() < budget => {
+                if !noticed && started.elapsed() >= notice_after {
+                    noticed = true;
+                    eprintln!(
+                        "sinter: waiting for another sinter process holding {} (a build in progress?)",
+                        path.display()
+                    );
+                }
                 std::thread::sleep(delay);
                 delay = (delay * 2).min(std::time::Duration::from_millis(200));
             }

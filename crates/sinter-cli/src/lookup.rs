@@ -166,7 +166,12 @@ pub fn candidate_labels(nodes: &[Node]) -> Vec<String> {
 /// Comma-joined `Name@file` list for one-line notes, disambiguated within
 /// the list the same way [`candidate_labels`] is.
 pub fn short_list(nodes: &[Node]) -> String {
-    selectors_from(nodes, 1, line_of).join(", ")
+    const SHOWN: usize = 5;
+    let all = selectors_from(nodes, 1, line_of);
+    if all.len() <= SHOWN {
+        return all.join(", ");
+    }
+    format!("{}, +{} more", all[..SHOWN].join(", "), all.len() - SHOWN)
 }
 
 /// 1-based start line of a node, when the repository is reachable.
