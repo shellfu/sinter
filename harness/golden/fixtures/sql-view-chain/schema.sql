@@ -8,3 +8,6 @@ CREATE TABLE events (
 -- Click events only, newest first.
 CREATE VIEW click_events AS
 SELECT id, happened_at FROM events WHERE kind = 'click';
+
+CREATE MATERIALIZED VIEW recent_events AS
+SELECT id, happened_at FROM events;

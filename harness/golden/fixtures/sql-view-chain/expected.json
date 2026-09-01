@@ -1,21 +1,40 @@
 {
   "nodes": [
     ["file", "schema.sql", "schema.sql"],
-    ["struct", "events", "schema.sql", "Raw click events."],
-    ["typealias", "click_events", "schema.sql", "Click events only, newest first."],
+    ["table", "events", "schema.sql", "Raw click events."],
+    ["column", "events::id", "schema.sql"],
+    ["column", "events::kind", "schema.sql"],
+    ["column", "events::happened_at", "schema.sql"],
+    ["view", "click_events", "schema.sql", "Click events only, newest first."],
+    ["view", "recent_events", "schema.sql"],
+    ["file", "migrations.sql", "migrations.sql"],
     ["file", "report.sql", "report.sql"]
   ],
   "contains": [
     ["schema.sql", "events"],
-    ["schema.sql", "click_events"]
+    ["events", "events::id"],
+    ["events", "events::kind"],
+    ["events", "events::happened_at"],
+    ["schema.sql", "click_events"],
+    ["schema.sql", "recent_events"]
   ],
   "references": [
-    ["uses", "events"],
-    ["uses", "click_events"]
+    ["creates", "events"],
+    ["creates", "click_events"],
+    ["creates", "recent_events"],
+    ["reads", "events"],
+    ["reads", "events"],
+    ["drops", "click_events"],
+    ["reads", "click_events"]
   ],
   "resolved": [
-    ["scope", "uses", "click_events", "events", "schema.sql", "schema.sql"],
-    ["scope", "uses", "report.sql", "click_events", "report.sql", "schema.sql"]
+    ["scope", "creates", "schema.sql", "events", "schema.sql", "schema.sql"],
+    ["scope", "creates", "schema.sql", "click_events", "schema.sql", "schema.sql"],
+    ["scope", "creates", "schema.sql", "recent_events", "schema.sql", "schema.sql"],
+    ["scope", "reads", "click_events", "events", "schema.sql", "schema.sql"],
+    ["scope", "reads", "recent_events", "events", "schema.sql", "schema.sql"],
+    ["scope", "drops", "migrations.sql", "click_events", "migrations.sql", "schema.sql"],
+    ["scope", "reads", "report.sql", "click_events", "report.sql", "schema.sql"]
   ],
   "unresolved_count": 0
 }

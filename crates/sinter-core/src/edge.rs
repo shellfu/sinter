@@ -10,6 +10,16 @@ pub enum Relation {
     Contains,
     Implements,
     Extends,
+    /// The source reads rows from the destination relation.
+    Reads,
+    /// The source can insert, update, or delete rows in the destination table.
+    Writes,
+    /// The source declares creation of the destination database object.
+    Creates,
+    /// The source changes the destination database object.
+    Alters,
+    /// The source declares removal of the destination database object.
+    Drops,
 }
 
 impl Relation {
@@ -21,6 +31,11 @@ impl Relation {
             Self::Contains => "contains",
             Self::Implements => "implements",
             Self::Extends => "extends",
+            Self::Reads => "reads",
+            Self::Writes => "writes",
+            Self::Creates => "creates",
+            Self::Alters => "alters",
+            Self::Drops => "drops",
         }
     }
 }

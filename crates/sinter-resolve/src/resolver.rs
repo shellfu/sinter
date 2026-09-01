@@ -114,6 +114,8 @@ fn is_type_kind(kind: SymbolKind) -> bool {
             | SymbolKind::Interface
             | SymbolKind::Trait
             | SymbolKind::TypeAlias
+            | SymbolKind::Table
+            | SymbolKind::View
     )
 }
 
@@ -817,6 +819,13 @@ fn namespace_pick(candidates: Vec<&Node>, relation: Relation) -> Option<&Node> {
                 .filter(|n| match relation {
                     Relation::Calls => is_callable(n.kind),
                     Relation::Uses => is_type_kind(n.kind),
+                    Relation::Reads | Relation::Writes => {
+                        matches!(n.kind, SymbolKind::Table | SymbolKind::View)
+                    }
+                    Relation::Creates | Relation::Alters | Relation::Drops => matches!(
+                        n.kind,
+                        SymbolKind::Table | SymbolKind::View | SymbolKind::Index
+                    ),
                     _ => true,
                 })
                 .copied()

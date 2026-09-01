@@ -76,7 +76,7 @@ by structure, `sinter grep --within` is that search, not rg.
   1 none, 2 error). Assertion and document gates use 0 pass, 1 fail,
   2 error. Branch on the code, then read the status. Results carry call
   sites (`file:line`).
-- `--relations calls,uses` on affected/deps/path drops file-level
+- `--relations calls,uses,reads,writes,creates,alters,drops` on affected/deps/path drops file-level
   import noise from a blast radius.
 - Queries self-sync before answering — no manual refresh needed
   (`sinter build` remains for CI/scripts; git hooks refresh on commit).
@@ -315,6 +315,33 @@ pub fn stale_artifacts(repo: &Path) -> Vec<String> {
         out.push("Cursor rule is stale — run `sinter install cursor`".to_string());
     }
     out
+}
+
+/// Whether one Claude settings file selects strict search redirection.
+pub(crate) fn enforcement_is_strict(claude: &Path) -> bool {
+    std::fs::read_to_string(claude.join("settings.json")).is_ok_and(|settings| {
+        settings.contains(" grep-strict\"") && settings.contains(" greptool-strict\"")
+    })
+}
+
+/// Validate the installed hook body and all three settings entries. Repo
+/// onboarding requires strict search modes; machine-global installation may
+/// remain advisory.
+pub(crate) fn enforcement_current_at(claude: &Path, require_strict: bool) -> bool {
+    let (hook_file, hook_body) = PLATFORM_HOOK;
+    std::fs::read_to_string(claude.join("hooks").join(hook_file))
+        .is_ok_and(|script| script == hook_body)
+        && std::fs::read_to_string(claude.join("settings.json")).is_ok_and(|settings| {
+            settings.contains(hook_file)
+                && settings.contains(" prompt\"")
+                && if require_strict {
+                    settings.contains(" grep-strict\"") && settings.contains(" greptool-strict\"")
+                } else {
+                    (settings.contains(" grep\"") || settings.contains(" grep-strict\""))
+                        && (settings.contains(" greptool\"")
+                            || settings.contains(" greptool-strict\""))
+                }
+        })
 }
 
 /// Claude Code home (`~/.claude`), shared with the skill install.
@@ -604,6 +631,10 @@ mod tests {
         assert!(ENFORCE_HOOK_PS1.contains("New-SessionMarker"));
         assert!(!ENFORCE_HOOK.contains("permissionDecision\":\"allow"));
         assert!(!ENFORCE_HOOK_PS1.contains("permissionDecision\":\"allow"));
+        assert!(enforcement_current_at(&repo.path().join(".claude"), false));
+        assert!(!enforcement_current_at(&repo.path().join(".claude"), true));
+        enforce(Some(repo.path()), true).unwrap();
+        assert!(enforcement_current_at(&repo.path().join(".claude"), true));
     }
 
     #[test]

@@ -10,3 +10,5 @@ CREATE TABLE orders (
     user_id INTEGER REFERENCES users(id),
     total INTEGER NOT NULL
 );
+
+CREATE INDEX orders_user_id_idx ON orders (user_id);

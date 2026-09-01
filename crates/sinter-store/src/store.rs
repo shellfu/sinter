@@ -81,7 +81,9 @@ pub(crate) const PENDING: TableDefinition<&str, &[u8]> = TableDefinition::new("p
 // rebuild so every query observes classified metadata, never a mixed corpus.
 // v11: node-level scope overrides (node_scope table, FileFacts.scopes).
 // v12: body-identifier terms (body_terms table, FileFacts.body_terms).
-const SCHEMA_VERSION: u32 = 12;
+// v13: SQL-specific symbol kinds and read/write relations extend postcard
+// enums; derived graphs rebuild before decoding their old discriminants.
+const SCHEMA_VERSION: u32 = 13;
 
 /// Per-file freshness record: content hash plus the stat identity it was
 /// hashed at. On Unix the identity combines modification and change time,

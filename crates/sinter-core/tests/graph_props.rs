@@ -26,13 +26,18 @@ fn edge(src: &str, dst: &str, relation: Relation) -> Edge {
     }
 }
 
-const RELATIONS: [Relation; 6] = [
+const RELATIONS: [Relation; 11] = [
     Relation::Calls,
     Relation::Uses,
     Relation::Imports,
     Relation::Contains,
     Relation::Implements,
     Relation::Extends,
+    Relation::Reads,
+    Relation::Writes,
+    Relation::Creates,
+    Relation::Alters,
+    Relation::Drops,
 ];
 
 fn arb_ids() -> impl Strategy<Value = Vec<String>> {
@@ -43,7 +48,7 @@ fn arb_ids() -> impl Strategy<Value = Vec<String>> {
 proptest! {
     /// Every edge endpoint exists after arbitrary valid construction.
     #[test]
-    fn endpoints_always_exist(ids in arb_ids(), pairs in proptest::collection::vec((any::<prop::sample::Index>(), any::<prop::sample::Index>(), 0usize..6), 0..60)) {
+    fn endpoints_always_exist(ids in arb_ids(), pairs in proptest::collection::vec((any::<prop::sample::Index>(), any::<prop::sample::Index>(), 0usize..11), 0..60)) {
         let mut g = Graph::new();
         for id in &ids {
             g.add_node(node(id)).unwrap();

@@ -69,7 +69,8 @@ per-symbol errors inline. `impact` takes a git rev range (`HEAD`, `HEAD~1..HEAD`
 ## Filters
 `evidence` (structural, scope, import, scip, declared, dynamic), `min_confidence`
 (`certain` = compiler-grade edges only), `relations` (calls, uses, imports, implements,
-extends; `calls,uses` drops file-level import noise), `scope` (corpus roles: production, test,
+extends, reads, writes, creates, alters, drops; `calls,uses,reads,writes,creates,alters,drops`
+drops file-level import noise), `scope` (corpus roles: production, test,
 fixture, example, generated, vendor, docs; `all` must be used alone).
 `if_snapshot`: pass a prior `snapshot` token to fail instead of answering from a changed graph.
 ";
@@ -78,8 +79,7 @@ fn traversal_filters() -> Value {
     json!({
         "evidence": {"type": "array", "items": {"type": "string"}},
         "min_confidence": {"type": "string", "enum": ["certain", "inferred"]},
-        "relations": {"type": "array", "items": {"type": "string",
-            "enum": ["calls", "uses", "imports", "implements", "extends"]}},
+        "relations": {"type": "array", "items": {"type": "string"}},
     })
 }
 
@@ -171,7 +171,7 @@ pub(crate) fn repository() -> Value {
         },
         {
             "name": "deps",
-            "description": "What a symbol transitively calls/uses/imports, by file. e.g. {symbol:\"serve::run\",relations:[\"calls\"]}",
+            "description": "What a symbol transitively depends on, by file. e.g. {symbol:\"serve::run\",relations:[\"calls\"]}",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": symbol(),
                 "max_depth": {"type": "integer"},
@@ -300,7 +300,7 @@ pub(crate) fn workspace() -> Value {
         },
         {
             "name": "deps",
-            "description": "What a symbol transitively calls/uses/imports across members, by file. e.g. {symbol:\"auth:Login\"}",
+            "description": "What a symbol transitively depends on across members, by file. e.g. {symbol:\"auth:Login\"}",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": symbol(),
                 "max_depth": {"type": "integer"},

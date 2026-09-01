@@ -79,7 +79,8 @@ struct FilterArgs {
 /// keep file-level import edges out of a blast radius.
 #[derive(Args)]
 struct RelationsArg {
-    /// Follow only these relations (calls, uses, imports, implements, extends)
+    /// Follow only these relations (calls, uses, imports, implements, extends,
+    /// reads, writes, creates, alters, drops)
     #[arg(long, value_delimiter = ',')]
     relations: Vec<String>,
 }

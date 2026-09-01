@@ -12,7 +12,8 @@ use tree_sitter::Language;
 ///   (e.g. a Go method receiver type).
 /// - `@scope`        a node that scopes names but is not itself a symbol
 ///   (e.g. a Rust `impl` block); pairs with `@name`.
-/// - `@ref.<rel>`    a reference site; `<rel>` in {call, use} maps to the
+/// - `@ref.<rel>`    a reference site; `<rel>` in {call, use, read, write,
+///   create, alter, drop} maps to the
 ///   relation an eventual binding would carry.
 /// - `@import`       an imported path; quotes are stripped.
 /// - `@import.module` + `@import.name` — from-style imports

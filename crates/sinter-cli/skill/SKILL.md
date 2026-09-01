@@ -64,14 +64,16 @@ name. `violated` lists observed callers. `not_proven` names the remaining gap.
 The assertion keeps `runtime_exhaustive: false` and
 `coverage.conclusive: false`.
 
-`sinter install enforce --strict` opts into strict enforcement: the first
+`sinter init` installs strict enforcement in the repository. Manual installs
+select the same mode with `sinter install enforce --strict`: the first
 raw recursive search (grep/rg or the Grep tool) of a Claude Code session
 is blocked with a redirect to
 `sinter context/ask/show/affected/deps/path/assert no-callers/cite/verify-doc/grep/impact`;
 the retry passes with a one-time advisory nudge, and later searches in that
 class are silent for the session — sinter-first, grep-second, never
 grep-never. Strict mode only ever denies (it never auto-approves anything).
-Default installs are quiet: hooks fire only on plain structure searches
+Manual installs without `--strict`, including global hooks, are advisory:
+hooks fire only on plain structure searches
 (rg/ag/grep -r/git grep/find -name, `git log -S`) and the Grep tool, each
 class at most once per session, plus one router line on the session's first
 prompt. Everyday commands (git status, cargo, ls, cat) and subagent spawns
@@ -127,9 +129,11 @@ JSON-RPC `error.data`. CLI assertion and document gates use 0 pass, 1 fail,
 and 2 error; inspect their top-level `status` after branching on the code.
 `affected`/`path`/`deps` accept
 `--evidence scip,import,scope,dynamic` and `--certain` (stronger evidence
-tiers) plus `--relations calls,uses,imports,implements,extends` —
-`--relations calls,uses` cuts file-level import noise from a blast
-radius; implements/extends follows interface fan-out.
+tiers) plus
+`--relations calls,uses,imports,implements,extends,reads,writes,creates,alters,drops`.
+Use `--relations calls,uses,reads,writes,creates,alters,drops` to cut
+file-level import noise from a blast radius; implements/extends follows
+interface fan-out.
 
 Every traversal coverage envelope carries `universe`. Repository mode names
 the canonical root. Workspace mode names the manifest workspace and every
@@ -216,8 +220,11 @@ are filterable like any other.
 
 ## Boundaries
 
-Symbol-level structure only — plus markdown structure: headings index as
-section nodes (13 languages total), so `ask` finds where something is
+Symbol-level structure only — plus markdown structure and SQL data/schema
+flow. SQL files emit table, view, column, and index nodes with read, write,
+create, alter, and drop edges; embedded SQL strings and planner behavior are
+outside the graph. Markdown headings index as section nodes (13 languages
+total), so `ask` finds where something is
 documented with file:line. Not for summarization or content questions
 inside a single function body — use `show --body` for the excerpt, or
 `grep --within` when the text is what you are looking for, and read the

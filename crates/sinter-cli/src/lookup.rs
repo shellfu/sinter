@@ -668,8 +668,15 @@ pub fn relation_set(relations: &[String]) -> Result<Option<BTreeSet<sinter_core:
             "imports" => sinter_core::Relation::Imports,
             "implements" => sinter_core::Relation::Implements,
             "extends" => sinter_core::Relation::Extends,
+            "reads" => sinter_core::Relation::Reads,
+            "writes" => sinter_core::Relation::Writes,
+            "creates" => sinter_core::Relation::Creates,
+            "alters" => sinter_core::Relation::Alters,
+            "drops" => sinter_core::Relation::Drops,
             other => {
-                bail!("unknown relation `{other}` (calls, uses, imports, implements, extends)")
+                bail!(
+                    "unknown relation `{other}` (calls, uses, imports, implements, extends, reads, writes, creates, alters, drops)"
+                )
             }
         });
     }
@@ -722,6 +729,29 @@ mod tests {
         assert_eq!(rest, ["generated/a.rs", "vendor/a.rs"]);
         let (keep, _) = pick(&["generated/a.rs", "vendor/a.rs"]);
         assert_eq!(keep, ["generated/a.rs", "vendor/a.rs"]);
+    }
+
+    #[test]
+    fn relation_filter_accepts_sql_data_flow() {
+        let filter = relation_set(&[
+            "reads".into(),
+            "writes".into(),
+            "creates".into(),
+            "alters".into(),
+            "drops".into(),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            filter,
+            BTreeSet::from([
+                Relation::Reads,
+                Relation::Writes,
+                Relation::Creates,
+                Relation::Alters,
+                Relation::Drops,
+            ])
+        );
     }
 
     fn files(v: Vec<Node>) -> Vec<String> {

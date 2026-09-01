@@ -131,6 +131,11 @@ run prints the plan and proceeds). Every write lands inside the repo —
 `--global` adds the machine-wide skill card and enforcement hooks in
 `~/.claude`.
 
+Repo-local Claude hooks use bounded strict enforcement: the first broad
+recursive search in a session is redirected to Sinter, while a retry is
+allowed with a fallback-search reminder. Machine-wide hooks installed by
+`--global` remain advisory.
+
 On a terminal, init asks before running compiler indexers (`sinter scip`)
 because those toolchains execute repository build scripts; pass `--scip`
 or `--no-scip` to answer up front (non-interactive init skips them).
@@ -256,7 +261,8 @@ handshake.
 
 `affected`, `deps`, and `path` accept `--evidence scip,import,scope,dynamic`
 and `--certain` to restrict traversal to stronger evidence tiers, and
-`--relations calls,uses,imports,implements,extends` to restrict which edge
+`--relations calls,uses,imports,implements,extends,reads,writes,creates,alters,drops`
+to restrict which edge
 relations are followed (e.g. drop file-level import edges from a blast
 radius); `sinter grep` accepts the same traversal filters for its `--within`
 bound; their MCP counterparts take the same filters as `evidence` (array),
@@ -283,6 +289,37 @@ capture query (plus an optional secondary inline grammar, spec-declared),
 and a spec row — consumed by a single engine that never
 branches on language. Adding a language requires no engine code; if it
 ever does, the capture contract is wrong, not the language.
+
+### SQL graph
+
+For `.sql` files, Sinter emits `table`, `view`, `column`, and `index` nodes.
+It also records the direction and purpose of object references:
+
+- `reads`: a `SELECT`, `FROM`, or `JOIN` source
+- `writes`: an `INSERT`, `UPDATE`, or `DELETE` target
+- `creates`, `alters`, `drops`: schema changes owned by the SQL file
+- `uses`: foreign-key and index dependencies
+
+A view owns the reads in its defining query. Top-level statements belong to
+their file, including migration files. To find every query and migration that
+touches a table:
+
+```sh
+sinter affected users --relations reads,writes,creates,alters,drops
+```
+
+To inspect the data and schema dependencies of one migration:
+
+```sh
+sinter deps migrations/20260901_users.sql \
+  --relations reads,writes,uses,creates,alters,drops
+```
+
+This analysis covers SQL syntax in `.sql` files. Sinter does not yet extract
+SQL strings embedded in Rust, Go, Python, or application configuration. It
+does not infer column-level lineage, transaction scope, indexes required by a
+query, or PostgreSQL planner behavior. Use `EXPLAIN` against the target
+database for planner evidence.
 
 Top-level `graphify-out/`, `memory/`, and `.memory/` are excluded from the
 semantic corpus and SCIP freshness inventory. These are derived analysis

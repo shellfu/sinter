@@ -231,35 +231,24 @@ pub fn run(repo: &Path, fix: bool, json: bool) -> Result<bool> {
         ),
     }
 
-    // Enforcement hooks: script current with this binary and the three
-    // settings entries present (per-prompt router, Bash + Grep nudges),
-    // satisfied by either the repo's .claude or the global ~/.claude.
-    // Only the variant THIS platform installs is demanded (sh on unix,
-    // ps1 on Windows) — the other's absence is not a finding.
-    let (hook_file, hook_body) = install::PLATFORM_HOOK;
-    let enforced_at = |claude: &Path| {
-        std::fs::read_to_string(claude.join("hooks").join(hook_file)).is_ok_and(|s| s == hook_body)
-            && std::fs::read_to_string(claude.join("settings.json")).is_ok_and(|s| {
-                // Commands end with their mode in both variants; the
-                // closing JSON quote anchors "grep" against "greptool".
-                // Strict installs use the -strict grep modes; both
-                // variants are current.
-                s.contains(hook_file)
-                    && s.contains(" prompt\"")
-                    && (s.contains(" grep\"") || s.contains(" grep-strict\""))
-                    && (s.contains(" greptool\"") || s.contains(" greptool-strict\""))
-            })
-    };
+    // Repo onboarding installs bounded strict redirection. A direct
+    // `install enforce` call may intentionally select advisory mode, so
+    // doctor validates either current mode instead of rewriting user policy.
+    let (hook_file, _) = install::PLATFORM_HOOK;
     let global_claude =
         install::default_dir().and_then(|d| d.parent()?.parent().map(Path::to_path_buf));
-    if enforced_at(&repo.join(".claude")) {
+    let repo_claude = repo.join(".claude");
+    let repo_scope = repo_claude.join("hooks").join(hook_file).exists();
+    if install::enforcement_current_at(&repo_claude, false) {
         r.ok("enforcement hooks installed and current (repo .claude)");
-    } else if global_claude.as_deref().is_some_and(enforced_at) {
+    } else if global_claude
+        .as_deref()
+        .is_some_and(|claude| install::enforcement_current_at(claude, false))
+    {
         r.ok("enforcement hooks installed and current (global ~/.claude)");
     } else {
         // Refresh-only: a scope counts for auto-fix when its script file
         // exists at all — first-time enforcement stays an opt-in.
-        let repo_scope = repo.join(".claude/hooks").join(hook_file).exists();
         let global_scope = global_claude
             .as_ref()
             .is_some_and(|c| c.join("hooks").join(hook_file).exists());
@@ -268,17 +257,16 @@ pub fn run(repo: &Path, fix: bool, json: bool) -> Result<bool> {
                 "enforcement hooks stale (agents may grep instead of querying)",
                 "run `sinter install enforce` (or --global)",
                 || {
-                    // Preserve whichever strictness is installed per
-                    // scope — a fix refreshes, it never changes modes.
-                    let is_strict = |claude: &Path| {
-                        std::fs::read_to_string(claude.join("settings.json"))
-                            .is_ok_and(|s| s.contains(" grep-strict\""))
-                    };
                     if repo_scope {
-                        install::enforce(Some(&repo), is_strict(&repo.join(".claude")))?;
+                        install::enforce(
+                            Some(&repo),
+                            install::enforcement_is_strict(&repo_claude),
+                        )?;
                     }
                     if global_scope {
-                        let strict = global_claude.as_deref().is_some_and(is_strict);
+                        let strict = global_claude
+                            .as_deref()
+                            .is_some_and(install::enforcement_is_strict);
                         install::enforce(None, strict)?;
                     }
                     Ok(())

@@ -300,6 +300,14 @@ pub enum SymbolKind {
     /// A prose document section (markdown heading); appended for postcard
     /// wire compatibility — never reorder.
     Section,
+    /// A relational database table. Appended for postcard wire compatibility.
+    Table,
+    /// A named relational view, including materialized views.
+    View,
+    /// A column declared inside a table.
+    Column,
+    /// A named database index.
+    Index,
 }
 
 impl SymbolKind {
@@ -322,6 +330,10 @@ impl SymbolKind {
             Self::Macro => "macro",
             Self::File => "file",
             Self::Section => "section",
+            Self::Table => "table",
+            Self::View => "view",
+            Self::Column => "column",
+            Self::Index => "index",
         }
     }
 
@@ -346,6 +358,10 @@ impl SymbolKind {
             "macro" => Self::Macro,
             "file" => Self::File,
             "section" => Self::Section,
+            "table" => Self::Table,
+            "view" => Self::View,
+            "column" => Self::Column,
+            "index" => Self::Index,
             _ => return None,
         })
     }
@@ -412,6 +428,18 @@ mod tests {
         let one = node("src/lib.rs#run@10", "fn run(u8)");
         let two = node("src/lib.rs#run@30", "fn run(u16)");
         assert_eq!(one.symbol_key(), two.symbol_key());
+    }
+
+    #[test]
+    fn sql_symbol_kinds_round_trip_through_capture_names() {
+        for kind in [
+            SymbolKind::Table,
+            SymbolKind::View,
+            SymbolKind::Column,
+            SymbolKind::Index,
+        ] {
+            assert_eq!(SymbolKind::from_str_opt(kind.as_str()), Some(kind));
+        }
     }
 
     #[test]

@@ -291,7 +291,9 @@ impl Extractor {
         // One span may be captured twice (a scoped type's name both with
         // its path and bare): keep the path-bearing one, never both.
         let mut refs = collected.refs;
-        refs.retain(|r| !collected.def_name_spans.contains(&(r.start, r.end)));
+        refs.retain(|r| {
+            r.relation == Relation::Creates || !collected.def_name_spans.contains(&(r.start, r.end))
+        });
         // Rust prelude/primitive names never name a corpus symbol unless
         // this file defines one of the same name (then it may shadow).
         if self.spec.name == "rust" {
@@ -301,16 +303,39 @@ impl Extractor {
                     || entries.iter().any(|e| e.name == r.name)
             });
         }
-        refs.sort_by_key(|r| (r.start, r.end, r.path.is_none()));
+        // More specific semantic captures win when query patterns overlap.
+        // SQL UPDATE targets, for example, are both a generic relation and a
+        // write target in the parse tree; retaining `writes` prevents the
+        // generic `reads` capture from laundering a mutation into a read.
+        let relation_priority = |relation: Relation| match relation {
+            Relation::Writes => 0,
+            Relation::Reads => 1,
+            _ => 2,
+        };
+        refs.sort_by_key(|r| {
+            (
+                r.start,
+                r.end,
+                r.path.is_none(),
+                relation_priority(r.relation),
+            )
+        });
         refs.dedup_by_key(|r| (r.start, r.end));
         let references = refs
             .into_iter()
             .map(|r| {
-                let enclosing = def_spans
-                    .iter()
-                    .filter(|(s, e, _, _)| *s <= r.start && r.end <= *e)
-                    .min_by_key(|(s, e, _, _)| e - s)
-                    .map(|(_, _, id, _)| id.clone());
+                // A CREATE reference names the definition it encloses. Its
+                // owner is the migration/query file, not the new object;
+                // otherwise resolution would discard the resulting self-edge.
+                let enclosing = (r.relation != Relation::Creates)
+                    .then(|| {
+                        def_spans
+                            .iter()
+                            .filter(|(s, e, _, _)| *s <= r.start && r.end <= *e)
+                            .min_by_key(|(s, e, _, _)| e - s)
+                            .map(|(_, _, id, _)| id.clone())
+                    })
+                    .flatten();
                 Reference {
                     file: file.to_string(),
                     name: r.name,
@@ -500,6 +525,11 @@ fn collect(
                 } else if let Some(rel) = cap_name.strip_prefix("ref.") {
                     let relation = match rel {
                         "use" => Relation::Uses,
+                        "read" => Relation::Reads,
+                        "write" => Relation::Writes,
+                        "create" => Relation::Creates,
+                        "alter" => Relation::Alters,
+                        "drop" => Relation::Drops,
                         _ => Relation::Calls,
                     };
                     reference = Some((cap.node, relation));

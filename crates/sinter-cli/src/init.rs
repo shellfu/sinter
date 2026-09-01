@@ -129,7 +129,8 @@ fn plan(repo: &Path, cursor: bool, global: bool, scip: bool) {
     println!("    AGENTS.md                    managed sinter block");
     println!("    .mcp.json, .cursor/mcp.json  MCP server registration");
     println!("    .codex/config.toml           managed MCP block");
-    println!("    .claude/                     sinter-first hooks, this repo only");
+    println!("    .claude/                     strict sinter-first hooks, this repo only");
+    println!("                                 first broad search redirects; retry is allowed");
     if cursor {
         println!("    .cursor/rules/sinter.mdc     Cursor rule");
     }
@@ -236,11 +237,7 @@ pub fn run(
     println!("\n== agent integration ==");
     // Project scope by default: everything here is committable, so
     // teammates and every checkout inherit it.
-    let mut targets = vec!["agents".to_string(), "enforce".to_string()];
-    if cursor {
-        targets.push("cursor".to_string());
-    }
-    install::run_targets(&targets, None, true, &repo, false, false)?;
+    install_project_integration(&repo, cursor)?;
     // --global reaches past the repo: the skill card and the enforcement
     // hooks that every repo on this machine then inherits.
     if global {
@@ -266,6 +263,17 @@ pub fn run(
 
     println!("\n== doctor ==");
     doctor::run(&repo, false, false)
+}
+
+/// Install the committable repository integration. Full onboarding makes the
+/// first broad search of each Claude session take the graph route; the hook's
+/// existing retry escape hatch keeps fallback search available.
+fn install_project_integration(repo: &Path, cursor: bool) -> Result<()> {
+    let mut targets = vec!["agents".to_string(), "enforce".to_string()];
+    if cursor {
+        targets.push("cursor".to_string());
+    }
+    install::run_targets(&targets, None, true, repo, false, true)
 }
 
 #[cfg(test)]
@@ -331,5 +339,16 @@ mod tests {
 
         assert!(nested.join(".sinter/graph.redb").exists());
         assert!(!repo.join(".sinter").exists());
+    }
+
+    #[test]
+    fn full_onboarding_installs_strict_repo_local_enforcement() {
+        let repo = tempfile::tempdir().unwrap();
+
+        install_project_integration(repo.path(), false).unwrap();
+
+        let settings = std::fs::read_to_string(repo.path().join(".claude/settings.json")).unwrap();
+        assert!(settings.contains(" grep-strict"));
+        assert!(settings.contains(" greptool-strict"));
     }
 }

@@ -1,28 +1,57 @@
 {
   "nodes": [
     ["file", "schema.sql", "schema.sql"],
-    ["struct", "users", "schema.sql", "Registered users of the shop."],
-    ["struct", "orders", "schema.sql", "Orders placed by users."],
-    ["file", "queries.sql", "queries.sql"]
+    ["table", "users", "schema.sql", "Registered users of the shop."],
+    ["column", "users::id", "schema.sql"],
+    ["column", "users::name", "schema.sql"],
+    ["table", "orders", "schema.sql", "Orders placed by users."],
+    ["column", "orders::id", "schema.sql"],
+    ["column", "orders::user_id", "schema.sql"],
+    ["column", "orders::total", "schema.sql"],
+    ["index", "orders_user_id_idx", "schema.sql"],
+    ["file", "queries.sql", "queries.sql"],
+    ["file", "migrations.sql", "migrations.sql"]
   ],
   "contains": [
     ["schema.sql", "users"],
-    ["schema.sql", "orders"]
+    ["schema.sql", "orders"],
+    ["users", "users::id"],
+    ["users", "users::name"],
+    ["orders", "orders::id"],
+    ["orders", "orders::user_id"],
+    ["orders", "orders::total"],
+    ["schema.sql", "orders_user_id_idx"]
   ],
   "references": [
     ["uses", "users"],
-    ["uses", "users"],
-    ["uses", "users"],
     ["uses", "orders"],
-    ["uses", "orders"],
-    ["uses", "audit_log"]
+    ["creates", "users"],
+    ["creates", "orders"],
+    ["creates", "orders_user_id_idx"],
+    ["alters", "users"],
+    ["drops", "orders"],
+    ["drops", "orders_user_id_idx"],
+    ["reads", "users"],
+    ["reads", "orders"],
+    ["writes", "orders"],
+    ["writes", "users"],
+    ["writes", "orders"],
+    ["reads", "audit_log"]
   ],
   "resolved": [
-    ["scope", "uses", "orders", "users", "schema.sql", "schema.sql"],
-    ["scope", "uses", "queries.sql", "users", "queries.sql", "schema.sql"],
-    ["scope", "uses", "queries.sql", "users", "queries.sql", "schema.sql", "28", "33"],
-    ["scope", "uses", "queries.sql", "orders", "queries.sql", "schema.sql"],
-    ["scope", "uses", "queries.sql", "orders", "queries.sql", "schema.sql", "84", "90"]
+    ["scope", "uses", "orders::user_id", "users", "schema.sql", "schema.sql"],
+    ["scope", "uses", "orders_user_id_idx", "orders", "schema.sql", "schema.sql"],
+    ["scope", "creates", "schema.sql", "users", "schema.sql", "schema.sql"],
+    ["scope", "creates", "schema.sql", "orders", "schema.sql", "schema.sql"],
+    ["scope", "creates", "schema.sql", "orders_user_id_idx", "schema.sql", "schema.sql"],
+    ["scope", "alters", "migrations.sql", "users", "migrations.sql", "schema.sql"],
+    ["scope", "drops", "migrations.sql", "orders", "migrations.sql", "schema.sql"],
+    ["scope", "drops", "migrations.sql", "orders_user_id_idx", "migrations.sql", "schema.sql"],
+    ["scope", "reads", "queries.sql", "users", "queries.sql", "schema.sql"],
+    ["scope", "reads", "queries.sql", "orders", "queries.sql", "schema.sql"],
+    ["scope", "writes", "queries.sql", "orders", "queries.sql", "schema.sql"],
+    ["scope", "writes", "queries.sql", "users", "queries.sql", "schema.sql"],
+    ["scope", "writes", "queries.sql", "orders", "queries.sql", "schema.sql"]
   ],
   "unresolved_count": 1
 }

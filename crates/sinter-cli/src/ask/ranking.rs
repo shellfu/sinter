@@ -227,6 +227,8 @@ fn kind_prior(kind: SymbolKind, query: &Query) -> (i64, i64) {
             | SymbolKind::Interface
             | SymbolKind::Trait
             | SymbolKind::TypeAlias
+            | SymbolKind::Table
+            | SymbolKind::View
             | SymbolKind::Module
             | SymbolKind::File => (1, 1),
             _ => (7, 10),
@@ -238,7 +240,9 @@ fn kind_prior(kind: SymbolKind, query: &Query) -> (i64, i64) {
         | SymbolKind::Enum
         | SymbolKind::Interface
         | SymbolKind::Trait
-        | SymbolKind::TypeAlias => (3, 2),
+        | SymbolKind::TypeAlias
+        | SymbolKind::Table
+        | SymbolKind::View => (3, 2),
         SymbolKind::Function | SymbolKind::Method | SymbolKind::Macro => (6, 5),
         SymbolKind::Module | SymbolKind::File => (1, 1),
         _ => (7, 10),

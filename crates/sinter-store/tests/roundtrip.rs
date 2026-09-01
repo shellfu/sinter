@@ -19,13 +19,18 @@ fn node(id: &str) -> Node {
     }
 }
 
-const RELATIONS: [Relation; 6] = [
+const RELATIONS: [Relation; 11] = [
     Relation::Calls,
     Relation::Uses,
     Relation::Imports,
     Relation::Contains,
     Relation::Implements,
     Relation::Extends,
+    Relation::Reads,
+    Relation::Writes,
+    Relation::Creates,
+    Relation::Alters,
+    Relation::Drops,
 ];
 
 /// Hand-built graph round-trips through the store byte-exactly (Phase 1 deliverable).
@@ -175,7 +180,7 @@ proptest! {
         ids in proptest::collection::btree_set("[A-Za-z][A-Za-z0-9_:]{0,15}", 1..20)
             .prop_map(|s| s.into_iter().collect::<Vec<_>>()),
         pairs in proptest::collection::vec(
-            (any::<prop::sample::Index>(), any::<prop::sample::Index>(), 0usize..6, 0usize..2),
+            (any::<prop::sample::Index>(), any::<prop::sample::Index>(), 0usize..11, 0usize..2),
             0..40,
         ),
     ) {
