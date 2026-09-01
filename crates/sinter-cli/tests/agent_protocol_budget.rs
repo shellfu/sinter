@@ -13,7 +13,14 @@ fn sinter(repo: &Path, args: &[&str]) -> (bool, Vec<u8>) {
         .env("USERPROFILE", repo)
         .output()
         .expect("run sinter");
-    (out.status.success(), out.stdout)
+    if out.status.success() {
+        (true, out.stdout)
+    } else {
+        let mut both = out.stdout;
+        both.extend_from_slice(b"\n--- stderr ---\n");
+        both.extend_from_slice(&out.stderr);
+        (false, both)
+    }
 }
 
 fn fixture(repo: &Path) {
