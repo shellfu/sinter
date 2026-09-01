@@ -63,7 +63,7 @@ const CALLEE_RERANK_DEPTH: usize = 30;
 const PT_BODY: i64 = 10;
 /// A term matched only through a query synonym (`budget` for "cap") earns
 /// this share of its weight, so a literal match always outranks it.
-const SYNONYM_PERMILLE: i64 = 600;
+const SYNONYM_PERMILLE: i64 = 800;
 /// Body-only candidates pulled in per term variant; retrieval, not recall.
 const BODY_RETRIEVAL_CAP: usize = 50;
 /// A body word carried by more than this share of nodes is glue, not topic.

@@ -1108,7 +1108,7 @@ mod tests {
         assert_eq!(coverage["universe"]["mode"], "repository");
         assert_eq!(
             coverage["universe"]["root"],
-            repo.to_string_lossy().as_ref()
+            repo.canonicalize().unwrap().to_string_lossy().as_ref()
         );
         assert_eq!(coverage["evidence"]["certain"]["results"], 1);
         assert_eq!(coverage["evidence"]["possible"]["results"], 0);
