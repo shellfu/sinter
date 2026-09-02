@@ -275,6 +275,8 @@ pub fn resolve_with_index(
                     evidence: sinter_core::Evidence::Scip,
                     confidence: sinter_core::Evidence::Scip.confidence(),
                     site: Some(r.span),
+                    extra_sites: Vec::new(),
+                    sites_total: 1,
                 };
                 match target {
                     Some(target) => {
@@ -334,6 +336,8 @@ pub fn resolve_with_index(
                 evidence: sinter_core::Evidence::Scip,
                 confidence: sinter_core::Evidence::Scip.confidence(),
                 site: Some(Span { start: pos, end }),
+                extra_sites: Vec::new(),
+                sites_total: 1,
             });
         }
     }

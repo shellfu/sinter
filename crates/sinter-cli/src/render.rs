@@ -50,9 +50,68 @@ pub fn site_json(repo: &Path, edge: &Edge) -> Value {
     }
 }
 
-/// Hyperlinked `file:line` call site for human output; None when absent.
+/// Hyperlinked call site(s) for human output; None when the edge has none.
+/// One site reads exactly as before (`file:line`); several read
+/// `file:12, :48, :91 (+4 more)` — the extra lines stay short because they
+/// are all in the src node's own file.
 pub fn site_location(repo: &Path, edge: &Edge) -> Option<String> {
-    site_of(repo, edge).map(|(file, line)| location(repo, &file, line))
+    let (file, _) = site_of(repo, edge)?;
+    let lines: Vec<usize> = edge
+        .sites()
+        .filter_map(|span| line_of(repo, &file, span.start))
+        .collect();
+    Some(lines_text(
+        repo,
+        &file,
+        &lines,
+        edge.sites_omitted() as usize,
+    ))
+}
+
+/// `file:12, :48, :91 (+4 more)`: the first line hyperlinked as usual, the
+/// rest bare. Lines are deduplicated (two sites on one line read once) and
+/// assumed ascending. One line and nothing omitted renders exactly like a
+/// plain `file:line` location.
+pub fn lines_text(repo: &Path, file: &str, lines: &[usize], omitted: usize) -> String {
+    let mut kept: Vec<usize> = lines.to_vec();
+    kept.dedup();
+    let mut text = location(repo, file, kept.first().copied());
+    for line in kept.iter().skip(1) {
+        text.push_str(&format!(", :{line}"));
+    }
+    if omitted > 0 {
+        text.push_str(&format!(" (+{omitted} more)"));
+    }
+    text
+}
+
+/// Every kept site as `file:line`, with the total distinct count. Empty
+/// (and 0) when the edge carries no site.
+pub fn sites_of(repo: &Path, edge: &Edge) -> (Vec<String>, u32) {
+    let Some((file, _)) = site_of(repo, edge) else {
+        return (Vec::new(), 0);
+    };
+    let mut sites: Vec<String> = edge
+        .sites()
+        .map(|span| match line_of(repo, &file, span.start) {
+            Some(line) => format!("{file}:{line}"),
+            None => file.clone(),
+        })
+        .collect();
+    // Two sites on one line are one answer to "where"; the count stays whole.
+    sites.dedup();
+    (sites, edge.sites_total)
+}
+
+/// Adds `sites`/`sites_total` to a row that already carries `site` — only
+/// when the edge has more than one, so single-site payloads are unchanged.
+pub fn add_sites(row: &mut Value, repo: &Path, edge: &Edge) {
+    if edge.sites_total <= 1 {
+        return;
+    }
+    let (sites, total) = sites_of(repo, edge);
+    row["sites"] = json!(sites);
+    row["sites_total"] = json!(total);
 }
 
 /// 1-based line of a byte offset, from the file's current content.

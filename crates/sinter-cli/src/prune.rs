@@ -142,6 +142,8 @@ mod tests {
                 evidence: Evidence::Scope,
                 confidence: Confidence::Inferred,
                 site: None,
+                extra_sites: Vec::new(),
+                sites_total: 0,
             },
         }
     }

@@ -40,6 +40,8 @@ fn contains(src: &Node, dst: &Node) -> Edge {
         evidence: Evidence::Structural,
         confidence: Confidence::Certain,
         site: None,
+        extra_sites: Vec::new(),
+        sites_total: 0,
     }
 }
 
@@ -104,6 +106,8 @@ fn update_replaces_only_touched_file() {
         evidence: Evidence::Scope,
         confidence: Confidence::Inferred,
         site: None,
+        extra_sites: Vec::new(),
+        sites_total: 0,
     };
     store.insert_edges(std::slice::from_ref(&cross)).unwrap();
     assert_eq!(store.in_edges(&a1.nodes[1].id).unwrap().len(), 2); // contains + cross
@@ -164,6 +168,8 @@ fn resolution_edges_removed_structural_kept() {
             evidence: Evidence::Import,
             confidence: Confidence::Inferred,
             site: None,
+            extra_sites: Vec::new(),
+            sites_total: 0,
         }])
         .unwrap();
 
@@ -201,6 +207,8 @@ fn pending_delta_survives_crash_between_update_and_resolution() {
         evidence: Evidence::Import,
         confidence: Confidence::Inferred,
         site: None,
+        extra_sites: Vec::new(),
+        sites_total: 0,
     };
     store.insert_edges(std::slice::from_ref(&bind)).unwrap();
     store.clear_pending_delta().unwrap();

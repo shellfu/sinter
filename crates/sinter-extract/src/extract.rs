@@ -356,6 +356,8 @@ impl Extractor {
                     confidence: Evidence::Structural.confidence(),
                     // Containment is structure, not a reference: no site.
                     site: None,
+                    extra_sites: Vec::new(),
+                    sites_total: 0,
                 });
                 def_spans.push((entry.start, entry.end, id.clone(), kind));
                 Some(id)

@@ -329,12 +329,14 @@ pub fn edges_json(
             let n = seen.entry(e.relation.as_str()).or_default();
             *n += 1;
             if *n <= limit {
-                rows.push(json!({
+                let mut row = json!({
                     "symbol": qualified_of(other(e)),
                     "relation": e.relation.as_str(),
                     "evidence": e.evidence.as_str(),
                     "site": site_json(repo, e),
-                }));
+                });
+                crate::render::add_sites(&mut row, repo, e);
+                rows.push(row);
             }
         }
         for (rel, n) in seen {
@@ -628,6 +630,10 @@ pub fn run(repo: &Path, symbol: &str, filter: &EdgeFilter, opts: &Options) -> Re
         );
     }
 
+    // Per source file: edges into the target, the call-site offsets kept
+    // (capped) and how many sites there are in all.
+    type FileUse = (usize, BTreeSet<u64>, u32);
+
     // used by: incoming non-contains, non-implements edges grouped by
     // source file. One tally line by default; `--callers` lists the files.
     let dependents: Vec<&Edge> = inn
@@ -635,9 +641,10 @@ pub fn run(repo: &Path, symbol: &str, filter: &EdgeFilter, opts: &Options) -> Re
         .filter(|e| !matches!(e.relation, Relation::Contains | Relation::Implements))
         .collect();
     if !dependents.is_empty() {
-        // Per src file: edge count plus one representative call site (the
-        // smallest span start — matches the stored representative).
-        let mut per_file: BTreeMap<&str, (usize, Option<u64>)> = BTreeMap::new();
+        // Per src file: edge count, the call sites themselves (capped, so a
+        // hub file prints a bounded row) and how many sites there are in
+        // all — repeated calls from one caller stay visible.
+        let mut per_file: BTreeMap<&str, FileUse> = BTreeMap::new();
         for e in &dependents {
             let file = e
                 .src
@@ -646,8 +653,13 @@ pub fn run(repo: &Path, symbol: &str, filter: &EdgeFilter, opts: &Options) -> Re
                 .map_or(e.src.as_str(), |(f, _)| f);
             let entry = per_file.entry(file).or_default();
             entry.0 += 1;
-            if let Some(span) = e.site {
-                entry.1 = Some(entry.1.map_or(span.start, |s| s.min(span.start)));
+            entry.2 += e.sites_total;
+            for span in e.sites() {
+                entry.1.insert(span.start);
+            }
+            while entry.1.len() > sinter_core::MAX_SITES {
+                let last = *entry.1.iter().next_back().expect("non-empty");
+                entry.1.remove(&last);
             }
         }
         if opts.callers {
@@ -656,11 +668,18 @@ pub fn run(repo: &Path, symbol: &str, filter: &EdgeFilter, opts: &Options) -> Re
                 per_file.len(),
                 dependents.len()
             );
-            let mut rows: Vec<(&str, (usize, Option<u64>))> = per_file.into_iter().collect();
+            let mut rows: Vec<(&str, FileUse)> = per_file.into_iter().collect();
             rows.sort_by(|a, b| b.1.0.cmp(&a.1.0).then_with(|| a.0.cmp(b.0)));
-            for (file, (count, site)) in rows.iter().take(opts.limit) {
-                let line = site.and_then(|byte| line_of(&repo, file, byte));
-                println!("  {}   {count} edges", location(&repo, file, line));
+            for (file, (count, sites, total)) in rows.iter().take(opts.limit) {
+                let lines: Vec<usize> = sites
+                    .iter()
+                    .filter_map(|b| line_of(&repo, file, *b))
+                    .collect();
+                let omitted = (*total as usize).saturating_sub(sites.len());
+                println!(
+                    "  {}   {count} edges",
+                    crate::render::lines_text(&repo, file, &lines, omitted)
+                );
             }
             if rows.len() > opts.limit {
                 println!("  … (+{} files) · --limit", rows.len() - opts.limit);

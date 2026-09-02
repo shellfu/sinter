@@ -6,7 +6,7 @@ mod node;
 mod paths;
 mod reference;
 
-pub use edge::{Confidence, Edge, Evidence, Relation};
+pub use edge::{Confidence, Edge, Evidence, MAX_SITES, Relation};
 pub use error::GraphError;
 pub use facts::FileFacts;
 pub use graph::Graph;

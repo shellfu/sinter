@@ -23,6 +23,8 @@ fn edge(src: &str, dst: &str, relation: Relation) -> Edge {
         evidence: Evidence::Structural,
         confidence: Confidence::Certain,
         site: None,
+        extra_sites: Vec::new(),
+        sites_total: 0,
     }
 }
 
