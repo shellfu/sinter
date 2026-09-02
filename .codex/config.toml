@@ -2,5 +2,5 @@
 [mcp_servers.sinter]
 command = "sinter"
 args = ["serve", "--repo", "."]
-required = true
+required = false
 # END sinter
