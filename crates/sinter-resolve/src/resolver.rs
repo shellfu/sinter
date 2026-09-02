@@ -858,7 +858,14 @@ pub fn resolve(
             let imports = index.imports.get(r.file.as_str());
             let (target, evidence, internal) = resolve_one(index, spec, r, &file_module, imports);
             match target {
-                Some(node) if node.id != src => {
+                // A function binding to itself is recursion: a resolved
+                // fact, never an anchored miss. Any other self-binding (a
+                // class's constructor declaration misparsed as a call) is
+                // dropped as before.
+                Some(node)
+                    if node.id != src
+                        || matches!(node.kind, SymbolKind::Function | SymbolKind::Method) =>
+                {
                     // A "call" landing on a type is a conversion or
                     // instantiation of a non-callable kind: it is a use.
                     let relation = if r.relation == Relation::Calls && is_type_kind(node.kind) {
@@ -1190,12 +1197,16 @@ fn resolve_bare_reference<'a>(
             true,
         );
     }
-    let named: Vec<&Node> = imports
+    // The same name imported more than once (function-local imports in
+    // several bodies) is one binding when every import names one target.
+    let mut named: Vec<&Node> = imports
         .into_iter()
         .flatten()
         .filter(|imp| !imp.glob && imp.binding == r.name)
         .filter_map(|imp| index.resolve_path(&imp.segments, 4))
         .collect();
+    named.sort_by_key(|n| n.id.as_str());
+    named.dedup_by_key(|n| n.id.as_str());
     let (target, internal) = match named.as_slice() {
         [node] => (Some(*node), true),
         [] => {

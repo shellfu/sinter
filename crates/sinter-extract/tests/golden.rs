@@ -245,6 +245,21 @@ fn golden_python_nested_function() {
 }
 
 #[test]
+fn golden_python_local_import() {
+    check("python-local-import");
+}
+
+#[test]
+fn golden_python_nested_recursion() {
+    check("python-nested-recursion");
+}
+
+#[test]
+fn golden_python_aliased_from_import() {
+    check("python-aliased-from-import");
+}
+
+#[test]
 fn golden_python_shadowed_param() {
     check("python-shadowed-param");
 }

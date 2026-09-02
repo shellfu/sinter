@@ -207,8 +207,13 @@ impl Classifier {
         });
         if item.reason == UnresolvedReason::SyntaxAnchoredMiss && !has_receiver {
             // Already anchored inside the corpus; an index would only
-            // confirm what a reader can check now.
-            return UnresolvedCategory::ActionableAnchoredMiss;
+            // confirm what a reader can check now. Several definitions of
+            // the bare name is the ambiguity resolution declined to guess.
+            return if defined > 1 {
+                UnresolvedCategory::AmbiguousInternalTarget
+            } else {
+                UnresolvedCategory::ActionableAnchoredMiss
+            };
         }
         let language = sinter_extract::spec_for_path(&reference.file).map(|spec| spec.name);
         if language.is_some_and(|lang| self.unindexed_languages.iter().any(|l| l == lang)) {
@@ -1028,8 +1033,13 @@ mod tests {
             UnresolvedCategory::LikelyExternal
         );
         assert_eq!(
-            c.classify(&item("walk", None, UnresolvedReason::SyntaxAnchoredMiss)),
+            c.classify(&item("run", None, UnresolvedReason::SyntaxAnchoredMiss)),
             UnresolvedCategory::ActionableAnchoredMiss
+        );
+        // Two `def walk` and nothing picked one: ambiguity, not a miss.
+        assert_eq!(
+            c.classify(&item("walk", None, UnresolvedReason::SyntaxAnchoredMiss)),
+            UnresolvedCategory::AmbiguousInternalTarget
         );
         assert_eq!(
             c.classify(&item("walk", None, UnresolvedReason::SyntaxOnly)),
