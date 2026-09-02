@@ -39,7 +39,10 @@ points or domain ownership. Then use the graph for focused work:
   card with its definition (attributes included) and a one-line used-by
   tally; `--body` adds the source (whole when it fits in 60 lines, else up
   to the byte budget), `--impls` the type's impl blocks, and
-  `show @file:line` names the enclosing symbol.
+  `show @file:line` names the enclosing symbol. A span over 8 KB or 200
+  lines is a black hole no body dump can show: the card outlines it
+  instead, listing the nested definitions, literal branches and command
+  literals inside it with their line numbers (`--outline` forces it).
 - **Task evidence packet** — `sinter context "<task>"` resolves identifiers in
   the task against real node names (fuzzy when needed, shown as
   `term ~> symbol`) and seeds from them, returning edit candidates, string
@@ -262,7 +265,7 @@ the issue.
 | `sinter watch [repo]` | Keep the graph fresh from filesystem events |
 | `sinter hooks install` | Git hooks that refresh after commit/checkout/merge |
 | `sinter ask "<question>"` | Calibrated lexical starting points for a vague question, with verify/abstain guidance |
-| `sinter show <symbol>` | One-screen orientation card for a symbol or file: signature with attributes, a one-line `used by: N files, M edges` tally (`--callers` lists the files), `impls (N)` for types (`--impls` prints their bodies). `--body` prints the whole source when it is 60 lines or fewer, else as much as fits `--budget-bytes`; `--context-lines 0` forces the whole span. `show @file:line` names the symbol enclosing that line, and `Name@file:line --body` excerpts around the line with a `>` marker. A tie-broken name leads with `resolved: Name@file` and lists `also_see` same-stem symbols |
+| `sinter show <symbol>` | One-screen orientation card for a symbol or file: signature with attributes, a one-line `used by: N files, M edges` tally (`--callers` lists the files), `impls (N)` for types (`--impls` prints their bodies). `--body` prints the whole source when it is 60 lines or fewer, else as much as fits `--budget-bytes`; `--context-lines 0` forces the whole span. A span over 8 KB or 200 lines prints `outline (N)` instead — its nested definitions, literal-discriminating branches and command/flag literals, by line (`--outline` forces the outline on any symbol; `--body` the source). `show @file:line` names the symbol enclosing that line, and `Name@file:line --body` excerpts around the line with a `>` marker. A tie-broken name leads with `resolved: Name@file` and lists `also_see` same-stem symbols |
 | `sinter query <symbol>` | Exact + fuzzy symbol search, production copies first; exits 1 when only fuzzy neighbors match; Markdown section bodies are capped at 200 characters |
 | `sinter affected <symbol>...` | Reverse blast radius, evidence-filterable; multiple seeds are unioned and deduplicated, each row naming the seeds that reached it. Stops at hubs (`--through-hubs` continues) and counts test rows (`--include-tests` lists them) |
 | `sinter deps <symbol>` | Forward blast radius: what a symbol depends on, direct only by default (`--max-depth N` widens) |

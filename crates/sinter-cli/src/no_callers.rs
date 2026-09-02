@@ -164,22 +164,21 @@ fn compact(response: &mut Value, spec: &AssertionSpec, verbose: bool) {
         ],
     );
     keep(&mut response["coverage"]["compiler_index"], &["state"]);
-    // Repository-wide tallies the claim no longer rests on (per-scope gaps
-    // and name-matching unresolved refs qualify it instead). ponytail:
-    // matched by wording; a reworded line only makes the compact form longer.
-    // The two constant disclaimers are `assertion.runtime_exhaustive: false`
-    // in prose; the compact form keeps only limitations naming a gap.
-    if let Some(limitations) = response["coverage"]["limitations"].as_array_mut() {
-        limitations.retain(|line| {
-            let line = line.as_str().unwrap_or("");
-            !(line.starts_with("a missing graph edge is not proof")
-                || line.starts_with("dynamic dispatch edges are conservative")
-                || line.starts_with("one or more files were indexed from partial syntax trees")
-                || line.contains("unresolved references point inside this repository"))
-        });
-    }
-    if response["ignored_out_of_scope"]["count"] == 0 {
-        response["ignored_out_of_scope"] = json!({"count": 0});
+    codes(&mut response["coverage"]["limitations"]);
+    // A zero count qualifies nothing: silence says the same and costs no
+    // bytes. Both keep their shape when they carry a number.
+    let ignored = response["ignored_out_of_scope"]["count"].clone();
+    let unresolved = response["unresolved_refs_matching_name"].clone();
+    if let Some(object) = response.as_object_mut() {
+        if ignored == 0 {
+            object.remove("ignored_out_of_scope");
+        }
+        if unresolved == 0 {
+            object.remove("unresolved_refs_matching_name");
+        }
+        if let Some(ignored) = object.get_mut("ignored_out_of_scope") {
+            keep(ignored, &["count", "by_scope"]);
+        }
     }
     if let Some(members) = response["coverage"]
         .get_mut("members")
@@ -188,8 +187,53 @@ fn compact(response: &mut Value, spec: &AssertionSpec, verbose: bool) {
         for member in members.values_mut() {
             keep(member, &["completeness", "compiler_index", "limitations"]);
             keep(&mut member["compiler_index"], &["state"]);
+            codes(&mut member["limitations"]);
         }
     }
+}
+
+/// Prose limitation → short code. The two constant disclaimers are
+/// `assertion.runtime_exhaustive: false` in prose and repository-wide
+/// unresolved counts do not qualify a scoped claim, so both drop; the rest
+/// become codes an agent can branch on. `--verbose` keeps the sentences.
+/// ponytail: matched by wording, since the sentences are built in
+/// `coverage`; an unrecognised line survives verbatim rather than silently
+/// vanishing.
+const LIMITATION_CODES: &[(&str, &str)] = &[
+    ("a missing graph edge is not proof", ""),
+    ("dynamic dispatch edges are conservative", ""),
+    ("unresolved references point inside this repository", ""),
+    ("compiler index missing", "scip_missing"),
+    ("compiler index is stale", "scip_stale"),
+    ("one or more files failed extraction", "unindexed_files"),
+    (
+        "one or more files were indexed from partial syntax trees",
+        "",
+    ),
+    ("partially parsed .sql files", "sql_partial_statements"),
+    (
+        "partially indexed file(s) in the asserted scope",
+        "partial_syntax_in_scope",
+    ),
+];
+
+fn codes(limitations: &mut Value) {
+    let Some(lines) = limitations.as_array_mut() else {
+        return;
+    };
+    let mut out = Vec::new();
+    for line in lines.iter() {
+        let text = line.as_str().unwrap_or("");
+        match LIMITATION_CODES
+            .iter()
+            .find(|(prose, _)| text.contains(prose))
+        {
+            Some((_, "")) => {}
+            Some((_, code)) => out.push(json!(code)),
+            None => out.push(line.clone()),
+        }
+    }
+    *limitations = json!(out);
 }
 
 fn edge_filter(spec: &AssertionSpec, scopes: BTreeSet<CorpusScope>, certain: bool) -> EdgeFilter {
@@ -569,7 +613,11 @@ pub(crate) fn run_repository(
     let store = open_store(repo)?;
     let snapshot = ensure_snapshot(&store, if_snapshot)?;
     let mut response = repository_response(repo, &store, spec, symbol, scopes, certain, limit)?;
-    compact(&mut response, spec, verbose);
+    // Compaction is the agent's budget, not the human card's: the text
+    // renderer keeps the full sentences and per-scope tallies.
+    if json_output {
+        compact(&mut response, spec, verbose);
+    }
     response["snapshot"] = json!(snapshot);
     if json_output {
         crate::agent_protocol::write_json(&response)?;
@@ -601,7 +649,9 @@ pub(crate) fn run_workspace(
     let snapshot = crate::workspace::snapshot_token(&workspace)?;
     ensure_snapshot_token(if_snapshot, &snapshot)?;
     let mut response = workspace_response(&workspace, spec, symbol, scopes, certain, limit)?;
-    compact(&mut response, spec, verbose);
+    if json_output {
+        compact(&mut response, spec, verbose);
+    }
     response["snapshot"] = json!(snapshot);
     if json_output {
         crate::agent_protocol::write_json(&response)?;
@@ -636,7 +686,10 @@ mod tests {
             "assertion": {"kind": "no_callers", "meaning": "long", "runtime_exhaustive": false},
             "symbol": {"qualified": "f", "kind": "function", "file": "a.rs", "scope": "production", "signature": "fn f()", "doc": "x"},
             "callers": [{"name": "g", "site": "a.rs:3", "relation": "calls", "evidence": "structural", "confidence": "certain", "scope": "test", "signature": "fn g()", "id": "k"}],
-            "coverage": {"completeness": "partial", "conclusive": false, "universe": {"mode": "repository"}, "compiler_index": {"state": "missing", "projects": []}, "limitations": ["l"], "graph": {}, "snapshot": {}, "evidence": {}},
+            "callers_by_scope": {"test": 1},
+            "ignored_out_of_scope": {"count": 0, "by_scope": {}},
+            "unresolved_refs_matching_name": 0,
+            "coverage": {"completeness": "partial", "conclusive": false, "universe": {"mode": "repository"}, "compiler_index": {"state": "missing", "projects": []}, "limitations": ["compiler index missing for configured rust project(s); run `sinter scip`", "a missing graph edge is not proof that no runtime path exists", "hand-written"], "graph": {}, "snapshot": {}, "evidence": {}},
         });
         compact(&mut response, &NO_CALLERS, false);
         assert_eq!(
@@ -653,10 +706,33 @@ mod tests {
             json!({"state": "missing"})
         );
         assert!(response["coverage"].get("graph").is_none());
-        assert_eq!(response["coverage"]["limitations"], json!(["l"]));
+        // Prose becomes codes; a constant disclaimer drops; an unrecognised
+        // line survives verbatim rather than vanishing.
+        assert_eq!(
+            response["coverage"]["limitations"],
+            json!(["scip_missing", "hand-written"])
+        );
+        // A zero count qualifies nothing and costs bytes.
+        assert!(response.get("ignored_out_of_scope").is_none());
+        assert!(response.get("unresolved_refs_matching_name").is_none());
         let mut verbose = response.clone();
         compact(&mut verbose, &NO_CALLERS, true);
         assert_eq!(verbose, response);
+    }
+
+    #[test]
+    fn compact_keeps_the_counts_that_qualify_a_negative_proof() {
+        let mut response = json!({
+            "status": "not_proven",
+            "callers": [],
+            "callers_by_scope": {},
+            "ignored_out_of_scope": {"count": 2, "by_scope": {"test": 2}},
+            "unresolved_refs_matching_name": 3,
+            "coverage": {"limitations": []},
+        });
+        compact(&mut response, &NO_CALLERS, false);
+        assert_eq!(response["ignored_out_of_scope"]["count"], json!(2));
+        assert_eq!(response["unresolved_refs_matching_name"], json!(3));
     }
 
     #[test]

@@ -55,7 +55,7 @@ the first query.
 | Evidence packet before starting a task | `sinter context "<task>"` — name real symbols; gives edit candidates, literals, mirrors, tests, and next commands; `--workspace <manifest>` for one packet across members |
 | Vague/conceptual discovery (calibrated lexical search) | `sinter ask "<question>"` (`--explain` adds ranking diagnostics) |
 | Exact or fuzzy symbol lookup | `sinter query <symbol>` (`'Type::*'`, `'*::method'`) |
-| Inspect one symbol | `sinter show <symbol>` — `--body` is a real read (whole source when ≤ 60 lines); `show X@file:line` for the enclosing symbol; `--impls` for a type's impl blocks; `--callers` for the used-by files |
+| Inspect one symbol | `sinter show <symbol>` — `--body` is a real read (whole source when ≤ 60 lines); `--outline` maps a span too big to read (automatic over 8 KB); `show X@file:line` for the enclosing symbol; `--impls` for a type's impl blocks; `--callers` for the used-by files |
 | Who depends on X (direct dependents) | `sinter affected <symbol>...` — test rows hidden (`--include-tests`), stops at hubs and names them (`--through-hubs`); seeds repeatable and unioned |
 | What does X depend on (forward) | `sinter deps <symbol>` — depth 1 by default; `--max-depth N` widens |
 | How does A reach B | `sinter path <A> <B>` (`-k N` for N node-disjoint routes) |

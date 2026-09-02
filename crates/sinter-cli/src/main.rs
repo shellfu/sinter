@@ -18,6 +18,7 @@ mod install;
 mod lookup;
 mod map;
 mod no_callers;
+mod outline;
 mod overlap;
 mod pathcmd;
 mod pipeline;
@@ -333,6 +334,10 @@ enum Command {
         /// Print the bodies of the type's `impl` blocks
         #[arg(long)]
         impls: bool,
+        /// Print the structural outline of the span (automatic for a span
+        /// over 8 KB or 200 lines; `--body` prints the source instead)
+        #[arg(long, conflicts_with = "body")]
+        outline: bool,
         #[command(flatten)]
         relations: RelationsArg,
     },
@@ -1230,6 +1235,7 @@ fn cli_main() -> ExitCode {
             context_lines,
             callers,
             impls,
+            outline,
             relations,
         } => {
             let opts = show::Options {
@@ -1242,6 +1248,7 @@ fn cli_main() -> ExitCode {
                 }),
                 callers,
                 impls,
+                outline,
                 budget_bytes: body_budget,
             };
             let result = traversal_filter(&FilterArgs::default(), &relations, &scope)

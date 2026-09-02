@@ -20,7 +20,7 @@ CI. Schema v14: an older graph rebuilds once on the first query.
 | Start a coding task | `sinter context "<task>"` (name real symbols; gives literals, mirrors, tests, next commands) |
 | Vague discovery | `sinter ask "<question>"` (`--explain` = ranking diagnostics) |
 | Exact/fuzzy symbol, members | `sinter query <sym>`, `'Type::*'`, `'*::method'` |
-| Inspect a symbol | `sinter show <sym>` (`--body` = whole source when short; `--impls`, `--callers`, `X@file:line`) |
+| Inspect a symbol | `sinter show <sym>` (`--body` = whole source when short; `--outline` = landmarks inside a huge span, automatic over 8 KB; `--impls`, `--callers`, `X@file:line`) |
 | Dependents / deps / path | `sinter affected <sym>...` (`--include-tests`, `--through-hubs`), `sinter deps <sym>` (depth 1), `sinter path <A> <B>` (`-k N`) |
 | Text search | `sinter grep '<re>'` (unbounded); `--within 'affected(SYM)'`/`deps(SYM)`/`file(PATH)` narrows |
 | Can I delete this | `sinter assert deletable <sym>`: `has_dependents`/`none_observed`, all scopes |

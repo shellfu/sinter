@@ -1254,17 +1254,28 @@ fn deletable_no_match_exit_and_scope_local_completeness() {
     assert_eq!(code, Some(1), "{out}");
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["status"], "not_proven", "{out}");
+    // Compact `--json` codes the gap; `--verbose` still names the file.
     assert!(
         v["coverage"]["limitations"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|l| l
-                .as_str()
-                .unwrap_or("")
-                .contains("tests/fixtures/broken.rs")),
+            .any(|l| l == "partial_syntax_in_scope"),
         "{out}"
     );
+    let (_, out) = sinter_code(
+        repo,
+        &[
+            "assert",
+            "no-callers",
+            "leaf",
+            "--scope",
+            "production,fixture",
+            "--json",
+            "--verbose",
+        ],
+    );
+    assert!(out.contains("tests/fixtures/broken.rs"), "{out}");
 
     // show: same-stem sibling in another file, `@file:line`, marked line.
     let (ok, out) = sinter(repo, &["show", "leaf"]);

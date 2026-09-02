@@ -49,6 +49,8 @@ pub struct Options {
     pub callers: bool,
     /// Print the bodies of the type's `impl` blocks.
     pub impls: bool,
+    /// Force the structural outline, whatever the span's size.
+    pub outline: bool,
     /// Byte budget for `--impls` bodies (`--budget-bytes`; `None` = unlimited).
     pub budget_bytes: Option<usize>,
 }
@@ -436,6 +438,11 @@ pub fn run(repo: &Path, symbol: &str, filter: &EdgeFilter, opts: &Options) -> Re
         }
         None => excerpt(&repo, &node.file, node.span.start, node.span.end, limit),
     });
+    // A span past the outline thresholds is a black hole: no child node,
+    // no readable body. Outline it unless `--body` asked for the source.
+    let outline = crate::outline::of(&repo, &store, node)?.filter(|outline| {
+        !outline.rows.is_empty() && (opts.outline || (opts.body.is_none() && outline.oversized()))
+    });
     let impls = impl_blocks(&repo, &store, node)?;
     let impl_body = |block: &ImplBlock| {
         opts.impls
@@ -462,6 +469,12 @@ pub fn run(repo: &Path, symbol: &str, filter: &EdgeFilter, opts: &Options) -> Re
         out["snapshot"] = json!(snapshot);
         if let Some(body) = &body {
             excerpt_json(&mut out, body);
+        }
+        if let Some(outline) = &outline {
+            out["outline"] = outline.json(opts.limit);
+            if outline.rows.len() > opts.limit {
+                out["outline_truncated"] = json!(outline.rows.len() - opts.limit);
+            }
         }
         if !family.is_empty() {
             out["also_see"] = json!(selectors(&family));
@@ -526,6 +539,20 @@ pub fn run(repo: &Path, symbol: &str, filter: &EdgeFilter, opts: &Options) -> Re
             "--context-lines 0 for all"
         };
         print_excerpt(body, hint);
+    }
+    if let Some(outline) = &outline {
+        println!(
+            "outline ({}) of {} lines / {} bytes",
+            outline.rows.len(),
+            outline.lines,
+            outline.bytes
+        );
+        for row in outline.rows.iter().take(opts.limit) {
+            println!("  {:>6}  {:<7} {}", row.line, row.kind, row.text);
+        }
+        if outline.rows.len() > opts.limit {
+            println!("  … (+{}) · --limit", outline.rows.len() - opts.limit);
+        }
     }
     println!();
 
