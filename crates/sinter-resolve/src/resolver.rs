@@ -91,7 +91,11 @@ impl ResolutionStats {
 /// Per-reference resolution verdict.
 enum Res {
     Bound(Binding),
-    Internal,
+    /// Anchored in the corpus, unbound; `dangling` when the path's module
+    /// exists but has no such member.
+    Internal {
+        dangling: bool,
+    },
     External,
 }
 
@@ -677,6 +681,44 @@ impl<'a> Index<'a> {
         }
     }
 
+    /// Is this absolute path dangling inside the corpus: its module part
+    /// is exactly a corpus module whose files neither define nor import
+    /// (nor glob-import anything that could supply) the leaf name? The
+    /// shape a rename or deletion leaves behind at untouched call sites.
+    // ponytail: exact module-key match only; relative `config::get()`
+    // paths stay `internal`, widen through the import tier if needed.
+    fn missing_internal_target(&self, segments: &[String]) -> bool {
+        let Some((name, module)) = segments.split_last() else {
+            return false;
+        };
+        let Some(tail) = module.last() else {
+            return false;
+        };
+        let Some(files) = self
+            .files_of_module
+            .get(tail.as_str())
+            .into_iter()
+            .flatten()
+            .find(|m| m.key == module)
+        else {
+            return false;
+        };
+        if self
+            .module_defs
+            .get(module)
+            .is_some_and(|defs| defs.contains_key(name.as_str()))
+        {
+            return false;
+        }
+        !files.files.iter().any(|file| {
+            self.imports
+                .get(*file)
+                .into_iter()
+                .flatten()
+                .any(|import| import.glob || import.binding == *name)
+        })
+    }
+
     /// File node for an import path, matching either containment
     /// direction: Go-style (long import, short module key) or
     /// include-root style (protoc, C headers) where the import resolves
@@ -838,10 +880,13 @@ fn namespace_pick(candidates: Vec<&Node>, relation: Relation) -> Option<&Node> {
     }
 }
 
+/// Bindings, pass statistics, indices of references the heuristic anchored
+/// in the corpus but could not bind, and the subset of those whose absolute
+/// path names a corpus module that has no such member (dangling).
 pub fn resolve(
     index: &Index<'_>,
     references: &[Reference],
-) -> (Vec<Binding>, ResolutionStats, Vec<usize>) {
+) -> (Vec<Binding>, ResolutionStats, Vec<usize>, Vec<usize>) {
     use rayon::prelude::*;
     let results: Vec<Res> = references
         .par_iter()
@@ -884,7 +929,13 @@ pub fn resolve(
                         reference: i,
                     })
                 }
-                _ if internal => Res::Internal,
+                _ if internal => Res::Internal {
+                    dangling: r.path.as_deref().is_some_and(|path| {
+                        !spec.file_refs
+                            && r.relation != Relation::Imports
+                            && is_dangling_path(index, spec, r, path)
+                    }),
+                },
                 _ => Res::External,
             }
         })
@@ -892,6 +943,7 @@ pub fn resolve(
     let mut bindings = Vec::new();
     let mut stats = ResolutionStats::default();
     let mut internal_indices = Vec::new();
+    let mut dangling_indices = Vec::new();
     for (i, result) in results.into_iter().enumerate() {
         match result {
             Res::Bound(binding) => {
@@ -901,14 +953,32 @@ pub fn resolve(
                 }
                 bindings.push(binding);
             }
-            Res::Internal => {
+            Res::Internal { dangling } => {
                 stats.unresolved_internal += 1;
                 internal_indices.push(i);
+                if dangling {
+                    dangling_indices.push(i);
+                }
             }
             Res::External => stats.unresolved_external += 1,
         }
     }
-    (bindings, stats, internal_indices)
+    (bindings, stats, internal_indices, dangling_indices)
+}
+
+/// A written path that absolutizes without an implicit module prefix
+/// (`crate::util::gone`, not `super::x`, `self::x`, a bare relative path, or
+/// a value receiver) and names a corpus module lacking the leaf. Relative
+/// forms are excluded because absolutize cannot see inline modules, so
+/// `super::` inside `mod tests` would look dangling at the wrong module.
+fn is_dangling_path(index: &Index<'_>, spec: &LanguageSpec, r: &Reference, path: &str) -> bool {
+    let absolute = (spec.absolutize)(path, &r.file);
+    let written_head = path
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .next()
+        .unwrap_or("");
+    absolute.first().is_some_and(|head| head == written_head)
+        && index.missing_internal_target(&expand(spec, &index.roots, &r.file, absolute))
 }
 
 fn resolve_one<'a>(

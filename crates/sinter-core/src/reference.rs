@@ -72,6 +72,9 @@ pub enum UnresolvedReason {
     SyntaxOnly,
     /// A compiler index was present but supplied no in-corpus target.
     CompilerUnresolved,
+    /// The path's module is in the corpus but neither defines nor imports
+    /// the name: a dangling internal reference (renamed or deleted target).
+    MissingInternalTarget,
 }
 
 impl UnresolvedReason {
@@ -80,6 +83,7 @@ impl UnresolvedReason {
             Self::SyntaxAnchoredMiss => "syntax_anchored_miss",
             Self::SyntaxOnly => "syntax_only",
             Self::CompilerUnresolved => "compiler_unresolved",
+            Self::MissingInternalTarget => "missing_internal_target",
         }
     }
 }

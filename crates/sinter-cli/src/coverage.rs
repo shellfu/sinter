@@ -193,6 +193,11 @@ impl Classifier {
         if !is_identifier || self.syntax_error_files.contains(&reference.file) {
             return UnresolvedCategory::UnsupportedSyntax;
         }
+        if item.reason == UnresolvedReason::MissingInternalTarget {
+            // The module is in the corpus and has no such name: nothing a
+            // compiler index or a dependency could supply.
+            return UnresolvedCategory::ActionableAnchoredMiss;
+        }
         let defined = self
             .definitions
             .get(reference.name.as_str())

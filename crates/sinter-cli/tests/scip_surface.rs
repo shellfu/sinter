@@ -362,3 +362,125 @@ fn build_names_an_ingested_stale_index() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(!text.contains("SCIP index is older"), "{text}");
 }
+
+/// A definition file edited after indexing: the index's occurrence
+/// positions there no longer name what the compiler saw, so its symbols
+/// bind nothing (a stale `certain` edge on a renamed line is worse than no
+/// edge) and the call site left behind surfaces as an actionable gap.
+#[test]
+fn edited_definition_file_withholds_scip_evidence() {
+    use protobuf::Message;
+    use scip::types::{Document, Index, Occurrence};
+
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    // fn main() { crate::util::helper(); }
+    //                          ^25..31
+    std::fs::write(
+        repo.join("src/main.rs"),
+        "mod util;\nfn main() { crate::util::helper(); }\n",
+    )
+    .unwrap();
+    std::fs::write(repo.join("src/util.rs"), "pub fn helper() {}\n").unwrap();
+    let symbol = "rust-analyzer cargo fixture 0.1.0 util/helper().";
+    let index = Index {
+        documents: vec![
+            Document {
+                relative_path: "src/util.rs".to_string(),
+                occurrences: vec![Occurrence {
+                    range: vec![0, 7, 13],
+                    symbol: symbol.to_string(),
+                    symbol_roles: scip::types::SymbolRole::Definition as i32,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            Document {
+                relative_path: "src/main.rs".to_string(),
+                occurrences: vec![Occurrence {
+                    range: vec![1, 25, 31],
+                    symbol: symbol.to_string(),
+                    symbol_roles: 0,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    std::fs::create_dir_all(repo.join(".sinter")).unwrap();
+    std::fs::write(
+        repo.join(".sinter/index.scip"),
+        index.write_to_bytes().unwrap(),
+    )
+    .unwrap();
+    let past = SystemTime::now() - Duration::from_secs(60);
+    set_mtime(&repo.join("src/main.rs"), past);
+    set_mtime(&repo.join("src/util.rs"), past);
+    set_mtime(&repo.join("Cargo.toml"), past);
+
+    let out = sinter(repo, &["build"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = sinter(repo, &["affected", "helper", "--json"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("main"), "{text}");
+
+    // Rename the definition; the caller is untouched (index now stale).
+    std::fs::write(repo.join("src/util.rs"), "pub fn helper2() {}\n").unwrap();
+    set_mtime(
+        &repo.join("src/util.rs"),
+        SystemTime::now() + Duration::from_secs(60),
+    );
+    let out = sinter(repo, &["build"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The stale occurrence must not rebind the caller to the renamed
+    // symbol by position.
+    let out = sinter(repo, &["affected", "helper2", "--json"]);
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["dependents"], serde_json::json!([]), "{value}");
+    assert_eq!(
+        value["coverage"]["evidence"]["certain"]["results"], 0,
+        "{value}"
+    );
+    assert_eq!(
+        value["coverage"]["compiler_index"]["state"], "stale",
+        "{value}"
+    );
+
+    // And the dangling call is visible as an actionable gap.
+    let out = sinter(repo, &["unresolved", "--name", "helper", "--json"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        value["unresolved"][0]["reason"], "missing_internal_target",
+        "{value}"
+    );
+    assert_eq!(
+        value["unresolved"][0]["category"], "actionable_anchored_miss",
+        "{value}"
+    );
+}
