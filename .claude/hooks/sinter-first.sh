@@ -27,9 +27,9 @@ while [ "$d" != "/" ]; do
 done
 [ -z "$root" ] && exit 0
 
-NUDGE="sinter graph present: for symbol/caller/dependency/blast-radius questions use sinter query/show/affected/deps/path or sinter grep --within; rg only for unbounded text."
+NUDGE="sinter graph present: symbol/caller/dependency questions -> sinter context <task>, query/show, affected/deps/path; text -> sinter grep '<re>' (unbounded; --within narrows); rg only for content sinter did not index."
 GIT_NUDGE="sinter graph: impact <rev-range> for changed symbols and downstream effects; overlap for collision risk; --workspace for cross-repo."
-DENY_REASON="This repo has a sinter graph. Use sinter context <task>, sinter ask, query/show, affected/deps/path, assert no-callers (accept only holds_for_indexed_snapshot, retain universe/limitations), unresolved for graph gaps (not_proven is non-conclusive), cite/verify-doc, grep --within affected(SYM), or impact. If insufficient, rerun this exact search."
+DENY_REASON="This repo has a sinter graph. Use sinter context <task>, sinter ask, query/show, affected/deps/path, assert no-callers (accept only holds_for_indexed_snapshot, retain universe/limitations) or assert deletable, unresolved for graph gaps (not_proven is non-conclusive), cite/verify-doc, sinter grep <re> (--within narrows), or impact. If insufficient, rerun this exact search."
 
 # Print a marker path for a valid session without placing the raw session ID
 # in the filesystem. The per-user directory is private; refusing an unsafe
@@ -91,7 +91,7 @@ case "$1" in
     input=$(cat)
     mark_session_once prompt "$input"
     [ $? -eq 1 ] && exit 0
-    echo "This repo has a sinter graph. Unfamiliar repo: sinter map; starting a task: sinter context <task>; vague discovery: ask; exact symbol: query/show; relations: affected/deps/path; production-caller proof: assert no-callers (accept only holds_for_indexed_snapshot, retain universe/limitations); unresolved for graph gaps, not_proven is non-conclusive; cite/verify-doc for citations; grep --within affected(SYM) for bounded text; impact/overlap for diffs."
+    echo "This repo has a sinter graph. Unfamiliar repo: sinter map; starting a task: sinter context <task>; vague discovery: ask; exact symbol: query/show; relations: affected/deps/path; production-caller proof: assert no-callers (accept only holds_for_indexed_snapshot, retain universe/limitations); can-I-delete: assert deletable; unresolved for graph gaps, not_proven is non-conclusive; cite/verify-doc for citations; sinter grep <re> for text (--within narrows); impact/overlap for diffs."
     ;;
   grep|grep-strict)
     input=$(cat)

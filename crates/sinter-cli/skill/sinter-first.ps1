@@ -30,10 +30,10 @@ while ($d) {
 }
 if (-not $root) { exit 0 }
 
-$Nudge = 'sinter graph present: for symbol/caller/dependency/blast-radius questions use sinter query/show/affected/deps/path or sinter grep --within; rg only for unbounded text.'
+$Nudge = 'sinter graph present: symbol/caller/dependency questions -> sinter context <task>, query/show, affected/deps/path; text -> sinter grep '<re>' (unbounded; --within narrows); rg only for content sinter did not index.'
 $GitNudge = 'sinter graph: impact <rev-range> for changed symbols and downstream effects; overlap for collision risk; --workspace for cross-repo.'
 
-$DenyReason = 'This repo has a sinter graph. Use sinter context <task>, sinter ask, query/show, affected/deps/path, assert no-callers (accept only holds_for_indexed_snapshot, retain universe/limitations), unresolved for graph gaps (not_proven is non-conclusive), cite/verify-doc, grep --within affected(SYM), or impact. If insufficient, rerun this exact search.'
+$DenyReason = 'This repo has a sinter graph. Use sinter context <task>, sinter ask, query/show, affected/deps/path, assert no-callers (accept only holds_for_indexed_snapshot, retain universe/limitations) or assert deletable, unresolved for graph gaps (not_proven is non-conclusive), cite/verify-doc, sinter grep <re> (--within narrows), or impact. If insufficient, rerun this exact search.'
 
 function Emit([string]$Text) {
     Write-Output ('{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"' + $Text + '"}}')
@@ -86,7 +86,7 @@ switch ($Mode) {
         $raw = ''
         try { $raw = [Console]::In.ReadToEnd() } catch { $raw = '' }
         if ((New-SessionMarker 'prompt' $raw) -eq $false) { exit 0 }
-        Write-Output 'This repo has a sinter graph. Unfamiliar repo: sinter map; starting a task: sinter context <task>; vague discovery: ask; exact symbol: query/show; relations: affected/deps/path; production-caller proof: assert no-callers (accept only holds_for_indexed_snapshot, retain universe/limitations); unresolved for graph gaps, not_proven is non-conclusive; cite/verify-doc for citations; grep --within affected(SYM) for bounded text; impact/overlap for diffs.'
+        Write-Output 'This repo has a sinter graph. Unfamiliar repo: sinter map; starting a task: sinter context <task>; vague discovery: ask; exact symbol: query/show; relations: affected/deps/path; production-caller proof: assert no-callers (accept only holds_for_indexed_snapshot, retain universe/limitations); can-I-delete: assert deletable; unresolved for graph gaps, not_proven is non-conclusive; cite/verify-doc for citations; sinter grep <re> for text (--within narrows); impact/overlap for diffs.'
     }
     { $_ -in 'grep', 'grep-strict' } {
         $raw = ''

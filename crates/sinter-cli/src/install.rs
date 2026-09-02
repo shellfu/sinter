@@ -35,40 +35,40 @@ pub fn card_body() -> &'static str {
         .unwrap_or(SKILL)
 }
 
-/// Compact always-in-context block for AGENTS.md. Deliberately smaller
-/// than the skill card (which loads on demand): an always-on block gets
-/// skimmed, so it carries only the behavior rules and routing. Keep the
-/// two in sync when verbs change — `agents_block_routes_match_card`
+/// Always-in-context block for AGENTS.md: the full routing table plus the
+/// behavior rules an agent must not skim past. Keep it in sync with the
+/// skill card when verbs change — `agents_block_routes_match_card`
 /// enforces the command surface.
 const AGENTS_CARD: &str = r#"## sinter
 
 This repo has a code knowledge graph at `.sinter/` (derived state — never
 commit or edit it). When `.sinter/graph.redb` exists, query sinter BEFORE
 any broad filesystem search for symbol location, callers, dependency
-impact, structural paths, or diff impact. Fall back to grep only when
-sinter returns no usable evidence — and when the text search is bounded
-by structure, `sinter grep --within` is that search, not rg.
+impact, structural paths, or diff impact. `sinter grep` is the text search
+(unbounded by default, `--within` narrows it to a blast radius); rg only for
+content sinter did not index. Schema v14: an older graph rebuilds once on
+the first query.
 
 | Question | Command |
 |---|---|
-| First look in an unfamiliar repo (module inventory, dependency hubs, docs, graph health) | `sinter map` |
+| First look in an unfamiliar repo (modules, dependency hubs, docs, graph health) | `sinter map` |
+| Evidence packet before starting a task | `sinter context "<task>"` — name real symbols; gives edit candidates, literals, mirrors, tests, and next commands; `--workspace <manifest>` for one packet across members |
 | Vague/conceptual discovery (calibrated lexical search) | `sinter ask "<question>"` (`--explain` adds ranking diagnostics) |
-| Exact or fuzzy symbol lookup | `sinter query <symbol>` |
-| Inspect one symbol (signature, docs, callers) | `sinter show <symbol>` (`--body [--context-lines N]` adds a bounded source excerpt instead of a file read) |
-| What depends on X / blast radius | `sinter affected <symbol>...` (seeds repeatable; unioned and deduplicated, each row naming the seeds that reached it) |
-| What does X depend on (forward) | `sinter deps <symbol>` |
-| How does A reach B | `sinter path <A> <B>` |
-| Find text only inside a blast radius | `sinter grep '<regex>' --within 'affected(<sym>)'` (`--within` also takes `deps(SYM)`/`file(PATH)`, is repeatable, unions the bounds) |
-| Check gaps before a negative proof | `sinter unresolved [--file <f>] [--name <n>]` |
-| Prove no production callers in this indexed snapshot | `sinter assert no-callers <symbol> --json` — accept only `holds_for_indexed_snapshot`; retain scope, snapshot, universe, and limitations |
-| Who reads/writes a database table (SQL files and Rust query strings) | `sinter affected <table> --relations reads,writes,creates,alters,drops` |
-| Prove nothing writes/alters/drops a table in this indexed snapshot | `sinter assert no-writers <table> --json` — accept only `holds_for_indexed_snapshot` |
-| Prove nothing depends on a const/struct/enum/trait | `sinter assert no-dependents <symbol> --json` — all non-containment relations (`no-callers` counts `calls` only and hints at this for non-functions); `--verbose` keeps the `coverage.graph` block |
-| Emit a durable source citation | `sinter cite <symbol>` — paste the complete Markdown line and metadata comment |
+| Exact or fuzzy symbol lookup | `sinter query <symbol>` (`'Type::*'`, `'*::method'`) |
+| Inspect one symbol | `sinter show <symbol>` — `--body` is a real read (whole source when ≤ 60 lines); `show X@file:line` for the enclosing symbol; `--impls` for a type's impl blocks; `--callers` for the used-by files |
+| Who depends on X (direct dependents) | `sinter affected <symbol>...` — test rows hidden (`--include-tests`), stops at hubs and names them (`--through-hubs`); seeds repeatable and unioned |
+| What does X depend on (forward) | `sinter deps <symbol>` — depth 1 by default; `--max-depth N` widens |
+| How does A reach B | `sinter path <A> <B>` (`-k N` for N node-disjoint routes) |
+| Find text | `sinter grep '<regex>'` — production scope; `--within 'affected(<sym>)'`/`deps(SYM)`/`file(PATH)` narrows (repeatable, unioned) |
+| Can I delete this | `sinter assert deletable <symbol>` — all scopes, grouped; `has_dependents` (exit 1) or `none_observed` (exit 0) |
+| Prove no production callers in this indexed snapshot | `sinter assert no-callers <symbol> --json` — accept only `holds_for_indexed_snapshot` (completeness judged within `--scope`, production by default); retain scope, snapshot, universe, limitations |
+| Prove nothing depends on a const/type/trait | `sinter assert no-dependents <symbol> --json` — all non-containment relations (`no-callers` counts `calls` only) |
+| Who reads/writes a table; prove nothing writes it | `sinter affected <table> --relations reads,writes,creates,alters,drops`; `sinter assert no-writers <table> --json` |
+| Check user gaps before a negative proof | `sinter unresolved [--file <f>] [--name <n>]` — user gaps only; `--all` adds external and resolver gaps |
+| Emit a durable source citation | `sinter cite <symbol>` — paste the whole Markdown line and metadata comment |
 | Gate citations in a document | `sinter verify-doc <file.md> --json` — bare path/line references remain `not_proven` |
 | What does this commit/diff/PR affect downstream | `sinter impact <rev-range>` (default is capped; `--limit 0` returns all) |
-| Did the refactor finish (unfinished-refactor check) | `sinter impact --expect <symbol>` — direct dependents the diff did NOT touch |
-| Evidence packet before starting a task | `sinter context "<task>"` — name real symbols in the task; add `--workspace <manifest>` for one packet across declared members |
+| Did the refactor finish (unfinished-refactor check) | `sinter impact --expect <symbol>` — direct dependents the diff did NOT touch; names resolve at the base rev too; a body-only change reports callers unaffected; `--full` for the whole radius |
 | Where do proposed changes overlap | `sinter overlap <rangeA> <rangeB> ...` |
 | Build a cross-repo graph | `sinter workspace <manifest.toml>`; then add `--workspace <manifest.toml>` to reads |
 | Create missing derived graph state | `sinter ensure <repo>` |
@@ -79,31 +79,33 @@ by structure, `sinter grep --within` is that search, not rg.
   1 none, 2 error). Assertion and document gates use 0 pass, 1 fail,
   2 error. Branch on the code, then read the status. Results carry call
   sites (`file:line`).
-- `--relations calls,uses,reads,writes,creates,alters,drops` on affected/deps/path drops file-level
-  import noise from a blast radius.
-- Queries self-sync before answering — no manual refresh needed
-  (`sinter build` remains for CI/scripts; git hooks refresh on commit).
+- JSON carries a coverage summary by default; `--coverage` adds the full
+  block. `coverage.universe` names the canonical repository root or every
+  declared workspace member searched; anything absent was not searched.
 - `not_proven`, unresolved references, and candidate lists are real answers —
-  refine and rerun, never report zero or guess a binding. Receiver-typed call
-  coverage may require `sinter scip`; `sinter unresolved` lists the gaps.
+  refine and rerun, never report zero or guess a binding. `not_proven` with
+  `reason: filter_excluded` means your filter emptied the result, not the
+  graph. Receiver-typed call coverage may require `sinter scip`.
   Ambiguous symbol? Rerun as `name@file-suffix` or `name@file:line`
   (e.g. `run@init.rs`, `run@doctor.rs:175`).
-- Coverage carries `universe`: the canonical repository root or every declared
-  workspace member searched. Repositories absent from it were not searched.
+- Any `--relations` filter (`calls,uses`, `reads,writes`, ...) on
+  affected/deps/path drops file-level import noise.
 - A `not_proven` `path` carries `closest_frontier`, `excluded_edges`, and
   `suggested_retries` — rerun a suggestion before claiming no path exists.
+- Queries self-sync before answering (`sinter build` remains for CI/scripts;
+  git hooks refresh on commit).
 - Spawning subagents? Their prompts must mandate sinter for structure
   claims (callers, dependencies, blast radius, "no usages" proofs) and
-  reserve grep/rg for unbounded content-only searches.
+  `sinter grep` for text; rg only for content sinter did not index.
 - Cross-repo symbols may be `member:Symbol`.
-- `sinter ensure <repo>` creates only derived `.sinter/` state. Run
-  `sinter init <repo>` only when full hook and client integration installation
-  was explicitly requested.
+- `sinter ensure <repo>` creates only derived `.sinter/` state; `sinter init`
+  only when full hook and client integration was explicitly requested.
 - MCP registered? `mcp__sinter__*` tools (ask/show/query/context/affected/deps/
-  path/grep/unresolved/impact/overlap/map) answer the same questions as the
-  CLI verbs above — either route is fine. Arguments mirror the flags:
-  `grep{pattern, within[]}`, `show{body, context_lines}`,
-  `impact{expect[]}`. MCP `scope` defaults to `all`, not the CLI corpus
+  path/grep/unresolved/impact/overlap/map) answer the same questions.
+  Arguments mirror the flags: `grep{pattern, within[]}`,
+  `show{body, context_lines}`, `impact{expect[]}`; batch via `symbols[]` and
+  `pairs[]`. Read `outcome.status` and `outcome.reason`; fixable errors are
+  `isError` results with `Name@file` candidates. MCP `scope` matches the CLI
   default; a `--workspace` server has no `grep`.
 - Anything else: `sinter --help`; graph problems: `sinter doctor`.
 "#;

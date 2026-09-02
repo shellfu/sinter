@@ -48,13 +48,18 @@ List-bearing responses carry a `legend` field on the first page and when truncat
 Pass `detail:true` for full node objects.
 
 ## Bounded text search, excerpts, refactor checks
-`grep` is a regex over file *text* restricted to what a traversal reached, so a search never
-leaves the graph: `within: [affected(SYM)]`, `[deps(SYM)]`, or `[file(PATH)]`, repeatable
-and unioned; rows are f=file l=line t=text and `total` counts every match above `limit`.
-`show` takes `body: true` (with `context_lines`) for a bounded source excerpt in `excerpt`.
+`grep` is a regex over file *text*. Over MCP `within` is required and bounds the search to
+what a traversal reached: `within: [affected(SYM)]`, `[deps(SYM)]`, or `[file(PATH)]`,
+repeatable and unioned (the CLI `sinter grep` runs unbounded without `--within`); rows are
+f=file l=line t=text and `total` counts every match above `limit`. `show` takes `body: true`
+(with `context_lines`; 0 = whole span) for a source excerpt in `excerpt`: whole when short,
+else up to the byte budget; `symbol: \"X@file:line\"` shows the enclosing symbol. `affected`
+and `deps` are transitive to `max_depth` (default 10); pass `max_depth: 1` for direct rows.
 `impact` takes `expect: [SYM]` and answers the unfinished-refactor question: per symbol, the
-direct dependents this diff changed and the ones it still owes (`expect[].untouched`).
-`context` returns `next_actions` as tool calls `{tool, args}` ready to send back.
+direct dependents this diff changed and the ones it still owes (`expect[].untouched`); names
+resolve at the base rev too, and a body-only change reports its callers unaffected.
+`context` returns `next_actions` as tool calls `{tool, args}` ready to send back, plus
+`literals` and `mirrors` (string-literal and hand-maintained-copy hits for the task words).
 
 ## Universe and coverage
 Every tool searches the CLI default corpus `production,test,docs` unless `scope` says
@@ -67,8 +72,9 @@ searched; repositories absent from it were not searched. `coverage.filters` appe
 when a filter narrowed the traversal.
 `coverage.compiler_index` is {state: fresh|stale|missing, stale_inputs, missing_index_for:
 [languages]}; run `sinter scip` to refresh. Full per-project detail: CLI `--json` or `doctor`.
-`unresolved` lists references the graph could not bind; check it before reading an empty
-affected/deps/path result as absence.
+`unresolved` lists user gaps (references in indexed code the graph could not bind; external,
+resolver-gap and unsupported-syntax refs are counted, not listed); check it before reading
+an empty affected/deps/path result as absence.
 Repository-wide coverage fields are sent once per session and then replaced by
 `coverage.ref` (a fingerprint) plus `ref_note`; a changed fingerprint means they are sent
 in full again. Read resource `sinter://coverage` for the referenced block.
@@ -92,9 +98,10 @@ Repository `show`, `affected`, and `deps` accept `symbols: [...]`; `path` accept
 ## Filters
 `evidence` (structural, scope, import, scip, declared, dynamic), `min_confidence`
 (`certain` = compiler-grade edges only), `relations` (calls, uses, imports, implements,
-extends, reads, writes, creates, alters, drops; `calls,uses,reads,writes,creates,alters,drops`
-drops file-level import noise), `scope` (corpus roles: production, test,
-fixture, example, generated, vendor, docs; `all` must be used alone).
+extends, reads, writes, creates, alters, drops; any `relations` filter drops file-level
+import noise), `scope` (corpus roles: production, test, fixture, example, generated,
+vendor, docs; `all` must be used alone). A `not_proven` outcome with
+`reason: filter_excluded` means the filter emptied the result, not the graph.
 `if_snapshot`: pass a prior `snapshot` token to fail instead of answering from a changed graph.
 ";
 

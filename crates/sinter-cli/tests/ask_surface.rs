@@ -2031,7 +2031,7 @@ fn hook_scripts_share_compact_agent_routing() {
             "assert no-callers",
             "unresolved",
             "not_proven",
-            "grep --within",
+            "sinter grep",
             "impact",
         ] {
             assert!(body.contains(route), "hook lost `{route}`: {body}");
