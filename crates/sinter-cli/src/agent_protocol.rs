@@ -543,7 +543,10 @@ fn trim(
         };
         map.insert("next_cursor".into(), json!(cursor + kept));
     }
-    map.insert("totals".into(), Value::Object(totals));
+    // A verb that already reports totals (impact) counted before its own
+    // `--limit` cut; the byte budget must not overwrite those with the
+    // post-cut list lengths.
+    map.entry("totals").or_insert(Value::Object(totals));
     true
 }
 

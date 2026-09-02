@@ -29,6 +29,10 @@ pub struct ImpactReport {
     /// complete test-selection proof.
     pub analysis_status: AnalysisStatus,
     pub partial_reasons: Vec<&'static str>,
+    /// Reason -> what an agent should do about it, for the reasons that
+    /// change how the rest of the report should be read.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub partial_reason_notes: BTreeMap<&'static str, &'static str>,
     /// Hunks come from the rev range but spans match the working-tree
     /// graph; uncommitted edits shift spans, so totals may include drift.
     pub working_tree_dirty: bool,
@@ -64,15 +68,31 @@ pub struct ImpactReport {
     /// `file:qualified` -> runnable command, for affected tests only.
     #[serde(skip)]
     pub test_commands: BTreeMap<String, String>,
+    /// `file:qualified` -> how a blast-radius entry was reached when only a
+    /// constant/static edit reaches it (`uses/const`): a reader of a string
+    /// is not a caller of a function.
+    #[serde(skip)]
+    pub via: BTreeMap<String, &'static str>,
+    /// `file:qualified` -> number of same-named definitions folded into one
+    /// changed row (`#[cfg]` twins).
+    #[serde(skip)]
+    pub variants: BTreeMap<String, usize>,
 }
 
 /// `--expect <SYMBOL>`: the unfinished-refactor check. Bare impact answers
 /// "what did my edit reach"; this answers "what did the edit still miss".
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct ExpectReport {
     /// The requested symbol as resolved in the graph.
     pub symbol: String,
     pub file: String,
+    /// The seed changed, but its signature and kind are identical at the
+    /// range base: callers cannot be owed anything by a body-only edit.
+    pub body_only: bool,
+    /// How the symbol was resolved when the head graph alone could not do
+    /// it (deleted/renamed symbol resolved at the range base).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     /// Depth-1 dependents only. Transitive dependents would drown the
     /// signal: a refactor owes its callers, not their callers.
     pub direct_dependents: usize,
@@ -181,7 +201,7 @@ struct Hunk {
     deleted_only: bool,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 pub struct SymbolRef {
     pub qualified: String,
     pub kind: &'static str,
@@ -257,6 +277,93 @@ fn historical_endpoint_matches_head(repo: &Path, rev_range: &str) -> Result<bool
         return Ok(true);
     };
     Ok(git_tree(repo, endpoint)? == git_tree(repo, "HEAD")?)
+}
+
+/// `rev:path` content, `None` when the path does not exist at `rev`.
+fn git_show(repo: &Path, rev: &str, path: &str) -> Option<String> {
+    let output = Command::new("git")
+        .args(["show", "--end-of-options", &format!("{rev}:{path}")])
+        .current_dir(repo)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The revision a range diffs *from*: `A` for `A..B`, the merge base for
+/// `A...B`, the revision itself for a working-tree diff.
+pub(crate) fn range_base(repo: &Path, rev_range: &str) -> String {
+    if let Some((a, b)) = rev_range.split_once("...") {
+        let b = if b.is_empty() { "HEAD" } else { b };
+        let output = Command::new("git")
+            .args(["merge-base", "--end-of-options", a, b])
+            .current_dir(repo)
+            .output();
+        if let Ok(output) = output
+            && output.status.success()
+        {
+            return String::from_utf8_lossy(&output.stdout).trim().to_string();
+        }
+        return a.to_string();
+    }
+    match rev_range.split_once("..") {
+        Some((a, _)) => a.to_string(),
+        None => rev_range.to_string(),
+    }
+}
+
+/// Whether `ancestor` is reachable from `descendant`.
+pub(crate) fn is_ancestor(repo: &Path, ancestor: &str, descendant: &str) -> bool {
+    Command::new("git")
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .current_dir(repo)
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Definitions in `path` as it read at `rev`, extracted fresh: the graph
+/// only knows the working tree.
+fn nodes_at(repo: &Path, rev: &str, path: &str) -> Option<Vec<Node>> {
+    let spec = sinter_extract::spec_for_path(path)?;
+    let source = git_show(repo, rev, path)?;
+    let mut extractor = sinter_extract::Extractor::new(spec).ok()?;
+    Some(extractor.extract(path, &source).ok()?.nodes)
+}
+
+/// Nodes whose byte span overlaps a changed line range of `source`.
+fn touched_nodes<'a>(source: &str, nodes: &'a [Node], ranges: &[Hunk]) -> Vec<&'a Node> {
+    let mut line_starts = vec![0u64];
+    for (i, byte) in source.bytes().enumerate() {
+        if byte == b'\n' {
+            line_starts.push(i as u64 + 1);
+        }
+    }
+    let byte_range = |line: usize, count: usize| -> Option<(u64, u64)> {
+        if line == 0 || count == 0 {
+            return None;
+        }
+        let start = line_starts
+            .get(line - 1)
+            .copied()
+            .unwrap_or(source.len() as u64);
+        let end = line_starts
+            .get(line - 1 + count)
+            .copied()
+            .unwrap_or(source.len() as u64);
+        Some((start, end))
+    };
+    nodes
+        .iter()
+        .filter(|node| node.kind != SymbolKind::File)
+        .filter(|node| {
+            ranges.iter().any(|hunk| {
+                byte_range(hunk.new_start, hunk.new_count)
+                    .is_some_and(|(start, end)| node.span.start < end && start < node.span.end)
+            })
+        })
+        .collect()
 }
 
 fn file_change_kind(status: &str) -> FileChangeKind {
@@ -505,8 +612,10 @@ fn mapping_gap(file: &UnmappedFile) -> bool {
     // ponytail: `.sinterignore` exclusions are not consulted here; an ignored
     // source file still reads as a gap. Thread the ignore matcher through if
     // that ever misleads.
+    let hidden = file.path.split('/').any(|segment| segment.starts_with('.'));
     file.reason != UnmappedReason::NotIndexed
         || (sinter_extract::spec_for_path(&file.path).is_some()
+            && !hidden
             && !crate::corpus::excluded(&file.path))
 }
 
@@ -529,12 +638,8 @@ fn test_capable_kind(node: &Node) -> bool {
     )
 }
 
-/// Test detection heuristic: conventional test files and names.
-pub fn is_test(node: &Node) -> bool {
-    if !test_capable_kind(node) {
-        return false;
-    }
-    let f = &node.file;
+/// Conventional test-file paths across the indexed languages.
+fn test_path(f: &str) -> bool {
     f.ends_with("_test.go")
         || f.ends_with("_test.py")
         || f.ends_with("Tests.cs")
@@ -543,6 +648,14 @@ pub fn is_test(node: &Node) -> bool {
         || f.starts_with("tests/")
         || f.contains("/tests/")
         || f.contains("/test/")
+}
+
+/// Test detection heuristic: conventional test files and names.
+pub fn is_test(node: &Node) -> bool {
+    if !test_capable_kind(node) {
+        return false;
+    }
+    test_path(&node.file)
         || node.name.starts_with("test_")
         || node.name.starts_with("Test")
         // Rust `#[cfg(test)] mod tests` inline modules.
@@ -691,24 +804,60 @@ fn cargo_target(
 /// Doc tests are deliberately absent — they are not graph nodes, so nothing
 /// here could name one without inventing it.
 pub fn test_command(repo: &Path, node: &Node) -> Option<String> {
-    // Rust only. Other ecosystems need their own layout rules, and a
-    // fabricated command is worse than silence.
-    if Path::new(&node.file).extension()? != "rs" {
-        return None;
-    }
     let file = Path::new(&node.file);
+    let qualified = qualified_of(node.id.as_str());
+    let name = qualified.rsplit("::").next().unwrap_or(qualified);
+    match file.extension()?.to_str()? {
+        "rs" => {}
+        "go" => {
+            let dir = file.parent()?.to_str()?;
+            let dir = if dir.is_empty() { "." } else { dir };
+            return Some(crate::testcmd::test_command("go", dir, &node.file, name));
+        }
+        "py" => {
+            return Some(crate::testcmd::test_command(
+                "python", "", &node.file, qualified,
+            ));
+        }
+        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => {
+            let runner = if package_json_mentions(repo, file, "vitest") {
+                "vitest"
+            } else {
+                "npm"
+            };
+            return Some(crate::testcmd::test_command(runner, "", &node.file, name));
+        }
+        // Other ecosystems need their own layout rules, and a fabricated
+        // command is worse than silence.
+        _ => return None,
+    }
     let (pkg_dir, manifest) = package_of(repo, file)?;
     let package = manifest.get("package")?.get("name")?.as_str()?;
     let pkg_root = repo.join(&pkg_dir);
     let rel = file.strip_prefix(&pkg_dir).ok()?;
     let (target, module) = cargo_target(&manifest, package, &pkg_root, rel)?;
-    let qualified = qualified_of(node.id.as_str());
     let filter = if module.is_empty() {
         qualified.to_string()
     } else {
         format!("{module}::{qualified}")
     };
-    Some(format!("cargo test -p {package} {target} -- {filter}"))
+    Some(crate::testcmd::test_command(
+        "rust", package, &target, &filter,
+    ))
+}
+
+/// Whether the nearest `package.json` above `file` names `needle` anywhere
+/// (a dependency or a script). Text search, not JSON parsing: the question
+/// is only "is vitest around here".
+fn package_json_mentions(repo: &Path, file: &Path, needle: &str) -> bool {
+    let mut dir = file.parent();
+    while let Some(current) = dir {
+        if let Ok(text) = std::fs::read_to_string(repo.join(current).join("package.json")) {
+            return text.contains(needle);
+        }
+        dir = current.parent();
+    }
+    false
 }
 
 fn symbol_key(file: &str, qualified: &str) -> String {
@@ -734,6 +883,86 @@ fn validation_steps(commands: &BTreeMap<String, String>) -> Vec<ValidationStep> 
 
 // ------------------------------------------------------- expected symbols
 
+/// Resolve one `--expect` name. An ambiguous name prefers candidates in
+/// changed files; what remains ambiguous is an error listing candidates,
+/// never a quiet in-degree pick. A name absent from the head graph is
+/// looked up at the range base, so a deleted or renamed symbol can still
+/// be named: the returned note says so.
+fn expect_target(
+    repo: &Path,
+    store: &sinter_store::Store,
+    symbol: &str,
+    report: &ImpactReport,
+    base: &str,
+) -> Result<(Node, Option<String>)> {
+    use crate::lookup::{Found, SymbolLookupError, find_symbol};
+    let changed_files: BTreeSet<&str> = report
+        .changed_files
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect();
+    if let Found::Exact(mut nodes) = find_symbol(store, symbol)? {
+        if nodes.len() == 1 {
+            return Ok((nodes.remove(0), None));
+        }
+        let mut in_changed: Vec<Node> = nodes
+            .iter()
+            .filter(|node| changed_files.contains(node.file.as_str()))
+            .cloned()
+            .collect();
+        let twins = in_changed.windows(2).all(|pair| {
+            pair[0].file == pair[1].file
+                && pair[0].kind == pair[1].kind
+                && qualified_of(pair[0].id.as_str()) == qualified_of(pair[1].id.as_str())
+        });
+        if !in_changed.is_empty() && twins {
+            return Ok((in_changed.remove(0), None));
+        }
+        return Err(SymbolLookupError::Ambiguous {
+            requested: symbol.to_string(),
+            candidates: if in_changed.is_empty() {
+                nodes
+            } else {
+                in_changed
+            },
+        }
+        .into());
+    }
+    // Deleted or renamed by this change set: it exists at the base only.
+    let name = symbol.split('@').next().unwrap_or(symbol);
+    for file in &report.changed_files {
+        let path = file.old_path.as_deref().unwrap_or(&file.path);
+        let Some(nodes) = nodes_at(repo, base, path) else {
+            continue;
+        };
+        if let Some(node) = nodes
+            .into_iter()
+            .find(|node| qualified_of(node.id.as_str()) == name || node.name == name)
+        {
+            return Ok((
+                node,
+                Some(format!(
+                    "absent at head; resolved at {base}:{path} — dependents are the unresolved references still naming it"
+                )),
+            ));
+        }
+    }
+    // Still nothing: surface the ordinary lookup error with its suggestions.
+    crate::lookup::unique_symbol(store, symbol).map(|node| (node, None))
+}
+
+/// Whether the seed's declaration is identical at the range base: same
+/// kind, same signature text. A body-only edit owes its callers nothing.
+fn body_only(repo: &Path, base: &str, target: &Node) -> bool {
+    nodes_at(repo, base, &target.file).is_some_and(|nodes| {
+        nodes.iter().any(|node| {
+            node.kind == target.kind
+                && qualified_of(node.id.as_str()) == qualified_of(target.id.as_str())
+                && node.signature == target.signature
+        })
+    })
+}
+
 /// For each `--expect` symbol: its direct dependents, split by whether this
 /// change set touched them. Ranked by edge count into the expected symbol.
 fn expect_reports(
@@ -744,6 +973,10 @@ fn expect_reports(
     report: &ImpactReport,
     limit: usize,
 ) -> Result<Vec<ExpectReport>> {
+    if expect.is_empty() {
+        return Ok(Vec::new());
+    }
+    let base = range_base(repo, &report.rev_range);
     // A file node depends on the symbol by importing it. Editing any symbol
     // in that file is editing the import site, so the file counts as touched
     // — otherwise every file whose call sites were all updated still reports
@@ -755,33 +988,69 @@ fn expect_reports(
         .collect();
     let mut reports = Vec::new();
     for symbol in expect {
-        let target = crate::lookup::unique_symbol(store, symbol)?;
-        let mut edges: BTreeMap<String, usize> = BTreeMap::new();
-        for edge in store.in_edges(&target.id)? {
-            if filter.admits(&edge) {
-                *edges.entry(edge.src.as_str().to_string()).or_default() += 1;
-            }
-        }
+        let (target, note) = expect_target(repo, store, symbol, report, &base)?;
+        let site_of = |node: &Node, sites: usize| ExpectSite {
+            qualified: qualified_of(node.id.as_str()).to_string(),
+            kind: node.kind.as_str(),
+            at: match crate::render::line_of(repo, &node.file, node.span.start) {
+                Some(line) => format!("{}:{line}", node.file),
+                None => node.file.clone(),
+            },
+            sites,
+        };
         let (mut changed, mut untouched) = (Vec::new(), Vec::new());
-        for reached in store.dependents(&target.id, filter, 1)? {
-            let id = reached.node.id.as_str().to_string();
-            let site = ExpectSite {
-                qualified: qualified_of(&id).to_string(),
-                kind: reached.node.kind.as_str(),
-                at: match crate::render::line_of(repo, &reached.node.file, reached.node.span.start)
-                {
-                    Some(line) => format!("{}:{line}", reached.node.file),
-                    None => reached.node.file.clone(),
-                },
-                sites: edges.get(&id).copied().unwrap_or(1),
-            };
-            let touched = report.changed_ids.contains(&id)
-                || (reached.node.kind == SymbolKind::File
-                    && changed_files.contains(reached.node.file.as_str()));
-            if touched {
-                changed.push(site);
-            } else {
-                untouched.push(site);
+        if note.is_some() {
+            // No head node, so no edges: the dependents are whoever still
+            // writes the old name.
+            let mut by_enclosing: BTreeMap<String, usize> = BTreeMap::new();
+            for unresolved in store.unresolved_details(None, Some(&target.name))? {
+                if let Some(enclosing) = unresolved.reference.enclosing {
+                    *by_enclosing
+                        .entry(enclosing.as_str().to_string())
+                        .or_default() += 1;
+                }
+            }
+            for (id, sites) in by_enclosing {
+                let Some(node) = store.node(&sinter_core::NodeId::new(&id))? else {
+                    continue;
+                };
+                let site = site_of(&node, sites);
+                if report.changed_ids.contains(&id) {
+                    changed.push(site);
+                } else {
+                    untouched.push(site);
+                }
+            }
+        } else {
+            let mut edges: BTreeMap<String, usize> = BTreeMap::new();
+            // Files whose import/re-export line reaches the target: a
+            // dependent inside a changed one of those was reached through
+            // an edited import, which is the touch a refactor owes it.
+            // ponytail: file-granular; a per-edge path check if a changed
+            // file that merely imports the target ever hides a real miss.
+            let mut importing_files: BTreeSet<String> = BTreeSet::new();
+            for edge in store.in_edges(&target.id)? {
+                if filter.admits(&edge) {
+                    *edges.entry(edge.src.as_str().to_string()).or_default() += 1;
+                }
+                if edge.relation == sinter_core::Relation::Imports {
+                    let src = edge.src.as_str();
+                    importing_files.insert(src.split_once('#').map_or(src, |(f, _)| f).to_string());
+                }
+            }
+            for reached in store.dependents(&target.id, filter, 1)? {
+                let id = reached.node.id.as_str().to_string();
+                let site = site_of(&reached.node, edges.get(&id).copied().unwrap_or(1));
+                let file = reached.node.file.as_str();
+                let touched = report.changed_ids.contains(&id)
+                    || (changed_files.contains(file)
+                        && (reached.node.kind == SymbolKind::File
+                            || importing_files.contains(file)));
+                if touched {
+                    changed.push(site);
+                } else {
+                    untouched.push(site);
+                }
             }
         }
         let rank =
@@ -791,9 +1060,14 @@ fn expect_reports(
         let (changed_total, untouched_total) = (changed.len(), untouched.len());
         changed.truncate(returned_count(changed_total, limit));
         untouched.truncate(returned_count(untouched_total, limit));
+        let body_only = note.is_none()
+            && report.changed_ids.contains(target.id.as_str())
+            && body_only(repo, &base, &target);
         reports.push(ExpectReport {
             symbol: qualified_of(target.id.as_str()).to_string(),
             file: target.file.clone(),
+            body_only,
+            note,
             direct_dependents: changed_total + untouched_total,
             changed_total,
             untouched_total,
@@ -878,6 +1152,7 @@ fn compute_with_store_mode(
     let historical_endpoint_matches_head = historical_endpoint_matches_head(repo, rev_range)?;
     let cached: &[&str] = if staged { &["--cached"] } else { &[] };
     let mut changed_files = changed_files(repo, rev_range, cached)?;
+    changed_files.retain(|change| !is_tool_state(&change.path));
     // New-side hunks per file from Git. Name/status is deliberately a
     // separate command: patch text cannot represent config-only, binary,
     // deleted, pure-rename, or mode-only changes reliably.
@@ -958,41 +1233,45 @@ fn compute_with_store_mode(
                 unmapped_files.push(unmapped(change, UnmappedReason::NoContentHunks));
                 continue;
             } else {
-                let mut line_starts = vec![0u64];
-                for (i, byte) in source.bytes().enumerate() {
-                    if byte == b'\n' {
-                        line_starts.push(i as u64 + 1);
+                // Hunk lines address the range endpoint. When that is not
+                // the tree the graph was built from, match against the
+                // endpoint's own definitions and carry the result over by
+                // name; anything that no longer exists falls back to the
+                // file row.
+                let endpoint_nodes = (!historical_endpoint_matches_head)
+                    .then(|| {
+                        let endpoint = historical_range_endpoint(rev_range)?;
+                        let source = git_show(repo, endpoint, &change.path)?;
+                        let nodes = nodes_at(repo, endpoint, &change.path)?;
+                        Some((source, nodes))
+                    })
+                    .flatten();
+                let mut file_fallback = false;
+                match &endpoint_nodes {
+                    Some((endpoint_source, endpoint_nodes)) => {
+                        for touched in touched_nodes(endpoint_source, endpoint_nodes, ranges) {
+                            let key = (qualified_of(touched.id.as_str()), touched.kind);
+                            let mut matched = false;
+                            for node in facts
+                                .nodes
+                                .iter()
+                                .filter(|node| (qualified_of(node.id.as_str()), node.kind) == key)
+                            {
+                                matched = true;
+                                mapped_ids.insert(node.id.as_str().to_string());
+                                changed_by_id.insert(node.id.as_str().to_string(), node.clone());
+                            }
+                            file_fallback |= !matched;
+                        }
+                    }
+                    None => {
+                        for node in touched_nodes(&source, &facts.nodes, ranges) {
+                            mapped_ids.insert(node.id.as_str().to_string());
+                            changed_by_id.insert(node.id.as_str().to_string(), node.clone());
+                        }
                     }
                 }
-                let byte_range = |line: usize, count: usize| -> Option<(u64, u64)> {
-                    if line == 0 || count == 0 {
-                        return None;
-                    }
-                    let start = line_starts
-                        .get(line - 1)
-                        .copied()
-                        .unwrap_or(source.len() as u64);
-                    let end = line_starts
-                        .get(line - 1 + count)
-                        .copied()
-                        .unwrap_or(source.len() as u64);
-                    Some((start, end))
-                };
-                for node in &facts.nodes {
-                    if node.kind == SymbolKind::File {
-                        continue;
-                    }
-                    let touched = ranges.iter().any(|hunk| {
-                        byte_range(hunk.new_start, hunk.new_count).is_some_and(|(start, end)| {
-                            node.span.start < end && start < node.span.end
-                        })
-                    });
-                    if touched {
-                        mapped_ids.insert(node.id.as_str().to_string());
-                        changed_by_id.insert(node.id.as_str().to_string(), node.clone());
-                    }
-                }
-                if mapped_ids.is_empty() {
+                if mapped_ids.is_empty() || file_fallback {
                     // Imports and other file-level changes live outside a
                     // definition span. The file node is the graph's honest
                     // fallback and carries import dependents.
@@ -1021,19 +1300,67 @@ fn compute_with_store_mode(
         }
     }
     let changed: Vec<Node> = changed_by_id.into_values().collect();
-
-    let radius = blast_radius(store, filter, &changed)?;
-    let scope_index = store.scope_index()?;
-    let is_test_node = |n: &Node| {
-        test_capable_kind(n) && (scope_index.scope_of(n) == CorpusScope::Test || is_test(n))
-    };
-    let affected_tests = affected_tests(store, &radius, &changed)?;
     // Node ids before the test filter: `--expect` asks whether a dependent
     // was edited, and an edited test is an edited dependent.
     let changed_ids: BTreeSet<String> = changed
         .iter()
         .map(|node| node.id.as_str().to_string())
         .collect();
+
+    // A constant's readers are not a function's callers: reach them from
+    // their own seeds so those rows can be marked and sorted last.
+    let (const_seeds, code_seeds): (Vec<Node>, Vec<Node>) =
+        changed.iter().cloned().partition(|node| {
+            matches!(
+                node.kind,
+                SymbolKind::Constant | SymbolKind::Static | SymbolKind::Variable
+            )
+        });
+    let mut radius = blast_radius(store, filter, &code_seeds)?;
+    let mut via = BTreeMap::new();
+    for (id, node) in blast_radius(store, filter, &const_seeds)? {
+        if let std::collections::btree_map::Entry::Vacant(slot) = radius.entry(id) {
+            via.insert(
+                symbol_key(&node.file, qualified_of(slot.key())),
+                "uses/const",
+            );
+            slot.insert(node);
+        }
+    }
+    for id in &changed_ids {
+        radius.remove(id);
+    }
+
+    let scope_index = store.scope_index()?;
+    let is_test_node = |n: &Node| {
+        test_capable_kind(n) && (scope_index.scope_of(n) == CorpusScope::Test || is_test(n))
+    };
+    // Nearest tests first: direct callers of a changed symbol, then the
+    // changed symbols' own packages, then everything reached transitively.
+    let mut direct: BTreeSet<String> = BTreeSet::new();
+    for node in &changed {
+        for reached in store.dependents(&node.id, filter, 1)? {
+            direct.insert(symbol_key(
+                &reached.node.file,
+                qualified_of(reached.node.id.as_str()),
+            ));
+        }
+    }
+    let changed_packages: BTreeSet<PathBuf> = changed
+        .iter()
+        .map(|node| package_dir(repo, &node.file))
+        .collect();
+    let mut affected_tests = affected_tests(store, &radius, &changed)?;
+    affected_tests.sort_by_cached_key(|test| {
+        let distance = if direct.contains(&symbol_key(&test.file, &test.qualified)) {
+            0
+        } else if changed_packages.contains(&package_dir(repo, &test.file)) {
+            1
+        } else {
+            2
+        };
+        (distance, test.file.clone(), test.qualified.clone())
+    });
     let test_commands: BTreeMap<String, String> = radius
         .values()
         .chain(changed.iter())
@@ -1047,17 +1374,38 @@ fn compute_with_store_mode(
         })
         .collect();
     let validation = validation_steps(&test_commands);
-    let changed: Vec<Node> = changed.into_iter().filter(|n| !is_test_node(n)).collect();
+
+    // `#[cfg]` twins are one definition to a reader: fold same-named,
+    // same-kind rows in one file and remember how many were folded.
+    let mut variants: BTreeMap<String, usize> = BTreeMap::new();
+    let mut changed_symbols: Vec<SymbolRef> = Vec::new();
+    for node in changed.iter().filter(|n| !is_test_node(n)) {
+        let key = symbol_key(&node.file, qualified_of(node.id.as_str()));
+        let seen = variants.entry(key).or_default();
+        *seen += 1;
+        if *seen == 1 {
+            changed_symbols.push(symbol_ref(node));
+        }
+    }
+    variants.retain(|_, count| *count > 1);
 
     let mut partial_reasons = Vec::new();
+    let mut partial_reason_notes = BTreeMap::new();
     if unmapped_files.iter().any(mapping_gap) {
         partial_reasons.push("one_or_more_changed_files_are_not_fully_mapped");
     }
-    if historical && working_tree_dirty {
+    // Dirty paths the graph never indexes cannot have moved a span.
+    let dirty_indexed = working_tree_changes.iter().any(|change| {
+        sinter_extract::spec_for_path(&change.path).is_some()
+            && !crate::corpus::excluded(&change.path)
+    });
+    if historical && dirty_indexed {
         partial_reasons.push("historical_diff_uses_a_dirty_working_tree_graph");
     }
     if !historical_endpoint_matches_head {
-        partial_reasons.push("historical_diff_endpoint_does_not_match_graph_head");
+        let reason = "historical_diff_endpoint_does_not_match_graph_head";
+        partial_reasons.push(reason);
+        partial_reason_notes.insert(reason, "symbol attribution may be off; prefer file rows");
     }
     if !untracked_included
         && working_tree_changes.iter().any(|change| {
@@ -1079,18 +1427,44 @@ fn compute_with_store_mode(
         rev_range: rev_range.to_string(),
         analysis_status,
         partial_reasons,
+        partial_reason_notes,
         working_tree_dirty,
         changed_files,
         working_tree_changes,
         unmapped_files,
-        changed_symbols: changed.iter().map(symbol_ref).collect(),
+        changed_symbols,
         blast_radius: radius.values().map(symbol_ref).collect(),
         affected_tests,
         expect: Vec::new(),
         validation,
         changed_ids,
         test_commands,
+        via,
+        variants,
     })
+}
+
+/// Nearest ancestor directory carrying a package manifest of any supported
+/// ecosystem, or the repository root. Coarser than `package_of` on purpose:
+/// this only decides "same package as a changed file".
+fn package_dir(repo: &Path, file: &str) -> PathBuf {
+    let mut dir = Path::new(file).parent();
+    while let Some(current) = dir {
+        if [
+            "Cargo.toml",
+            "go.mod",
+            "package.json",
+            "pyproject.toml",
+            "setup.py",
+        ]
+        .iter()
+        .any(|manifest| repo.join(current).join(manifest).is_file())
+        {
+            return current.to_path_buf();
+        }
+        dir = current.parent();
+    }
+    PathBuf::new()
 }
 
 /// `rev_range` of `None` diffs the working tree (or, with `staged`, the
@@ -1105,6 +1479,7 @@ pub fn run(
     evidence: &[String],
     certain: bool,
     limit: usize,
+    full: bool,
     json: bool,
 ) -> Result<()> {
     let filter = crate::lookup::edge_filter(evidence, certain)?;
@@ -1182,7 +1557,10 @@ pub fn run(
         report.affected_tests.len()
     );
     for reason in &report.partial_reasons {
-        println!("  partial: {reason}");
+        match report.partial_reason_notes.get(reason) {
+            Some(note) => println!("  partial: {reason} ({note})"),
+            None => println!("  partial: {reason}"),
+        }
     }
     if report.working_tree_dirty {
         println!(
@@ -1191,6 +1569,16 @@ pub fn run(
         );
     }
     for expected in &report.expect {
+        if let Some(note) = &expected.note {
+            println!("expect {}: {note}", expected.symbol);
+        }
+        if expected.body_only {
+            println!(
+                "expect {} ({}): body-only change; callers unaffected ({} direct dependents)",
+                expected.symbol, expected.file, expected.direct_dependents
+            );
+            continue;
+        }
         println!(
             "expect {} ({}): {} direct dependents; {} changed, {} expected but untouched",
             expected.symbol,
@@ -1206,20 +1594,27 @@ pub fn run(
         );
         print_expect_sites("  changed", &expected.changed, expected.changed_total);
     }
-    print_blast_radius(&report, &filter, limit);
-    print_symbols_with_commands(
-        "affected tests",
-        &report.affected_tests,
-        limit,
-        &report.test_commands,
-    );
+    // With `--expect` the owed sites are the answer; the radius is context
+    // and gets a short preview unless `--full` asks for it.
+    let radius_limit = if !report.expect.is_empty() && !full {
+        if limit == 0 { 5 } else { limit.min(5) }
+    } else {
+        limit
+    };
     if !report.validation.is_empty() {
         println!("validation (recommended; repository instructions take precedence):");
         for step in &report.validation {
             println!("  {}  — {}", step.command, step.reason);
         }
     }
-    print_symbols("changed", &report.changed_symbols, limit);
+    print_symbols_with_commands(
+        "affected tests",
+        &report.affected_tests,
+        radius_limit,
+        &report.test_commands,
+    );
+    print_blast_radius(&report, &filter, radius_limit);
+    print_changed("changed", &report.changed_symbols, limit, &report.variants);
     println!("changed files: {}", report.changed_files.len());
     for file in &report.changed_files {
         let path = match &file.old_path {
@@ -1238,7 +1633,7 @@ pub fn run(
     print_unmapped(&report.unmapped_files);
     let capped = [
         report.changed_symbols.len(),
-        by_file(&report.blast_radius).len(),
+        by_file(&report.blast_radius, &report.via).len(),
         report.affected_tests.len(),
     ]
     .iter()
@@ -1252,14 +1647,20 @@ pub fn run(
     Ok(())
 }
 
-/// Blast radius grouped by file, as `(file, symbols in it, first names)`,
-/// busiest file first. A file row is what a reader acts on; 500 symbol rows
-/// are not.
-fn by_file(symbols: &[SymbolRef]) -> Vec<(&str, usize, Vec<&str>)> {
-    let mut files: BTreeMap<&str, (usize, Vec<&str>)> = BTreeMap::new();
+/// One blast-radius row per file: `(file, symbols in it, first names,
+/// reached only through a constant)`. Production files first, then test
+/// harness files; inside each, rows reached only via `uses/const` sink
+/// below real code dependents; busiest first after that. A file row is
+/// what a reader acts on; 500 symbol rows are not.
+fn by_file<'a>(
+    symbols: &'a [SymbolRef],
+    via: &BTreeMap<String, &'static str>,
+) -> Vec<(&'a str, usize, Vec<&'a str>, bool)> {
+    let mut files: BTreeMap<&str, (usize, Vec<&str>, bool)> = BTreeMap::new();
     for symbol in symbols {
-        let entry = files.entry(&symbol.file).or_default();
+        let entry = files.entry(&symbol.file).or_insert((0, Vec::new(), true));
         entry.0 += 1;
+        entry.2 &= via.contains_key(&symbol_key(&symbol.file, &symbol.qualified));
         // The file node is the row itself; naming it again says nothing.
         if entry.1.len() < 3 && symbol.kind != "file" {
             entry.1.push(&symbol.qualified);
@@ -1267,9 +1668,15 @@ fn by_file(symbols: &[SymbolRef]) -> Vec<(&str, usize, Vec<&str>)> {
     }
     let mut rows: Vec<_> = files
         .into_iter()
-        .map(|(file, (count, names))| (file, count, names))
+        .map(|(file, (count, names, const_only))| (file, count, names, const_only))
         .collect();
-    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    rows.sort_by(|a, b| {
+        test_path(a.0)
+            .cmp(&test_path(b.0))
+            .then_with(|| a.3.cmp(&b.3))
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| a.0.cmp(b.0))
+    });
     rows
 }
 
@@ -1281,7 +1688,7 @@ fn print_blast_radius(report: &ImpactReport, filter: &EdgeFilter, limit: usize) 
         println!("blast radius empty: changed symbols have no dependents in scope {scope}");
         return;
     }
-    let rows = by_file(&report.blast_radius);
+    let rows = by_file(&report.blast_radius, &report.via);
     let returned = returned_count(rows.len(), limit);
     println!(
         "blast radius: {} symbols in {} files, {returned} files shown, {} truncated",
@@ -1289,14 +1696,16 @@ fn print_blast_radius(report: &ImpactReport, filter: &EdgeFilter, limit: usize) 
         rows.len(),
         rows.len() - returned
     );
-    for (file, count, names) in rows.iter().take(returned) {
+    for (file, count, names, const_only) in rows.iter().take(returned) {
         let more = count - names.len();
-        let names = names.join(", ");
+        let mut names = names.join(", ");
         if more > 0 {
-            println!("  {count:>4}  {file}  {names}, +{more} more");
-        } else {
-            println!("  {count:>4}  {file}  {names}");
+            names.push_str(&format!(", +{more} more"));
         }
+        if *const_only {
+            names.push_str("  [uses/const]");
+        }
+        println!("  {count:>4}  {file}  {names}");
     }
 }
 
@@ -1354,7 +1763,12 @@ fn print_symbols_with_commands(
     }
 }
 
-fn print_symbols(label: &str, symbols: &[SymbolRef], limit: usize) {
+fn print_changed(
+    label: &str,
+    symbols: &[SymbolRef],
+    limit: usize,
+    variants: &BTreeMap<String, usize>,
+) {
     let returned = returned_count(symbols.len(), limit);
     let truncated = symbols.len() - returned;
     println!(
@@ -1362,7 +1776,13 @@ fn print_symbols(label: &str, symbols: &[SymbolRef], limit: usize) {
         symbols.len()
     );
     for symbol in symbols.iter().take(returned) {
-        println!("  {} {}  {}", symbol.kind, symbol.qualified, symbol.file);
+        match variants.get(&symbol_key(&symbol.file, &symbol.qualified)) {
+            Some(n) => println!(
+                "  {} {}  {}  [{n} cfg variants]",
+                symbol.kind, symbol.qualified, symbol.file
+            ),
+            None => println!("  {} {}  {}", symbol.kind, symbol.qualified, symbol.file),
+        }
     }
 }
 
@@ -1523,6 +1943,9 @@ mod tests {
             validation: Vec::new(),
             changed_ids: Default::default(),
             test_commands: Default::default(),
+            partial_reason_notes: Default::default(),
+            via: Default::default(),
+            variants: Default::default(),
         }
     }
 
@@ -1786,16 +2209,196 @@ mod tests {
     }
 
     #[test]
+    fn unindexed_non_source_paths_are_never_mapping_gaps() {
+        let unmapped = |path: &str, reason: UnmappedReason| UnmappedFile {
+            path: path.to_string(),
+            old_path: None,
+            git_status: "M".to_string(),
+            reason,
+            detail: String::new(),
+        };
+        for path in [
+            ".claude/hooks/sinter-first.sh",
+            "harness/eval/agent-flows.json",
+            "crates/sinter-extract/queries/rust.scm",
+            ".cursor/rules/sinter.mdc",
+            "Cargo.lock",
+        ] {
+            assert!(
+                !super::mapping_gap(&unmapped(path, UnmappedReason::NotIndexed)),
+                "{path}"
+            );
+        }
+        assert!(super::mapping_gap(&unmapped(
+            "src/lib.rs",
+            UnmappedReason::NotIndexed
+        )));
+        assert!(super::mapping_gap(&unmapped(
+            "notes.json",
+            UnmappedReason::NoSymbolOverlap
+        )));
+    }
+
+    #[test]
     fn blast_radius_rolls_up_by_file_busiest_first() {
         let mut radius = symbols("a", 4);
         radius.iter_mut().for_each(|s| s.file = "a.rs".to_string());
         radius[3].kind = "file";
         radius.extend(symbols("b", 1));
-        let rows = super::by_file(&radius);
+        let rows = super::by_file(&radius, &Default::default());
         assert_eq!(rows[0].0, "a.rs");
         assert_eq!(rows[0].1, 4);
         assert_eq!(rows[0].2, vec!["a_0", "a_1", "a_2"]);
-        assert_eq!(rows[1], ("b_0.rs", 1, vec!["b_0"]));
+        assert_eq!(rows[1], ("b_0.rs", 1, vec!["b_0"], false));
+    }
+
+    #[test]
+    fn blast_radius_sorts_test_files_and_const_readers_last() {
+        // Busiest file is a test harness; a big const-only reader file;
+        // one small production caller. Production first, const-only next,
+        // tests last.
+        let mut radius = symbols("harness", 6);
+        radius
+            .iter_mut()
+            .for_each(|s| s.file = "tests/golden.rs".to_string());
+        let mut readers = symbols("reader", 3);
+        readers
+            .iter_mut()
+            .for_each(|s| s.file = "src/readers.rs".to_string());
+        radius.extend(readers);
+        radius.extend(symbols("caller", 1));
+        let via: std::collections::BTreeMap<String, &'static str> = (0..3)
+            .map(|i| (format!("src/readers.rs:reader_{i}"), "uses/const"))
+            .collect();
+        let rows = super::by_file(&radius, &via);
+        let order: Vec<(&str, bool)> = rows.iter().map(|r| (r.0, r.3)).collect();
+        assert_eq!(
+            order,
+            [
+                ("caller_0.rs", false),
+                ("src/readers.rs", true),
+                ("tests/golden.rs", false)
+            ]
+        );
+    }
+
+    #[test]
+    fn historical_range_attributes_symbols_from_the_endpoint_tree() {
+        // Commit 2 edits `value`; commit 3 adds `later`, which overlaps the
+        // line hunk of commit 2 in today's tree. Attribution must follow
+        // the endpoint's own definitions, never the head layout.
+        let repo = repository();
+        write(
+            repo.path(),
+            "src/lib.rs",
+            "pub fn value() -> u32 {\n    2\n}\n",
+        );
+        git(repo.path(), &["add", "src/lib.rs"]);
+        git(repo.path(), &["commit", "-qm", "second"]);
+        write(
+            repo.path(),
+            "src/lib.rs",
+            "pub fn later() -> u32 {\n    9\n}\n\npub fn value() -> u32 {\n    2\n}\n",
+        );
+        git(repo.path(), &["add", "src/lib.rs"]);
+        git(repo.path(), &["commit", "-qm", "third"]);
+        crate::pipeline::build(repo.path(), None).expect("build fixture graph");
+
+        let report = compute(repo.path(), "HEAD~2..HEAD~1").expect("compute historical impact");
+
+        let names: Vec<&str> = report
+            .changed_symbols
+            .iter()
+            .map(|s| s.qualified.as_str())
+            .collect();
+        assert_eq!(names, ["value"], "{names:?}");
+        assert_eq!(
+            report
+                .partial_reason_notes
+                .get("historical_diff_endpoint_does_not_match_graph_head")
+                .copied(),
+            Some("symbol attribution may be off; prefer file rows")
+        );
+        let json = to_json(&report, 0);
+        assert!(json["partial_reason_notes"].is_object(), "{json}");
+    }
+
+    #[test]
+    fn historical_symbol_missing_at_head_falls_back_to_the_file_row() {
+        let repo = repository();
+        write(
+            repo.path(),
+            "src/lib.rs",
+            "pub fn value() -> u32 { 1 }\npub fn gone() -> u32 { 2 }\n",
+        );
+        git(repo.path(), &["add", "src/lib.rs"]);
+        git(repo.path(), &["commit", "-qm", "add gone"]);
+        write(repo.path(), "src/lib.rs", "pub fn value() -> u32 { 1 }\n");
+        git(repo.path(), &["add", "src/lib.rs"]);
+        git(repo.path(), &["commit", "-qm", "remove gone"]);
+        crate::pipeline::build(repo.path(), None).expect("build fixture graph");
+
+        let report = compute(repo.path(), "HEAD~2..HEAD~1").expect("compute historical impact");
+
+        assert!(
+            report
+                .changed_symbols
+                .iter()
+                .all(|s| s.qualified != "value"),
+            "{:?}",
+            report.changed_symbols
+        );
+        assert!(
+            report
+                .changed_ids
+                .iter()
+                .any(|id| id.ends_with("src/lib.rs")),
+            "file row expected: {:?}",
+            report.changed_ids
+        );
+    }
+
+    #[test]
+    fn cfg_twins_fold_into_one_changed_row() {
+        let repo = repository();
+        write(
+            repo.path(),
+            "src/lib.rs",
+            "#[cfg(unix)]\npub fn value() -> u32 { 2 }\n#[cfg(not(unix))]\npub fn value() -> u32 { 3 }\n",
+        );
+        crate::pipeline::build(repo.path(), None).expect("build fixture graph");
+
+        let report = compute(repo.path(), "HEAD").expect("compute working-tree impact");
+
+        let rows: Vec<&str> = report
+            .changed_symbols
+            .iter()
+            .map(|s| s.qualified.as_str())
+            .collect();
+        assert_eq!(rows, ["value"]);
+        assert_eq!(report.variants.get("src/lib.rs:value"), Some(&2));
+    }
+
+    #[test]
+    fn dirty_unindexed_paths_do_not_make_a_historical_diff_partial() {
+        let repo = repository();
+        write(repo.path(), "src/lib.rs", "pub fn value() -> u32 { 2 }\n");
+        git(repo.path(), &["add", "src/lib.rs"]);
+        git(repo.path(), &["commit", "-qm", "second"]);
+        crate::pipeline::build(repo.path(), None).expect("build fixture graph");
+        write(repo.path(), "notes.json", "{}\n");
+        write(repo.path(), "Cargo.lock", "# lock\n");
+
+        let report = compute(repo.path(), "HEAD~1..HEAD").expect("compute historical impact");
+
+        assert!(report.working_tree_dirty);
+        assert!(
+            !report
+                .partial_reasons
+                .contains(&"historical_diff_uses_a_dirty_working_tree_graph"),
+            "{:?}",
+            report.partial_reasons
+        );
     }
 
     #[test]
@@ -2017,6 +2620,114 @@ mod tests {
     }
 
     #[test]
+    fn expect_body_only_change_owes_callers_nothing() {
+        let repo = expect_repository();
+        write(
+            repo.path(),
+            "src/lib.rs",
+            "pub mod a;\npub mod b;\npub mod c;\npub fn target() -> u32 { 2 }\n",
+        );
+
+        let expected = expect_for(repo.path(), "target");
+
+        assert!(expected.body_only, "{expected:?}");
+        assert_eq!(expected.direct_dependents, 3);
+    }
+
+    #[test]
+    fn expect_signature_change_is_not_body_only() {
+        let repo = expect_repository();
+        write(
+            repo.path(),
+            "src/lib.rs",
+            "pub mod a;\npub mod b;\npub mod c;\npub fn target(x: u32) -> u32 { x }\n",
+        );
+
+        let expected = expect_for(repo.path(), "target");
+
+        assert!(!expected.body_only);
+        assert_eq!(expected.untouched_total, 3);
+    }
+
+    #[test]
+    fn expect_resolves_a_renamed_symbol_at_the_base_rev() {
+        let repo = expect_repository();
+        write(
+            repo.path(),
+            "src/lib.rs",
+            "pub mod a;\npub mod b;\npub mod c;\npub fn renamed() -> u32 { 1 }\n",
+        );
+        write(
+            repo.path(),
+            "src/a.rs",
+            "pub fn call_a() -> u32 { crate::renamed() }\n",
+        );
+
+        let expected = expect_for(repo.path(), "target");
+
+        assert_eq!(expected.symbol, "target");
+        assert!(
+            expected
+                .note
+                .as_deref()
+                .is_some_and(|n| n.contains("absent at head")),
+            "{expected:?}"
+        );
+        let untouched: Vec<&str> = expected
+            .untouched
+            .iter()
+            .map(|site| site.qualified.as_str())
+            .collect();
+        assert_eq!(untouched, ["call_b", "call_c"]);
+    }
+
+    #[test]
+    fn expect_prefers_candidates_in_changed_files_and_errors_when_still_ambiguous() {
+        let repo = expect_repository();
+        write(
+            repo.path(),
+            "src/b.rs",
+            "pub fn call_b() -> u32 { crate::target() }\npub fn twin() -> u32 { 1 }\n",
+        );
+        write(
+            repo.path(),
+            "src/c.rs",
+            "pub fn call_c() -> u32 { crate::target() }\npub fn twin() -> u32 { 2 }\n",
+        );
+        git(repo.path(), &["add", "-A"]);
+        git(repo.path(), &["commit", "-qm", "twins"]);
+        write(
+            repo.path(),
+            "src/b.rs",
+            "pub fn call_b() -> u32 { crate::target() }\npub fn twin() -> u32 { 3 }\n",
+        );
+
+        let expected = expect_for(repo.path(), "twin");
+        assert_eq!(expected.file, "src/b.rs");
+
+        write(
+            repo.path(),
+            "src/c.rs",
+            "pub fn call_c() -> u32 { crate::target() }\npub fn twin() -> u32 { 4 }\n",
+        );
+        crate::pipeline::build(repo.path(), None).expect("rebuild");
+        let store = crate::lookup::open_store(repo.path()).expect("open store");
+        let filter = sinter_store::EdgeFilter::default();
+        let report = compute_with_store_mode(repo.path(), "HEAD", false, &filter, &store)
+            .expect("compute working-tree impact");
+        let error = expect_reports(
+            repo.path(),
+            &store,
+            &filter,
+            &["twin".to_string()],
+            &report,
+            0,
+        )
+        .expect_err("two changed candidates stay ambiguous");
+        assert!(error.to_string().contains("ambiguous"), "{error}");
+    }
+
+    #[test]
     fn expect_is_absent_from_json_until_requested() {
         let value = to_json(&report_for_budget(), 0);
         assert!(value.get("expect").is_none());
@@ -2130,6 +2841,45 @@ mod tests {
             )
             .as_deref(),
             Some("cargo test -p sinter-io --bin sinter -- impact::tests::works")
+        );
+    }
+
+    #[test]
+    fn test_command_covers_go_python_and_javascript() {
+        let repo = cargo_repo("", &["pkg/retry/retry_test.go", "tests/test_x.py"]);
+        assert_eq!(
+            test_command(
+                repo.path(),
+                &node(
+                    "pkg/retry/retry_test.go#TestBackoff",
+                    "TestBackoff",
+                    "pkg/retry/retry_test.go"
+                )
+            )
+            .as_deref(),
+            Some("go test ./pkg/retry -run '^TestBackoff$'")
+        );
+        assert_eq!(
+            test_command(
+                repo.path(),
+                &node("tests/test_x.py#TestX::test_y", "test_y", "tests/test_x.py")
+            )
+            .as_deref(),
+            Some("pytest tests/test_x.py::TestX::test_y")
+        );
+        let js = node("src/a.test.ts#adds", "adds", "src/a.test.ts");
+        assert_eq!(
+            test_command(repo.path(), &js).as_deref(),
+            Some("npm test -- src/a.test.ts")
+        );
+        write(
+            repo.path(),
+            "package.json",
+            "{\"devDependencies\": {\"vitest\": \"1\"}}",
+        );
+        assert_eq!(
+            test_command(repo.path(), &js).as_deref(),
+            Some("npx vitest run src/a.test.ts -t 'adds'")
         );
     }
 

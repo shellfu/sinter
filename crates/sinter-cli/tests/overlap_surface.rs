@@ -77,6 +77,15 @@ fn overlap_ranks_pairwise_merge_risk() {
         "other.go",
         "package main\n\nfunc Other() int {\n\treturn 1\n}\n",
     );
+    // pr-e continues pr-a: sequential, not concurrent.
+    git(repo, &["checkout", "-qb", "pr-e", "pr-a"]);
+    std::fs::write(
+        repo.join("other.go"),
+        "package main\n\nfunc Other() int {\n\treturn 2\n}\n",
+    )
+    .unwrap();
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "pr-e"]);
     git(repo, &["checkout", "-q", "main"]);
 
     // Graph at the merge base — the documented fidelity point.
@@ -91,9 +100,13 @@ fn overlap_ranks_pairwise_merge_risk() {
             "b=main...pr-b",
             "c=main...pr-c",
             "d=main...pr-d",
+            "e=main...pr-e",
         ],
     );
     assert!(ok, "{out}");
+    // e contains a's endpoint: flagged, not scored as HIGH on a's own diff.
+    assert!(out.contains("a × e: sequential"), "{out}");
+    assert!(!out.contains("a × e: HIGH"), "{out}");
     // a×b touch the same node.
     assert!(out.contains("a × b: HIGH"), "{out}");
     assert!(out.contains("direct  retry.go:Backoff"), "{out}");
