@@ -8,13 +8,13 @@
     "url": "https://github.com/shellfu/sinter",
     "source": "github"
   },
-  "version": "0.57.4",
+  "version": "0.57.5",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "sinter-io",
-      "version": "0.57.4",
+      "version": "0.57.5",
       "runtimeHint": "uvx",
       "runtimeArguments": [
         {
