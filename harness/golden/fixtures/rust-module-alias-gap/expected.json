@@ -1,0 +1,29 @@
+{
+  "nodes": [
+    ["file", "src/lib.rs", "src/lib.rs"],
+    ["file", "src/util.rs", "src/util.rs"],
+    ["module", "util", "src/lib.rs"],
+    ["struct", "Helper", "src/util.rs"],
+    ["function", "Helper::assist", "src/util.rs"],
+    ["function", "assist_through_alias", "src/lib.rs"]
+  ],
+  "contains": [
+    ["src/lib.rs", "util"],
+    ["src/lib.rs", "assist_through_alias"],
+    ["src/util.rs", "Helper"],
+    ["src/util.rs", "Helper::assist"]
+  ],
+  "references": [
+    ["imports", "crate::util", "src/lib.rs", "", "", "u"],
+    ["uses", "Helper", "src/util.rs"],
+    ["calls", "assist", "src/lib.rs", "assist_through_alias", "u::Helper::assist"]
+  ],
+  "resolved": [
+    ["import", "imports", "src/lib.rs", "util", "src/lib.rs", "src/lib.rs", "19", "30"],
+    ["scope", "uses", "src/util.rs", "Helper", "src/util.rs", "src/util.rs", "25", "31"]
+  ],
+  "unresolved_count": 1,
+  "resolver_gaps": [
+    ["aliased_import", "assist", "src/lib.rs"]
+  ]
+}

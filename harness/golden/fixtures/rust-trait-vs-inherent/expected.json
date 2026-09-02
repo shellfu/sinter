@@ -40,7 +40,8 @@
     ["import", "uses", "main_run", "Widget"],
     ["scope", "uses", "Widget::new", "Widget"],
     ["scope", "uses", "src/widget.rs", "Widget"],
-    ["scope", "uses", "src/widget.rs", "Widget"]
+    ["scope", "uses", "src/widget.rs", "Widget"],
+    ["scope", "implements", "Widget::run", "Runner::run", "src/widget.rs", "src/widget.rs", "", ""]
   ],
   "unresolved_count": 1
 }

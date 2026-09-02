@@ -37,7 +37,8 @@
     ["import", "implements", "CedarPolicyHarness", "Harness"],
     ["import", "uses", "HarnessGrpcService", "Harness"],
     ["scope", "uses", "crates/cedar/src/lib.rs", "CedarPolicyHarness"],
-    ["scope", "uses", "crates/service/src/lib.rs", "HarnessGrpcService"]
+    ["scope", "uses", "crates/service/src/lib.rs", "HarnessGrpcService"],
+    ["import", "implements", "CedarPolicyHarness::check", "Harness::check", "crates/cedar/src/lib.rs", "crates/domain/src/lib.rs", "", ""]
   ],
   "unresolved_count": 1
 }

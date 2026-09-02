@@ -665,11 +665,13 @@ pub fn build_with(
             &embeds,
             &module_roots,
         );
-        let (bindings, resolved_stats, internal_indices, dangling_indices) =
+        let (bindings, resolved_stats, internal_indices, dangling_indices, resolver_gaps) =
             sinter_resolve::resolve(&resolve_index, &refs);
         stats = resolved_stats;
         let internal_set: HashSet<usize> = internal_indices.into_iter().collect();
         let dangling_set: HashSet<usize> = dangling_indices.into_iter().collect();
+        let gap_by_ref: HashMap<usize, sinter_core::ResolverGap> =
+            resolver_gaps.into_iter().collect();
         let mut resolved_idx: HashSet<usize> = HashSet::new();
         let mut internal_dst: HashMap<usize, sinter_core::NodeId> = HashMap::new();
         let mut edges = Vec::new();
@@ -859,6 +861,7 @@ pub fn build_with(
             .filter(|(i, _)| !resolved_idx.contains(i))
             .map(|(i, r)| UnresolvedReference {
                 reference: r.clone(),
+                gap: gap_by_ref.get(&i).cloned(),
                 reason: if dangling_set.contains(&i) {
                     UnresolvedReason::MissingInternalTarget
                 } else if compiler_indexed {

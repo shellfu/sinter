@@ -8,7 +8,9 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use sinter_core::{Confidence, Evidence, Relation, UnresolvedReason, UnresolvedReference};
+use sinter_core::{
+    Confidence, Evidence, Relation, ResolverGap, UnresolvedReason, UnresolvedReference,
+};
 use sinter_resolve::qualified_of;
 use sinter_store::{EdgeFilter, Store};
 
@@ -139,8 +141,11 @@ pub enum UnresolvedCategory {
     /// Evidence anchored the reference inside the corpus and the target was
     /// still not found: a real gap worth a look.
     ActionableAnchoredMiss,
-    /// The resolver cannot bind this shape yet (a self-recursive call
-    /// inside its own definition); a sinter gap, not a repository gap.
+    /// Resolution cannot bind this shape yet: a self-recursive call inside
+    /// its own definition, a name bound by an aliased import, a path into a
+    /// barrel/re-export the chain walk did not follow, or a path into a file
+    /// indexed from a partial syntax tree. A sinter gap, not a repository
+    /// gap — nothing in the repository fixes it.
     ResolverGap,
 }
 
@@ -209,6 +214,15 @@ impl Classifier {
         if !is_identifier || self.syntax_error_files.contains(&reference.file) {
             return UnresolvedCategory::UnsupportedSyntax;
         }
+        // A path that anchored into a file the graph only partly represents
+        // outranks every reading below, including the dangling-reference
+        // one: the target may well be there, in the statements extraction
+        // could not parse.
+        if let Some(ResolverGap::AnchoredFile(file)) = &item.gap
+            && self.syntax_error_files.contains(file)
+        {
+            return UnresolvedCategory::ResolverGap;
+        }
         if item.reason == UnresolvedReason::MissingInternalTarget {
             // The module is in the corpus and has no such name: nothing a
             // compiler index or a dependency could supply.
@@ -222,14 +236,22 @@ impl Classifier {
         if item.reason == UnresolvedReason::CompilerUnresolved || defined == 0 {
             return UnresolvedCategory::LikelyExternal;
         }
-        // ponytail: self-recursion only; aliased imports and barrel
-        // re-exports need import-path evidence the reference lacks.
         let enclosing_name = reference
             .enclosing
             .as_ref()
             .map(|id| qualified_of(id.as_str()))
             .and_then(|q| q.rsplit([':', '.']).next());
         if enclosing_name == Some(reference.name.as_str()) {
+            return UnresolvedCategory::ResolverGap;
+        }
+        // Resolution recognised its own limitation. Deliberately below the
+        // external check above: an aliased `import numpy as np` is still a
+        // dependency, not a sinter gap. Above every actionable reading
+        // below, because no edit to this repository closes it.
+        if matches!(
+            item.gap,
+            Some(ResolverGap::AliasedImport | ResolverGap::Reexport)
+        ) {
             return UnresolvedCategory::ResolverGap;
         }
         let has_receiver = reference.path.as_deref().is_some_and(|path| {
@@ -1089,7 +1111,8 @@ mod tests {
     use std::collections::BTreeSet;
 
     use sinter_core::{
-        Confidence, Evidence, Reference, Relation, Span, UnresolvedReason, UnresolvedReference,
+        Confidence, Evidence, Reference, Relation, ResolverGap, Span, UnresolvedReason,
+        UnresolvedReference,
     };
     use sinter_store::{EdgeFilter, Store};
 
@@ -1110,7 +1133,13 @@ mod tests {
                 alias: None,
             },
             reason,
+            gap: None,
         }
+    }
+
+    fn with_gap(mut item: UnresolvedReference, gap: ResolverGap) -> UnresolvedReference {
+        item.gap = Some(gap);
+        item
     }
 
     fn classifier(defined: &[(&str, usize)], unindexed: &[&str]) -> Classifier {
@@ -1165,6 +1194,61 @@ mod tests {
             c.classify(&item("walk", None, UnresolvedReason::SyntaxOnly)),
             UnresolvedCategory::AmbiguousInternalTarget
         );
+    }
+
+    /// A resolver limitation is never a repository gap: the categories that
+    /// `map`/`doctor` count as actionable must not absorb an aliased import,
+    /// an unfollowed barrel re-export, or a path into a partially parsed
+    /// file. Before the widening these all landed in actionable categories.
+    #[test]
+    fn recognised_resolver_limitations_are_not_user_gaps() {
+        let mut c = classifier(&[("walk", 2), ("run", 1)], &[]);
+        c.syntax_error_files.insert("src/broken.rs".to_owned());
+
+        // `use other::run as run;` in scope — the alias was not followed.
+        let aliased = with_gap(
+            item("run", None, UnresolvedReason::SyntaxAnchoredMiss),
+            ResolverGap::AliasedImport,
+        );
+        assert_eq!(c.classify(&aliased), UnresolvedCategory::ResolverGap);
+
+        // A barrel module re-exports the name behind a glob.
+        let barrel = with_gap(
+            item(
+                "walk",
+                Some("api::walk"),
+                UnresolvedReason::SyntaxAnchoredMiss,
+            ),
+            ResolverGap::Reexport,
+        );
+        assert_eq!(c.classify(&barrel), UnresolvedCategory::ResolverGap);
+
+        // Anchored into a file the graph only partly represents.
+        let partial = with_gap(
+            item(
+                "run",
+                Some("broken::run"),
+                UnresolvedReason::MissingInternalTarget,
+            ),
+            ResolverGap::AnchoredFile("src/broken.rs".to_owned()),
+        );
+        assert_eq!(c.classify(&partial), UnresolvedCategory::ResolverGap);
+
+        // Same anchor, fully indexed file: still the user's dangling
+        // reference — the widening must not swallow real gaps.
+        let intact = with_gap(
+            item(
+                "run",
+                Some("other::run"),
+                UnresolvedReason::MissingInternalTarget,
+            ),
+            ResolverGap::AnchoredFile("src/other.rs".to_owned()),
+        );
+        assert_eq!(
+            c.classify(&intact),
+            UnresolvedCategory::ActionableAnchoredMiss
+        );
+        assert!(!UnresolvedCategory::ResolverGap.is_actionable());
     }
 
     #[test]

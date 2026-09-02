@@ -13,5 +13,6 @@ pub use graph::Graph;
 pub use node::{CorpusScope, Node, NodeId, Span, SymbolKey, SymbolKind};
 pub use paths::rel_display;
 pub use reference::{
-    Embed, FieldBinding, LocalBinding, Reference, TraitImpl, UnresolvedReason, UnresolvedReference,
+    Embed, FieldBinding, LocalBinding, Reference, ResolverGap, TraitImpl, UnresolvedReason,
+    UnresolvedReference,
 };

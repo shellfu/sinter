@@ -87,7 +87,8 @@ pub(crate) const PENDING: TableDefinition<&str, &[u8]> = TableDefinition::new("p
 // cross-package implements; Python self-calls) and a new unresolved reason
 // change extracted facts; derived graphs re-extract rather than serve stale rows.
 // v15: edges carry every call site (extra_sites, sites_total) instead of one
-// representative; old rows decode without the fields, so they rebuild.
+// representative, and unresolved records carry an appended resolver-gap
+// observation; postcard is positional, so old rows re-derive, not decode.
 const SCHEMA_VERSION: u32 = 15;
 
 /// Per-file freshness record: content hash plus the stat identity it was

@@ -25,7 +25,8 @@
     ["scope", "uses", "FancyGreeter", "ConsoleGreeter"],
     ["dynamic", "calls", "Greeter::greet", "ConsoleGreeter::greet"],
     ["scope", "implements", "ConsoleGreeter", "Greeter"],
-    ["scope", "extends", "FancyGreeter", "ConsoleGreeter"]
+    ["scope", "extends", "FancyGreeter", "ConsoleGreeter"],
+    ["scope", "implements", "ConsoleGreeter::greet", "Greeter::greet", "com/acme/greet/ConsoleGreeter.java", "com/acme/greet/Greeter.java", "", ""]
   ],
   "unresolved_count": 0
 }

@@ -88,12 +88,38 @@ impl UnresolvedReason {
     }
 }
 
+/// A resolution limitation the resolver recognised while failing to bind a
+/// reference. Recorded by the resolver, which is the only place that knows
+/// what it tried, so consumers never have to infer a gap from name shape.
+/// The variants are observations, not verdicts: a consumer decides what
+/// each one means for its own question.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolverGap {
+    /// An `as`-aliased import in the reference's own file binds this name.
+    /// Resolution did not follow the alias to a definition.
+    AliasedImport,
+    /// The written path anchored to a corpus module whose files re-export
+    /// through glob/star imports (a barrel). The name may well be reachable
+    /// through that re-export; the chain walk did not get there.
+    Reexport,
+    /// The written path anchored to exactly this corpus file and the name
+    /// was not found in it. Whether that is a sinter gap or a dangling
+    /// reference depends on how completely the file was indexed — which the
+    /// resolver does not know and its consumers do.
+    AnchoredFile(String),
+}
+
 /// Persisted unresolved outcome: the reference plus the coverage context
 /// that produced the miss.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct UnresolvedReference {
     pub reference: Reference,
     pub reason: UnresolvedReason,
+    /// What resolution ran into, when it recognised its own limitation.
+    /// Appended field: postcard is positional, so graphs written before it
+    /// existed are rebuilt by the schema bump that introduced it.
+    pub gap: Option<ResolverGap>,
 }
 
 /// A type embedding another (Go embedded struct field): member lookup on

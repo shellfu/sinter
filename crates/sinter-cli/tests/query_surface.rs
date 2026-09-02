@@ -328,6 +328,16 @@ fn affected_through_dyn_dispatch() {
     assert!(out.contains("announce"), "{out}");
     assert!(out.contains("/dynamic"), "{out}");
 
+    // The other direction is the same blast radius: changing the trait
+    // method must reach every explicit implementation of it, not just the
+    // trait method's callers. Explicit `impl Trait for T` is written down,
+    // so these edges carry the evidence that bound the impl (import here),
+    // not the dynamic evidence Go's structural satisfaction must use.
+    let (ok, out) = sinter(repo, &["affected", "Speak::speak", "--max-depth", "2"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("Dog::speak"), "{out}");
+    assert!(out.contains("Cat::speak"), "{out}");
+
     // Incremental: touching one impl file re-resolves the trait's file and
     // tears down its dynamic fan-out — the OTHER impl's edge must survive
     // the rebuild (dst-file facts rejoin the resolution set).
@@ -692,10 +702,13 @@ fn show_lists_implementations_and_dispatch() {
     assert!(out.contains("implements       Speak"), "{out}");
 
     // A miss explains itself: forward reach, and who does reach the target.
+    // Forward reach is no longer empty — the method-level `implements` edge
+    // carries Dog::speak up to Speak::speak, and its fan-out on to the
+    // sibling impl — but announce only ever calls INTO the trait method.
     let (_, out) = sinter(repo, &["path", "Dog::speak", "announce"]);
     assert!(out.contains("no path Dog::speak -> announce"), "{out}");
     assert!(
-        out.contains("forward search from Dog::speak reached 0 symbol(s)"),
+        out.contains("forward search from Dog::speak reached 2 symbol(s)"),
         "{out}"
     );
     assert!(

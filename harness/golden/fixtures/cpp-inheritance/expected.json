@@ -21,7 +21,8 @@
     ["import", "imports", "dog.h", "animal.h"],
     ["import", "uses", "Dog", "Animal", "dog.h", "animal.h"],
     ["import", "extends", "Dog", "Animal", "dog.h", "animal.h"],
-    ["dynamic", "calls", "Animal::Speak", "Dog::Speak", "animal.h", "dog.h"]
+    ["dynamic", "calls", "Animal::Speak", "Dog::Speak", "animal.h", "dog.h"],
+    ["import", "extends", "Dog::Speak", "Animal::Speak", "dog.h", "animal.h", "", ""]
   ],
   "unresolved_count": 0
 }
