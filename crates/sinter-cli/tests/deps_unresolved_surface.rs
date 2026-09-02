@@ -286,7 +286,7 @@ fn dangling_qualified_path_is_actionable() {
 
     let (ok, out) = sinter(repo, &["unresolved"]);
     assert!(ok, "{out}");
-    assert!(out.contains("1 actionable"), "{out}");
+    assert!(out.contains("1 user gap(s)"), "{out}");
     assert!(
         out.contains("crate::util::gone")
             && out.contains("actionable_anchored_miss · missing_internal_target"),
