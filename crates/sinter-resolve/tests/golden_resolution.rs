@@ -718,3 +718,11 @@ fn resolution_rust_field_receiver() {
 fn resolution_rust_async_trait_cross_crate() {
     check("rust-async-trait-cross-crate");
 }
+
+/// Method-set satisfaction across packages: fan-out and implements edges
+/// reach a receiver type that never names the interface; a same-named
+/// method with a different arity stays unbound.
+#[test]
+fn resolution_go_cross_package_implements() {
+    check("go-cross-package-implements");
+}

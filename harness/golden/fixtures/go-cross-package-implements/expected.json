@@ -1,0 +1,36 @@
+{
+  "nodes": [
+    ["file", "internal/supervisor/server.go", "internal/supervisor/server.go"],
+    ["struct", "Size", "internal/supervisor/server.go", "Size is a terminal size."],
+    ["interface", "Starter", "internal/supervisor/server.go", "Starter launches a process."],
+    ["method", "Starter::Start", "internal/supervisor/server.go"],
+    ["function", "Serve", "internal/supervisor/server.go", "Serve starts through the interface."],
+    ["file", "cmd/helve/supervisor.go", "cmd/helve/supervisor.go"],
+    ["struct", "ptyStarter", "cmd/helve/supervisor.go", "ptyStarter starts through a pty."],
+    ["method", "ptyStarter::Start", "cmd/helve/supervisor.go", "Start launches the command."],
+    ["struct", "carStarter", "cmd/helve/supervisor.go", "carStarter shares the method name but not its shape."],
+    ["method", "carStarter::Start", "cmd/helve/supervisor.go", "Start turns the key."]
+  ],
+  "contains": [
+    ["internal/supervisor/server.go", "Size"],
+    ["internal/supervisor/server.go", "Starter"],
+    ["Starter", "Starter::Start"],
+    ["internal/supervisor/server.go", "Serve"],
+    ["cmd/helve/supervisor.go", "ptyStarter"],
+    ["cmd/helve/supervisor.go", "ptyStarter::Start"],
+    ["cmd/helve/supervisor.go", "carStarter"],
+    ["cmd/helve/supervisor.go", "carStarter::Start"]
+  ],
+  "references": [
+    ["calls", "Start", "internal/supervisor/server.go", "Serve"],
+    ["imports", "example.com/helve/internal/supervisor", "cmd/helve/supervisor.go"]
+  ],
+  "resolved": [
+    ["import", "imports", "cmd/helve/supervisor.go", "internal/supervisor/server.go"],
+    ["scope", "calls", "Serve", "Starter::Start", "internal/supervisor/server.go", "internal/supervisor/server.go"],
+    ["dynamic", "calls", "Starter::Start", "ptyStarter::Start", "internal/supervisor/server.go", "cmd/helve/supervisor.go"],
+    ["dynamic", "implements", "ptyStarter::Start", "Starter::Start", "cmd/helve/supervisor.go", "internal/supervisor/server.go"],
+    ["dynamic", "implements", "ptyStarter", "Starter", "cmd/helve/supervisor.go", "internal/supervisor/server.go"]
+  ],
+  "unresolved_count": 0
+}

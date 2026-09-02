@@ -715,3 +715,10 @@ fn golden_rust_field_receiver() {
 fn golden_rust_async_trait_cross_crate() {
     check("rust-async-trait-cross-crate");
 }
+
+/// An interface in one package satisfied by a receiver type in another;
+/// a same-named method of different arity is not an implementation.
+#[test]
+fn golden_go_cross_package_implements() {
+    check("go-cross-package-implements");
+}

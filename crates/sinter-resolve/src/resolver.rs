@@ -4,7 +4,7 @@
 //! re-export chains, relative paths). Exactly one candidate or nothing —
 //! ambiguity is unresolved, never a guess.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use sinter_core::{
     Confidence, Edge, Embed, Evidence, FieldBinding, LocalBinding, Node, NodeId, Reference,
@@ -1495,19 +1495,19 @@ pub fn dynamic_edges(index: &Index<'_>, nodes: &[Node], trait_impls: &[TraitImpl
 
 /// Structural interface satisfaction for languages where no syntax names
 /// the interface at the implementing type (spec.implicit_interfaces — Go):
-/// within one package, a type T satisfies interface I when T's method
-/// names cover all of I's declared methods. Name-only matching
-/// over-approximates signatures, so every edge carries Dynamic evidence
-/// (Inferred, excludable). Package scope keeps precision high: matching
-/// the whole corpus would pair unrelated same-shaped types.
-/// ponytail: cross-package satisfaction (io.Writer style) not inferred;
-/// widen to module scope if a real repo shows the recall gap.
+/// across the whole corpus, a type T satisfies interface I when T's method
+/// set covers all of I's declared methods by name, arity, and (when the
+/// declaration text carries them) parameter/result type names. Every
+/// edge carries Dynamic evidence (Inferred, excludable). Candidates are
+/// found through a per-method-name index, so only types sharing every
+/// method name of I are ever compared.
 fn implicit_interface_edges(nodes: &[Node], roots: &[ModuleRoot]) -> Vec<Edge> {
     // (package key, type name) -> type nodes; (package key, type name) ->
-    // methods declared/received under that name.
+    // methods declared/received under that name; method name -> owners
+    // (by key) declaring/receiving it.
     let mut types: HashMap<(Vec<String>, &str), Vec<&Node>> = HashMap::new();
-    let mut types_by_key: HashMap<Vec<String>, Vec<&Node>> = HashMap::new();
     let mut methods: HashMap<(Vec<String>, &str), Vec<&Node>> = HashMap::new();
+    let mut owners_by_method: HashMap<&str, Vec<(Vec<String>, &str)>> = HashMap::new();
     for n in nodes {
         let Some(spec) = spec_for_path(&n.file) else {
             continue;
@@ -1518,17 +1518,17 @@ fn implicit_interface_edges(nodes: &[Node], roots: &[ModuleRoot]) -> Vec<Edge> {
         let key = key_of(spec, roots, &n.file);
         match n.kind {
             SymbolKind::Interface | SymbolKind::Struct | SymbolKind::TypeAlias => {
-                types
-                    .entry((key.clone(), n.name.as_str()))
-                    .or_default()
-                    .push(n);
-                types_by_key.entry(key).or_default().push(n);
+                types.entry((key, n.name.as_str())).or_default().push(n);
             }
             SymbolKind::Method => {
                 let q = qualified_of(n.id.as_str());
                 if let Some((owner, _)) = q.rsplit_once("::")
                     && !owner.contains("::")
                 {
+                    owners_by_method
+                        .entry(n.name.as_str())
+                        .or_default()
+                        .push((key.clone(), owner));
                     methods.entry((key, owner)).or_default().push(n);
                 }
             }
@@ -1547,28 +1547,61 @@ fn implicit_interface_edges(nodes: &[Node], roots: &[ModuleRoot]) -> Vec<Edge> {
         let Some(iface_methods) = methods.get(&(key.clone(), *name)) else {
             continue; // empty interface: everything satisfies it — emit nothing
         };
-        for ty in types_by_key.get(key).into_iter().flatten() {
+        // Owners carrying every method name of the interface, narrowed
+        // from the rarest name outward.
+        let mut owner_sets: Vec<&Vec<(Vec<String>, &str)>> = iface_methods
+            .iter()
+            .filter_map(|m| owners_by_method.get(m.name.as_str()))
+            .collect();
+        if owner_sets.len() != iface_methods.len() {
+            continue;
+        }
+        owner_sets.sort_by_key(|set| set.len());
+        let mut owners: Vec<&(Vec<String>, &str)> = owner_sets[0].iter().collect();
+        for set in &owner_sets[1..] {
+            owners.retain(|owner| set.contains(owner));
+        }
+        owners.sort();
+        owners.dedup();
+        for owner in owners {
+            let Some([ty]) = types.get(owner).map(Vec::as_slice) else {
+                continue;
+            };
             if ty.kind == SymbolKind::Interface {
                 continue;
             }
-            let ty_methods = methods.get(&(key.clone(), ty.name.as_str()));
-            let covers = |m: &Node| ty_methods.into_iter().flatten().any(|tm| tm.name == m.name);
-            if !iface_methods.iter().all(|m| covers(m)) {
+            let ty_methods = &methods[owner];
+            let pairs: Option<Vec<(&Node, &Node)>> = iface_methods
+                .iter()
+                .map(|im| {
+                    ty_methods
+                        .iter()
+                        .find(|tm| tm.name == im.name && signatures_compatible(im, tm))
+                        .map(|tm| (*im, *tm))
+                })
+                .collect();
+            let Some(pairs) = pairs else {
                 continue;
-            }
-            for im in iface_methods {
-                for tm in ty_methods.into_iter().flatten() {
-                    if tm.name == im.name {
-                        edges.push(Edge {
-                            src: im.id.clone(),
-                            dst: tm.id.clone(),
-                            relation: Relation::Calls,
-                            evidence: Evidence::Dynamic,
-                            confidence: Evidence::Dynamic.confidence(),
-                            site: None,
-                        });
-                    }
-                }
+            };
+            for (im, tm) in pairs {
+                edges.push(Edge {
+                    src: im.id.clone(),
+                    dst: tm.id.clone(),
+                    relation: Relation::Calls,
+                    evidence: Evidence::Dynamic,
+                    confidence: Evidence::Dynamic.confidence(),
+                    site: None,
+                });
+                // The reverse arrow lets an interface method's blast
+                // radius reach the methods bound to it.
+                edges.push(Edge {
+                    src: tm.id.clone(),
+                    dst: im.id.clone(),
+                    relation: Relation::Implements,
+                    evidence: Evidence::Dynamic,
+                    confidence: Evidence::Dynamic.confidence(),
+                    site: None,
+                });
             }
             edges.push(Edge {
                 src: ty.id.clone(),
@@ -1581,6 +1614,84 @@ fn implicit_interface_edges(nodes: &[Node], roots: &[ModuleRoot]) -> Vec<Edge> {
         }
     }
     edges
+}
+
+/// Whether a receiver method's declaration text can satisfy an interface
+/// method's: same parameter and result arity, and the same type names
+/// wherever both sides name one. Qualifiers (`pkg.T`), pointers, and
+/// variadic markers are stripped so `supervisor.Size` matches `Size`.
+/// Unreadable text on either side is treated as compatible.
+fn signatures_compatible(iface_method: &Node, ty_method: &Node) -> bool {
+    let (Some(a), Some(b)) = (
+        signature_shape(&iface_method.signature, &iface_method.name),
+        signature_shape(&ty_method.signature, &ty_method.name),
+    ) else {
+        return true;
+    };
+    [(&a.0, &b.0), (&a.1, &b.1)].into_iter().all(|(x, y)| {
+        x.len() == y.len()
+            && x.iter().zip(y).all(|(p, q)| match (p, q) {
+                (Some(p), Some(q)) => p == q,
+                _ => true,
+            })
+    })
+}
+
+/// `(params, results)` of a declaration text from its method name on.
+/// Each entry is the bare type name, or `None` when the list cannot be
+/// read per-entry (grouped names like `a, b int`).
+type Shape = (Vec<Option<String>>, Vec<Option<String>>);
+
+fn signature_shape(signature: &str, name: &str) -> Option<Shape> {
+    let rest = &signature[signature.find(&format!("{name}("))? + name.len()..];
+    let close = matching_paren(rest)?;
+    let params = &rest[1..close];
+    let results = rest[close + 1..].trim();
+    let results = results
+        .strip_prefix('(')
+        .and_then(|r| r.strip_suffix(')'))
+        .unwrap_or(results);
+    Some((type_list(params), type_list(results)))
+}
+
+fn matching_paren(text: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, c) in text.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split a Go parameter or result list into per-entry type names. An
+/// entry is `name type` or `type`; a list mixing the two forms groups
+/// names (`a, b int`) and yields `None` per entry — arity still counts.
+/// ponytail: commas nested in `func(...)`/`map[...]` types split wrongly;
+/// make such lists unreadable if a real repo trips on it.
+fn type_list(list: &str) -> Vec<Option<String>> {
+    let entries: Vec<Vec<&str>> = list
+        .split(',')
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(|e| e.split_whitespace().collect())
+        .collect();
+    let readable = entries.iter().map(Vec::len).collect::<HashSet<_>>().len() <= 1;
+    entries
+        .into_iter()
+        .map(|tokens| {
+            let ty = readable.then(|| tokens.last().copied()).flatten()?;
+            let ty = ty.trim_start_matches("...").trim_start_matches('*');
+            Some(ty.rsplit('.').next().unwrap_or(ty).to_string())
+        })
+        .collect()
 }
 
 /// Resolve references against FOREIGN definitions using import evidence
