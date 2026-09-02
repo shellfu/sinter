@@ -176,9 +176,13 @@ pub fn compute(
     compute_with_store(repo, &store, args, relations)
 }
 
-pub(crate) fn compute_current(repo: &Path, args: &[String]) -> Result<(Vec<PrMap>, Vec<Pair>)> {
+pub(crate) fn compute_current(
+    repo: &Path,
+    args: &[String],
+    relations: &[String],
+) -> Result<(Vec<PrMap>, Vec<Pair>)> {
     let store = crate::lookup::open_current(repo)?;
-    compute_with_store(repo, &store, args, &[])
+    compute_with_store(repo, &store, args, relations)
 }
 
 fn compute_with_store(

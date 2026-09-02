@@ -52,7 +52,11 @@ pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
         );
     }
     if name == "overlap" {
-        let (maps, pairs) = crate::overlap::compute_current(repo, &strings(args, "ranges"))?;
+        let (maps, pairs) = crate::overlap::compute_current(
+            repo,
+            &strings(args, "ranges"),
+            &strings(args, "relations"),
+        )?;
         return Ok(crate::overlap::to_json(&maps, &pairs));
     }
 
