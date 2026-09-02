@@ -11,6 +11,7 @@ use crate::render::node_json;
 /// `sinter deps`: forward blast radius — everything the symbol transitively
 /// depends on (calls, uses, imports, ...), cross-file. Ok(true) when any
 /// dependency was found (grep-style exit codes).
+#[allow(clippy::too_many_arguments)] // mirrors the clap subcommand one-to-one
 pub fn run(
     repo: &Path,
     symbol: &str,
@@ -19,14 +20,31 @@ pub fn run(
     limit: usize,
     json: bool,
     if_snapshot: Option<&str>,
+    full_coverage: bool,
+    include_tests: bool,
 ) -> Result<bool> {
     let store = open_store(repo)?;
     let snapshot = ensure_snapshot(&store, if_snapshot)?;
     let node = unique_symbol_in(&store, symbol, filter.scopes.as_ref())?;
-    let mut reached = store.dependencies(&node.id, filter, max_depth)?;
     let scopes = store.scope_index()?;
     let scope_of = |node: &sinter_core::Node| scopes.scope_of(node);
+    let is_test = |node: &sinter_core::Node| crate::prune::is_test_scope(scope_of(node));
+    let pruned = crate::prune::prune(
+        store.dependencies(&node.id, filter, max_depth)?,
+        |r| &r.via.src,
+        &crate::prune::Rules {
+            keep_tests: include_tests,
+            drop_file_rows: filter.relations.is_some(),
+            hub_fan_in: None,
+            is_test: &is_test,
+        },
+    );
+    let mut reached = pruned.rows;
+    let tests_hidden = if include_tests { 0 } else { pruned.tests };
     let total = reached.len();
+    let filter_excluded = total == 0
+        && tests_hidden == 0
+        && crate::prune::filter_excluded(&store, &node.id, filter, max_depth, true)?;
     let root = crate::pipeline::discover_root(repo);
     // Honest-empty signal: unresolved refs inside this definition mean the
     // dependency list may be incomplete, never authoritative.
@@ -86,6 +104,7 @@ pub fn run(
             "symbol": symbol_json,
             "snapshot": snapshot,
             "total": total,
+            "max_depth": max_depth,
             "unresolved_refs_in_symbol": unresolved,
             "actionable_unresolved_in_symbol": inside.actionable,
             "by_file": pairs,
@@ -98,25 +117,47 @@ pub fn run(
             out["verify_with"] =
                 serde_json::json!(format!("sinter unresolved --name {}", node.name));
         }
-        out["coverage"] =
-            crate::coverage::traversal_json(&root, &store, filter, evidence, total > 0)?;
+        if filter_excluded {
+            out["reason"] = serde_json::json!("filter_excluded");
+        }
+        if tests_hidden > 0 {
+            out["tests_hidden"] = serde_json::json!(tests_hidden);
+        }
+        out["coverage"] = crate::coverage::coverage_json(
+            &root,
+            &store,
+            filter,
+            evidence,
+            total > 0,
+            full_coverage,
+        )?;
         crate::coverage::attach_radius(&mut out["coverage"], radius);
         crate::agent_protocol::write_json(&out)?;
         return Ok(total > 0);
     }
     reached.truncate(limit);
+    let hidden = if tests_hidden > 0 {
+        format!(", tests: {tests_hidden} (--include-tests)")
+    } else {
+        String::new()
+    };
     if total == 0 {
         println!(
-            "not proven: 0 dependencies observed for {} ({})",
+            "not proven: 0 dependencies observed for {} ({}){hidden}",
             qualified_of(node.id.as_str()),
             node.file
         );
+        if filter_excluded {
+            println!(
+                "  reason: filter excluded them (--max-depth 0 / --certain / --evidence / --relations); drop the flag to see them"
+            );
+        }
         // A blind graph and a leaf symbol look identical here; `unresolved`
         // is the verb that tells them apart.
         println!("  verify: sinter unresolved --name {}", node.name);
     } else {
         println!(
-            "{} dependencies of {} ({})",
+            "{} dependencies of {} ({}){hidden}",
             total,
             qualified_of(node.id.as_str()),
             node.file
@@ -172,6 +213,9 @@ pub fn run(
             total - limit,
             total,
         );
+    }
+    if max_depth == 1 && total > 0 {
+        println!("  {total} direct; --max-depth 3 to widen");
     }
     if inside.actionable > 0 {
         println!(

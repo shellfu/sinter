@@ -44,15 +44,19 @@ fn deps_walks_forward_transitively() {
     let repo = dir.path();
     build_fixture(repo);
 
-    // entry -> core_fn -> helper, cross-file, depth-annotated.
+    // entry -> core_fn -> helper, cross-file, depth-annotated. The
+    // default is direct only; --max-depth widens.
     let (ok, out) = sinter(repo, &["deps", "entry"]);
     assert!(ok, "{out}");
     assert!(out.contains("dependencies of"), "{out}");
     assert!(out.contains("core_fn"), "{out}");
+    assert!(!out.contains("helper"), "{out}");
+    let (ok, out) = sinter(repo, &["deps", "entry", "--max-depth", "3"]);
+    assert!(ok, "{out}");
     assert!(out.contains("helper"), "{out}");
 
     // JSON mirrors the MCP shape.
-    let (ok, out) = sinter(repo, &["deps", "entry", "--json"]);
+    let (ok, out) = sinter(repo, &["deps", "entry", "--max-depth", "3", "--json"]);
     assert!(ok, "{out}");
     let v: serde_json::Value = serde_json::from_str(&out).expect("json");
     assert!(v["total"].as_u64().unwrap() >= 2, "{out}");
@@ -74,7 +78,7 @@ fn deps_walks_forward_transitively() {
     assert!(!ok, "{out}");
 
     // --limit footer names the widening command.
-    let (ok, out) = sinter(repo, &["deps", "entry", "--limit", "1"]);
+    let (ok, out) = sinter(repo, &["deps", "entry", "--max-depth", "3", "--limit", "1"]);
     assert!(ok, "{out}");
     assert!(out.contains("more dependencies below cutoff"), "{out}");
 }

@@ -16,8 +16,14 @@ const MAX_PAIRS: usize = 16;
 /// Frontier rows reported on a miss.
 const MAX_FRONTIER: usize = 5;
 
+/// Incoming edges of the target reported on a miss: enough to name the
+/// hop that is missing, not the target's whole caller list.
+const MAX_REACHED_BY: usize = 5;
+
 /// `sinter path`: how one symbol reaches another. Ok(true) when a route
-/// exists (grep-style exit codes).
+/// exists (grep-style exit codes). `k` routes are node-disjoint: each
+/// avoids the interior symbols of the routes before it.
+#[allow(clippy::too_many_arguments)] // mirrors the clap subcommand one-to-one
 pub fn run(
     repo: &Path,
     from: &str,
@@ -25,6 +31,8 @@ pub fn run(
     filter: &EdgeFilter,
     json: bool,
     if_snapshot: Option<&str>,
+    full_coverage: bool,
+    k: usize,
 ) -> Result<bool> {
     let store = open_store(repo)?;
     let snapshot = ensure_snapshot(&store, if_snapshot)?;
@@ -101,6 +109,13 @@ pub fn run(
         .is_none()
         .then(|| explain_miss(&store, &from_node, &to_node, filter))
         .transpose()?;
+    let paths = match &path {
+        Some(first) if k > 1 => {
+            disjoint_paths(&store, &from_node.id, &to_node.id, filter, first, k)?
+        }
+        Some(first) => vec![first.clone()],
+        None => Vec::new(),
+    };
     let evidence = crate::coverage::TraversalEvidence::from_confidences(
         path.iter().flatten().map(|edge| edge.confidence),
         miss.as_ref()
@@ -124,29 +139,50 @@ pub fn run(
     };
     if json {
         // Same shape as the MCP `path` tool.
+        let steps_json = |edges: &[sinter_core::Edge]| {
+            edges
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "from": qualified_of(e.src.as_str()),
+                        "to": qualified_of(e.dst.as_str()),
+                        "from_scope": scope_of_id(&e.src).as_str(),
+                        "to_scope": scope_of_id(&e.dst).as_str(),
+                        "relation": e.relation.as_str(),
+                        "evidence": e.evidence.as_str(),
+                        "confidence": match e.confidence {
+                            sinter_core::Confidence::Certain => "certain",
+                            sinter_core::Confidence::Inferred => "possible",
+                        },
+                        "site": crate::render::site_json(&root, e),
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
         let mut out = serde_json::json!({
             "status": if path.is_some() { "found" } else { "not_proven" },
             "snapshot": snapshot,
             "found": path.is_some(),
-            "steps": path.iter().flatten().map(|e| serde_json::json!({
-                "from": qualified_of(e.src.as_str()),
-                "to": qualified_of(e.dst.as_str()),
-                "from_scope": scope_of_id(&e.src).as_str(),
-                "to_scope": scope_of_id(&e.dst).as_str(),
-                "relation": e.relation.as_str(),
-                "evidence": e.evidence.as_str(),
-                "confidence": match e.confidence {
-                    sinter_core::Confidence::Certain => "certain",
-                    sinter_core::Confidence::Inferred => "possible",
-                },
-                "site": crate::render::site_json(&root, e),
-            })).collect::<Vec<_>>(),
+            "steps": steps_json(paths.first().map_or(&[][..], Vec::as_slice)),
         });
+        if k > 1 {
+            out["paths"] =
+                serde_json::json!(paths.iter().map(|p| steps_json(p)).collect::<Vec<_>>());
+        }
         if let Some(miss) = &miss {
             out["miss"] = miss_json(&root, miss);
+            if !miss.excluded_edges.is_empty() {
+                out["reason"] = serde_json::json!("filter_excluded");
+            }
         }
-        out["coverage"] =
-            crate::coverage::traversal_json(&root, &store, filter, evidence, path.is_some())?;
+        out["coverage"] = crate::coverage::coverage_json(
+            &root,
+            &store,
+            filter,
+            evidence,
+            path.is_some(),
+            full_coverage,
+        )?;
         if let Some(radius) = radius {
             crate::coverage::attach_radius(&mut out["coverage"], radius);
         }
@@ -169,22 +205,30 @@ pub fn run(
             crate::coverage::print_footer(&root, &store, filter, evidence, false, Some(&snapshot))?;
             Ok(false)
         }
-        Some(edges) => {
-            print!("{}", qualified_of(from_node.id.as_str()));
-            for edge in &edges {
-                // Each hop names where it is written: `at file:line`.
-                let site = crate::render::site_location(&root, edge)
-                    .map(|s| format!(" at {s}"))
-                    .unwrap_or_default();
-                print!(
-                    " -[{}/{}{}]-> {}",
-                    edge.relation.as_str(),
-                    edge.evidence.as_str(),
-                    site,
-                    qualified_of(edge.dst.as_str())
+        Some(_) => {
+            for edges in &paths {
+                print!("{}", qualified_of(from_node.id.as_str()));
+                for edge in edges {
+                    // Each hop names where it is written: `at file:line`.
+                    let site = crate::render::site_location(&root, edge)
+                        .map(|s| format!(" at {s}"))
+                        .unwrap_or_default();
+                    print!(
+                        " -[{}/{}{}]-> {}",
+                        edge.relation.as_str(),
+                        edge.evidence.as_str(),
+                        site,
+                        qualified_of(edge.dst.as_str())
+                    );
+                }
+                println!();
+            }
+            if k > 1 && paths.len() < k {
+                println!(
+                    "  {} node-disjoint route(s); no further route avoids them",
+                    paths.len()
                 );
             }
-            println!();
             if let Some(note) = radius.and_then(crate::coverage::radius_note) {
                 println!("{note}");
             }
@@ -249,6 +293,86 @@ pub fn run_workspace(
     }
 }
 
+/// Routes after the first, each avoiding the interior symbols of every
+/// route before it (a route sharing all but one hop with the first tells
+/// an agent nothing new). Stops at the first miss, so fewer than `k` is
+/// the honest count.
+fn disjoint_paths(
+    store: &sinter_store::Store,
+    from: &sinter_core::NodeId,
+    to: &sinter_core::NodeId,
+    filter: &EdgeFilter,
+    first: &[sinter_core::Edge],
+    k: usize,
+) -> Result<Vec<Vec<sinter_core::Edge>>> {
+    let scopes = store.scope_index()?;
+    let mut banned: std::collections::HashSet<sinter_core::NodeId> =
+        std::collections::HashSet::new();
+    let mut paths = vec![first.to_vec()];
+    while paths.len() < k {
+        let last = paths.last().expect("one route is always present");
+        let interior = last.iter().map(|e| e.dst.clone()).filter(|id| id != to);
+        // A direct edge has no interior to avoid: the next search would
+        // only find it again.
+        let mut grew = false;
+        for id in interior {
+            grew |= banned.insert(id);
+        }
+        if !grew {
+            break;
+        }
+        let Some(path) = path_avoiding(store, &scopes, from, to, filter, &banned)? else {
+            break;
+        };
+        paths.push(path);
+    }
+    Ok(paths)
+}
+
+/// Breadth-first shortest route over outgoing edges that never enters a
+/// banned node. Same admission rules as the store's `shortest_path`,
+/// minus the file-start containment seeding (a file seed has one route).
+fn path_avoiding(
+    store: &sinter_store::Store,
+    scopes: &sinter_store::ScopeIndex,
+    from: &sinter_core::NodeId,
+    to: &sinter_core::NodeId,
+    filter: &EdgeFilter,
+    banned: &std::collections::HashSet<sinter_core::NodeId>,
+) -> Result<Option<Vec<sinter_core::Edge>>> {
+    let mut prev: std::collections::HashMap<sinter_core::NodeId, sinter_core::Edge> =
+        std::collections::HashMap::new();
+    let mut seen = std::collections::HashSet::from([from.clone()]);
+    let mut queue = std::collections::VecDeque::from([from.clone()]);
+    while let Some(current) = queue.pop_front() {
+        if &current == to {
+            let mut path = Vec::new();
+            let mut at = to.clone();
+            while &at != from {
+                let edge = prev[&at].clone();
+                at = edge.src.clone();
+                path.push(edge);
+            }
+            path.reverse();
+            return Ok(Some(path));
+        }
+        for edge in store.out_edges(&current)? {
+            let id = edge.dst.as_str();
+            let file = id.split_once('#').map_or(id, |(file, _)| file);
+            if !filter.admits(&edge)
+                || !filter.admits_scope(scopes.scope_of_id(id, file))
+                || banned.contains(&edge.dst)
+                || !seen.insert(edge.dst.clone())
+            {
+                continue;
+            }
+            prev.insert(edge.dst.clone(), edge.clone());
+            queue.push_back(edge.dst);
+        }
+    }
+    Ok(None)
+}
+
 /// Why a path search came up empty, in the two numbers an agent needs
 /// next: how far the forward search got, and which edges actually reach
 /// the target (so the query can be rerun from the gap). Dynamic edges
@@ -256,7 +380,10 @@ pub fn run_workspace(
 /// missing hop.
 pub struct Miss {
     pub forward_reached: usize,
+    /// Admitted incoming edges of the target, capped at `MAX_REACHED_BY`;
+    /// `reached_by_total` is the uncapped count.
     pub reached_by: Vec<sinter_core::Edge>,
+    pub reached_by_total: usize,
     pub excluded_by_filter: usize,
     pub unresolved_matching_target: usize,
     /// Where the forward search actually stopped, nearest the target
@@ -415,11 +542,13 @@ pub fn explain_miss(
         // flag that refused it is the only thing that can admit that hop.
         blocking.insert(flag);
     }
-    let reached_by = candidates
+    let mut reached_by: Vec<sinter_core::Edge> = candidates
         .into_iter()
         .filter(|e| filter.admits(e))
         .cloned()
         .collect();
+    let reached_by_total = reached_by.len();
+    reached_by.truncate(MAX_REACHED_BY);
     let mut forward = forward;
     forward.sort_by(|a, b| {
         shared_prefix(&b.node.file, &to.file)
@@ -442,6 +571,7 @@ pub fn explain_miss(
     Ok(Miss {
         forward_reached,
         reached_by,
+        reached_by_total,
         excluded_by_filter,
         unresolved_matching_target,
         closest_frontier: forward,
@@ -460,11 +590,11 @@ pub fn miss_json(root: &Path, miss: &Miss) -> serde_json::Value {
             "evidence": e.evidence.as_str(),
             "site": crate::render::site_json(root, e),
         })).collect::<Vec<_>>(),
+        "reached_by_total": miss.reached_by_total,
         "excluded_by_filter": miss.excluded_by_filter,
         "unresolved_matching_target": miss.unresolved_matching_target,
-    });
-    if !miss.closest_frontier.is_empty() {
-        out["closest_frontier"] = miss
+        // Always present, empty or not: an agent reads them without probing.
+        "closest_frontier": miss
             .closest_frontier
             .iter()
             .map(|reached| {
@@ -477,13 +607,8 @@ pub fn miss_json(root: &Path, miss: &Miss) -> serde_json::Value {
                     "depth": reached.depth,
                 })
             })
-            .collect();
-    }
-    if !miss.excluded_edges.is_empty() {
-        out["excluded_edges"] = serde_json::json!(miss.excluded_edges);
-    }
-    if !miss.suggested_retries.is_empty() {
-        out["suggested_retries"] = miss
+            .collect::<Vec<_>>(),
+        "suggested_retries": miss
             .suggested_retries
             .iter()
             .map(|retry| {
@@ -502,7 +627,10 @@ pub fn miss_json(root: &Path, miss: &Miss) -> serde_json::Value {
                 }
                 entry
             })
-            .collect();
+            .collect::<Vec<_>>(),
+    });
+    if !miss.excluded_edges.is_empty() {
+        out["excluded_edges"] = serde_json::json!(miss.excluded_edges);
     }
     out
 }
@@ -522,9 +650,9 @@ fn print_miss(root: &Path, from: &sinter_core::Node, to: &sinter_core::Node, mis
         println!(
             "  {} is reached by ({}):",
             qualified_of(to.id.as_str()),
-            miss.reached_by.len()
+            miss.reached_by_total
         );
-        for e in miss.reached_by.iter().take(8) {
+        for e in &miss.reached_by {
             let site = crate::render::site_location(root, e)
                 .map(|s| format!(" at {s}"))
                 .unwrap_or_default();
@@ -535,8 +663,12 @@ fn print_miss(root: &Path, from: &sinter_core::Node, to: &sinter_core::Node, mis
                 e.evidence.as_str()
             );
         }
-        if miss.reached_by.len() > 8 {
-            println!("    … (+{})", miss.reached_by.len() - 8);
+        if miss.reached_by_total > miss.reached_by.len() {
+            println!(
+                "    … (+{}); `sinter show {}` lists them all",
+                miss.reached_by_total - miss.reached_by.len(),
+                qualified_of(to.id.as_str())
+            );
         }
     }
     if miss.excluded_by_filter > 0 {
@@ -557,7 +689,9 @@ fn print_miss(root: &Path, from: &sinter_core::Node, to: &sinter_core::Node, mis
 /// The machine-shaped half of a miss: where the search stopped, what the
 /// filter refused, and what to run next.
 fn print_actionable(root: &Path, miss: &Miss) {
-    if !miss.closest_frontier.is_empty() {
+    if miss.closest_frontier.is_empty() {
+        println!("  closest frontier: none (the forward search admitted no edge)");
+    } else {
         println!("  closest frontier ({}):", miss.closest_frontier.len());
         for reached in &miss.closest_frontier {
             let line = crate::render::line_of(root, &reached.node.file, reached.node.span.start);
@@ -576,6 +710,10 @@ fn print_actionable(root: &Path, miss: &Miss) {
             .map(|(reason, count)| format!("{reason}={count}"))
             .collect();
         println!("  excluded edges: {}", counts.join(" "));
+        println!("  reason: filter_excluded");
+    }
+    if miss.suggested_retries.is_empty() {
+        println!("  suggested retries: none (no flag or endpoint change is implied by the miss)");
     }
     for retry in &miss.suggested_retries {
         let flag = match (retry.remove, &retry.add) {

@@ -442,7 +442,7 @@ fn json_flags_exit_codes_and_repo_flag() {
     );
 
     // affected --json: MCP `affected` shape, terse entries.
-    let (code, out) = sinter_code(repo, &["affected", "core_fn", "--json"]);
+    let (code, out) = sinter_code(repo, &["affected", "core_fn", "--json", "--coverage"]);
     assert_eq!(code, Some(0), "{out}");
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert!(v["total"].as_u64().unwrap() >= 2, "{out}");
@@ -560,7 +560,7 @@ fn negative_answers_flag_stale_scip() {
     assert!(
         out.contains("no path")
             && out.contains("coverage: partial")
-            && out.contains("compiler index missing for rust"),
+            && out.contains("gap: scip missing"),
         "{out}"
     );
 
@@ -576,12 +576,12 @@ fn negative_answers_flag_stale_scip() {
         .unwrap();
     let (_, out) = sinter(repo, &["path", "core_fn", "entry"]);
     assert!(
-        out.contains("no path") && out.contains("compiler index is stale"),
+        out.contains("no path") && out.contains("gap: scip stale"),
         "{out}"
     );
     let (_, out) = sinter(repo, &["affected", "orphan"]);
     assert!(
-        out.contains("0 dependents") && out.contains("compiler index is stale"),
+        out.contains("0 dependents") && out.contains("gap: scip stale"),
         "{out}"
     );
     // A hit carries the same partial coverage instead of looking exhaustive.
@@ -599,12 +599,12 @@ fn negative_answers_flag_stale_scip() {
     assert!(
         out.contains("no path")
             && out.contains("coverage: complete_for_indexed_snapshot")
-            && !out.contains("compiler index is stale")
-            && !out.contains("compiler index missing"),
+            && !out.contains("gap: scip stale")
+            && !out.contains("gap: scip missing"),
         "{out}"
     );
 
-    let (_, out) = sinter(repo, &["path", "entry", "core_fn", "--json"]);
+    let (_, out) = sinter(repo, &["path", "entry", "core_fn", "--json", "--coverage"]);
     let value: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(
         value["coverage"]["completeness"], "complete_for_indexed_snapshot",
@@ -857,6 +857,7 @@ fn syntax_visible_test_callers_drive_affected_and_impact_selection() {
             "1",
             "--relations",
             "calls",
+            "--include-tests",
             "--json",
         ],
     );
@@ -870,10 +871,37 @@ fn syntax_visible_test_callers_drive_affected_and_impact_selection() {
             .any(|dependent| dependent["s"] == "tests::dispatch_works"),
         "direct test caller missing: {out}"
     );
+    // Hidden by default, but counted: the answer never reads as "no callers".
+    let (code, out) = sinter_code(
+        repo,
+        &[
+            "affected",
+            "dispatch",
+            "--depth",
+            "1",
+            "--relations",
+            "calls",
+            "--json",
+        ],
+    );
+    assert_eq!(code, Some(1), "{out}");
+    let hidden: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(hidden["tests_hidden"], 1, "{out}");
+    assert!(
+        hidden.get("reason").is_none(),
+        "hidden tests are not a filter: {out}"
+    );
 
     let (code, out) = sinter_code(
         repo,
-        &["affected", "leaf", "--relations", "calls", "--json"],
+        &[
+            "affected",
+            "leaf",
+            "--relations",
+            "calls",
+            "--include-tests",
+            "--json",
+        ],
     );
     assert_eq!(code, Some(0), "{out}");
     let affected: serde_json::Value = serde_json::from_str(&out).unwrap();

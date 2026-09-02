@@ -686,7 +686,59 @@ fn slim_for_traversal(coverage: &mut serde_json::Value) {
     }
 }
 
-/// Machine-readable trust envelope carried by every traversal answer.
+/// Fields of the full envelope a default traversal answer keeps: the claim
+/// qualifiers, the indexed commit, the compiler-index state that changes
+/// what the query could have seen, and the query's own evidence counts.
+/// Everything repository-wide (projects, graph totals, sources,
+/// limitations, filters) is identical on every answer and belongs to
+/// `--coverage` / `include_coverage` or `sinter doctor`.
+const SUMMARY_FIELDS: [&str; 6] = [
+    "status",
+    "completeness",
+    "conclusive",
+    "snapshot",
+    "compiler_index",
+    "evidence",
+];
+
+/// Default per-answer trust envelope: `traversal_json` cut to
+/// `SUMMARY_FIELDS`, with `compiler_index` reduced to its state.
+pub fn summary_json(
+    repo: &Path,
+    store: &Store,
+    filter: &EdgeFilter,
+    evidence: TraversalEvidence,
+    found: bool,
+) -> Result<serde_json::Value> {
+    let mut coverage = traversal_json(repo, store, filter, evidence, found)?;
+    if let Some(object) = coverage.as_object_mut() {
+        object.retain(|field, _| SUMMARY_FIELDS.contains(&field.as_str()));
+    }
+    coverage["compiler_index"] = serde_json::json!({
+        "state": coverage["compiler_index"]["state"].clone(),
+    });
+    Ok(coverage)
+}
+
+/// `traversal_json` when `full`, else `summary_json`: one call for a verb
+/// whose caller chose with `--coverage` / `include_coverage`.
+pub fn coverage_json(
+    repo: &Path,
+    store: &Store,
+    filter: &EdgeFilter,
+    evidence: TraversalEvidence,
+    found: bool,
+    full: bool,
+) -> Result<serde_json::Value> {
+    if full {
+        traversal_json(repo, store, filter, evidence, found)
+    } else {
+        summary_json(repo, store, filter, evidence, found)
+    }
+}
+
+/// Machine-readable trust envelope carried by every traversal answer: the
+/// full block. `summary_json` is the default answer's cut of it.
 pub fn traversal_json(
     repo: &Path,
     store: &Store,
@@ -856,9 +908,25 @@ pub fn print_traversal_footer(coverage: &serde_json::Value, snapshot: Option<&st
                 .join(",")
         );
     }
-    for text in query_gaps(coverage, verbose) {
+    if verbose {
+        for text in query_gaps(coverage, true) {
+            println!("  gap: {text}");
+        }
+    } else if let Some(text) = gap_line(coverage) {
         println!("  gap: {text}");
     }
+}
+
+/// The one default gap line: names the degraded relation instead of
+/// restating the repository-wide limitation, whose input counts change on
+/// every edit and never change a decision. `None` when no compiler index
+/// applies to this repository.
+fn gap_line(coverage: &serde_json::Value) -> Option<String> {
+    query_gaps(coverage, false).first()?;
+    let state = coverage["compiler_index"]["state"].as_str()?;
+    Some(format!(
+        "scip {state} — receiver/method calls may be missing"
+    ))
 }
 
 fn footer_line(coverage: &serde_json::Value, snapshot: Option<&str>) -> String {
@@ -990,8 +1058,8 @@ mod tests {
     use sinter_store::{EdgeFilter, Store};
 
     use super::{
-        Classifier, TraversalEvidence, UnresolvedCategory, footer_line, orientation_health_json,
-        query_gaps, slim_for_traversal, traversal_json,
+        Classifier, TraversalEvidence, UnresolvedCategory, footer_line, gap_line,
+        orientation_health_json, query_gaps, slim_for_traversal, summary_json, traversal_json,
     };
 
     fn item(name: &str, path: Option<&str>, reason: UnresolvedReason) -> UnresolvedReference {
@@ -1171,6 +1239,70 @@ mod tests {
             ["compiler index is stale (3 newer source/config inputs); run `sinter scip`"]
         );
         assert_eq!(query_gaps(&coverage, true).len(), 3);
+    }
+
+    #[test]
+    fn default_gap_line_names_the_index_state_without_input_counts() {
+        let mut coverage = serde_json::json!({
+            "compiler_index": {"state": "stale"},
+            "limitations": [
+                "compiler index is stale (14 newer source/config inputs); run `sinter scip`",
+            ],
+        });
+        assert_eq!(
+            gap_line(&coverage).as_deref(),
+            Some("scip stale — receiver/method calls may be missing")
+        );
+        coverage["compiler_index"]["state"] = serde_json::json!("missing");
+        assert_eq!(
+            gap_line(&coverage).as_deref(),
+            Some("scip missing — receiver/method calls may be missing")
+        );
+        // No compiler-index limitation: nothing is degraded, no line.
+        coverage["limitations"] = serde_json::json!([]);
+        assert_eq!(gap_line(&coverage), None);
+    }
+
+    #[test]
+    fn summary_keeps_the_claim_qualifiers_and_drops_repository_bulk() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::create_dir_all(repo.join(".sinter")).unwrap();
+        std::fs::write(
+            repo.join("Cargo.toml"),
+            "[package]\nname='fixture'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join("src/lib.rs"), "pub fn source() {}\n").unwrap();
+        let store = Store::create(repo.join(".sinter/graph.redb")).unwrap();
+        let filter = EdgeFilter::default();
+        let evidence = TraversalEvidence::from_confidences([Confidence::Inferred], 2);
+        let summary = summary_json(repo, &store, &filter, evidence, false).unwrap();
+        let mut keys: Vec<_> = summary.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "compiler_index",
+                "completeness",
+                "conclusive",
+                "evidence",
+                "snapshot",
+                "status"
+            ]
+        );
+        assert_eq!(summary["status"], "not_proven");
+        assert_eq!(summary["conclusive"], false);
+        assert_eq!(
+            summary["compiler_index"],
+            serde_json::json!({"state": "missing"})
+        );
+        assert_eq!(summary["evidence"]["possible"]["results"], 1);
+        assert_eq!(summary["evidence"]["unresolved"]["matching_query"], 2);
+        let full = traversal_json(repo, &store, &filter, evidence, false).unwrap();
+        assert!(full.get("limitations").is_some());
+        assert!(full.get("filters").is_some());
     }
 
     #[test]

@@ -145,7 +145,7 @@ fn negative_path_reports_snapshot_and_coverage_gaps() {
         "pub fn from() {}\npub fn to() {}\n// dirty, but query self-syncs it\n",
     )
     .unwrap();
-    let out = sinter(repo, &["path", "from", "to", "--json"]);
+    let out = sinter(repo, &["path", "from", "to", "--json", "--coverage"]);
     assert!(!out.status.success(), "a miss uses grep exit 1");
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let coverage = &value["coverage"];
