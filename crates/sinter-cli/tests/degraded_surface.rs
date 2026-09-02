@@ -98,9 +98,7 @@ fn affected_radius_with_only_external_refs_is_not_partial() {
     assert!(ok, "{out}");
     assert!(!out.contains("unresolved within this radius"), "{out}");
     assert!(
-        out.contains(
-            "unresolved in radius: 0 actionable (1 external/unsupported refs excluded)"
-        ),
+        out.contains("unresolved in radius: 0 actionable (1 external/unsupported refs excluded)"),
         "{out}"
     );
 
