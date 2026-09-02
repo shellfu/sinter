@@ -876,36 +876,38 @@ fn article(noun: &str) -> &'static str {
     }
 }
 
-/// Close every input schema and inject the two envelope-level arguments.
-/// No `outputSchema`: clients validate against it, agents never read it,
-/// and `structuredContent` is documented by the guide resource.
+/// Inject the three envelope-level arguments every tool honors. Defaults
+/// are stated once in the guide resource rather than on twelve schemas,
+/// and unknown arguments are rejected by `validate_arguments`, so no
+/// `additionalProperties` line is repeated here either. No `outputSchema`:
+/// clients validate against it, agents never read it, and
+/// `structuredContent` is documented by the guide resource.
 pub fn complete_tool_schemas(list: &mut Value) {
     for tool in list["tools"].as_array_mut().into_iter().flatten() {
-        if let Some(input) = tool.get_mut("inputSchema").and_then(Value::as_object_mut) {
-            input.insert("additionalProperties".to_string(), Value::Bool(false));
-            if let Some(props) = input.get_mut("properties").and_then(Value::as_object_mut) {
-                props.insert(
-                    "budget_bytes".to_string(),
-                    json!({
-                        "type": "integer", "minimum": 0, "default": MCP_DEFAULT_BUDGET_BYTES,
-                        "description": "max result bytes; 0 = unlimited",
-                    }),
-                );
-                props.insert(
-                    "cursor".to_string(),
-                    json!({
-                        "type": "integer", "minimum": 0, "default": 0,
-                        "description": "resume lists at prior next_cursor",
-                    }),
-                );
-                props.insert(
-                    "include_coverage".to_string(),
-                    json!({
-                        "type": "boolean", "default": false,
-                        "description": "keep the coverage block (universe, gaps, index)",
-                    }),
-                );
-            }
+        if let Some(input) = tool.get_mut("inputSchema").and_then(Value::as_object_mut)
+            && let Some(props) = input.get_mut("properties").and_then(Value::as_object_mut)
+        {
+            props.insert(
+                "budget_bytes".to_string(),
+                json!({
+                    "type": "integer",
+                    "description": "max bytes; 0 = all (8000)",
+                }),
+            );
+            props.insert(
+                "cursor".to_string(),
+                json!({
+                    "type": "integer", "minimum": 0,
+                    "description": "resume at next_cursor",
+                }),
+            );
+            props.insert(
+                "include_coverage".to_string(),
+                json!({
+                    "type": "boolean",
+                    "description": "keep the coverage block",
+                }),
+            );
         }
         tool["annotations"] = json!({"readOnlyHint": true});
     }
@@ -1072,7 +1074,7 @@ mod tests {
     /// and a wrong type is a named rejection rather than a silent default.
     #[test]
     fn arguments_are_checked_against_the_advertised_schema() {
-        let injected = ["budget_bytes", "cursor", "include_coverage"];
+        let injected = ["budget_bytes", "cursor"];
         for (workspace, catalog) in [
             (false, crate::tool_catalog::repository()),
             (true, crate::tool_catalog::workspace()),
@@ -1152,8 +1154,8 @@ mod tests {
                 .contains("`scope[0]` must be one of")
         );
         assert!(
-            reject(json!({"symbol": "x", "min_confidence": "sure"}))
-                .contains("`min_confidence` must be one of")
+            reject(json!({"symbol": "x", "min_confidence": "certain"}))
+                .contains("unknown argument `min_confidence`")
         );
         assert!(
             reject(json!({"symbol": "x", "cursor": -5}))
@@ -1612,19 +1614,29 @@ mod tests {
         assert!(data["coverage"].get("compiler_index").is_none());
     }
 
+    /// Unknown arguments are rejected by `validate_arguments`, not by an
+    /// `additionalProperties: false` line repeated on every schema.
     #[test]
-    fn schemas_are_closed_and_carry_no_output_schema() {
+    fn envelope_arguments_are_injected_and_unknown_ones_rejected() {
         let mut list = json!({"tools": [{
             "name": "query",
             "inputSchema": {"type": "object", "properties": {"symbol": {"type": "string"}}}
         }]});
         complete_tool_schemas(&mut list);
         let tool = &list["tools"][0];
-        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
         assert!(tool.get("outputSchema").is_none());
-        assert_eq!(
-            tool["inputSchema"]["properties"]["include_coverage"]["default"],
-            false
+        assert_eq!(tool["annotations"]["readOnlyHint"], true);
+        for key in ["budget_bytes", "cursor", "include_coverage"] {
+            assert!(
+                tool["inputSchema"]["properties"].get(key).is_some(),
+                "{key}"
+            );
+        }
+        assert!(
+            validate_arguments("query", &json!({"symbol": "x", "nope": 1}), false)
+                .unwrap_err()
+                .to_string()
+                .contains("unknown argument `nope`")
         );
     }
 

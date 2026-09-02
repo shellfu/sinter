@@ -463,8 +463,8 @@ fn agent_protocol_matches_cli_and_mcp() {
         .collect();
 
     for tool in responses[0]["result"]["tools"].as_array().unwrap() {
-        assert_eq!(tool["inputSchema"]["additionalProperties"], false, "{tool}");
         assert!(tool.get("outputSchema").is_none(), "{tool}");
+        assert_eq!(tool["annotations"]["readOnlyHint"], true, "{tool}");
     }
     let ask_tool = responses[0]["result"]["tools"]
         .as_array()
@@ -475,10 +475,6 @@ fn agent_protocol_matches_cli_and_mcp() {
     assert_eq!(
         ask_tool["inputSchema"]["properties"]["explain"]["type"],
         "boolean"
-    );
-    assert_eq!(
-        ask_tool["inputSchema"]["properties"]["explain"]["default"],
-        false
     );
     let structured = &responses[1]["result"]["structuredContent"];
     assert_eq!(structured["protocol"], "sinter.agent.v1");

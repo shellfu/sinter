@@ -64,3 +64,41 @@ fn doctor_reports_old_schema_and_keeps_going() {
         "summary must render: {out}"
     );
 }
+
+/// `--verbose` is a workspace flag too: the partial-syntax file list is
+/// what it exists for, and workspace mode reports the same gaps per member.
+#[test]
+fn workspace_doctor_honors_verbose_per_member() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let write = |rel: &str, content: &str| {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    };
+    write("a/src/lib.rs", "pub fn ok() {}\n");
+    // Tree-sitter recovers past the error, so `b` indexes from a partial tree.
+    write("b/src/lib.rs", "pub fn ok() {}\npub fn broken( {\n");
+    write(
+        "workspace.toml",
+        "[workspace]\nname = \"t\"\n\n[members]\na = \"a\"\nb = \"b\"\n",
+    );
+    let (code, out) = sinter_raw(root, &["workspace", "workspace.toml"]);
+    assert_eq!(code, Some(0), "{out}");
+
+    let (_, quiet) = sinter_raw(root, &["doctor", "--workspace", "workspace.toml"]);
+    assert!(
+        quiet.contains("member b: 1 file(s) indexed from partial syntax trees"),
+        "{quiet}"
+    );
+    assert!(quiet.contains("--verbose` lists them"), "{quiet}");
+    assert!(!quiet.contains("src/lib.rs"), "{quiet}");
+
+    let (_, loud) = sinter_raw(
+        root,
+        &["doctor", "--workspace", "workspace.toml", "--verbose"],
+    );
+    assert!(loud.contains("member b: 1 file(s)"), "{loud}");
+    assert!(loud.contains("src/lib.rs"), "{loud}");
+    assert!(!loud.contains("--verbose` lists them"), "{loud}");
+}

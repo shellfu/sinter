@@ -977,7 +977,7 @@ fn cli_main() -> ExitCode {
             verbose,
         } => {
             let result = match workspace {
-                Some(manifest) => doctor::run_workspace(&manifest, fix, json),
+                Some(manifest) => doctor::run_workspace(&manifest, fix, json, verbose),
                 None => doctor::run(repo.path(), fix, json, verbose),
             };
             return match result {
