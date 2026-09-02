@@ -3,8 +3,8 @@ use std::path::Path;
 use anyhow::Result;
 use sinter_resolve::qualified_of;
 
-use sinter_core::Node;
-use sinter_store::Store;
+use sinter_core::{CorpusScope, Node, SymbolKind};
+use sinter_store::{ScopeIndex, Store};
 
 use crate::corpus::ScopeSelection;
 use crate::lookup::{Found, ensure_snapshot, find_symbol, open_store};
@@ -13,6 +13,10 @@ use crate::render::{line_of, location, node_json};
 /// Wide trigram net before local ranking: the store cuts at `limit`
 /// *before* its majority filter, so a tight limit drops good names.
 const SUGGESTION_POOL: usize = 64;
+
+/// A markdown section carries its whole body as `doc`; a finder shows
+/// this much of it and leaves the rest to `show`.
+const SECTION_DOC_CHARS: usize = 200;
 
 fn trigrams(s: &str) -> Vec<String> {
     let chars: Vec<char> = s.chars().collect();
@@ -34,6 +38,19 @@ fn rank_suggestions(store: &Store, symbol: &str) -> Result<Vec<Node>> {
     Ok(nodes)
 }
 
+/// Shipped code first, whatever produced the list: an exact `Env` is the
+/// one in `src/`, not nine test-local copies; a fuzzy list is not all
+/// test names. Stable, so the finer ranking within a tier survives.
+fn production_first(nodes: &mut [Node], scopes: &ScopeIndex) {
+    let tier = |n: &Node| match scopes.scope_of(n) {
+        CorpusScope::Production => 0,
+        CorpusScope::Docs => 1,
+        CorpusScope::Generated | CorpusScope::Vendor => 3,
+        _ => 2,
+    };
+    nodes.sort_by_key(tier);
+}
+
 /// `head*tail` when the symbol holds exactly one `*`; `None` for exact
 /// lookup. Only `*` is supported.
 fn glob_parts(symbol: &str) -> Result<Option<(&str, &str)>> {
@@ -44,6 +61,18 @@ fn glob_parts(symbol: &str) -> Result<Option<(&str, &str)>> {
         }
         Some(parts) => Ok(Some(parts)),
     }
+}
+
+/// The node's doc, a section body cut to [`SECTION_DOC_CHARS`].
+fn capped_doc(node: &Node) -> Option<String> {
+    let doc = node.doc.as_deref()?;
+    if node.kind != SymbolKind::Section || doc.chars().count() <= SECTION_DOC_CHARS {
+        return Some(doc.to_string());
+    }
+    Some(format!(
+        "{}…",
+        doc.chars().take(SECTION_DOC_CHARS).collect::<String>()
+    ))
 }
 
 /// `file:LINE (start..end)` header plus signature and doc, matching `show`.
@@ -60,7 +89,7 @@ fn print_node(repo: &Path, node: &Node) {
     if !node.signature.is_empty() {
         println!("    {}", node.signature);
     }
-    if let Some(doc) = &node.doc {
+    if let Some(doc) = capped_doc(node) {
         for l in doc.lines().take(3) {
             println!("    /// {l}");
         }
@@ -68,7 +97,8 @@ fn print_node(repo: &Path, node: &Node) {
 }
 
 /// `sinter query`: exact + trigram symbol search, content-bearing results.
-/// Ok(true) when anything matched (grep-style exit codes).
+/// Ok(true) when the symbol matched (grep-style exit codes): a fuzzy
+/// suggestion list is a miss with hints, not a hit.
 pub fn run(
     repo: &Path,
     symbol: &str,
@@ -93,6 +123,8 @@ pub fn run(
     };
     let scope_index = store.scope_index()?;
     scopes.narrow(&mut nodes, &scope_index);
+    production_first(&mut nodes, &scope_index);
+    let found = exact && !nodes.is_empty();
     if json {
         // Same shape as the MCP `query` tool.
         let mut out = serde_json::json!({
@@ -102,6 +134,7 @@ pub fn run(
             "scope": scopes.json(),
             "results": nodes.iter().take(limit).map(|node| {
                 let mut value = node_json(node);
+                value["doc"] = serde_json::json!(capped_doc(node));
                 value["scope"] = serde_json::json!(scope_index.scope_of(node).as_str());
                 value
             }).collect::<Vec<_>>(),
@@ -110,7 +143,7 @@ pub fn run(
             out["truncated"] = serde_json::json!(nodes.len() - limit);
         }
         crate::agent_protocol::write_json(&out)?;
-        return Ok(!nodes.is_empty());
+        return Ok(found);
     }
     if nodes.is_empty() {
         println!("no matches for `{symbol}`");
@@ -136,12 +169,13 @@ pub fn run(
             nodes.len(),
         );
     }
-    Ok(!nodes.is_empty())
+    Ok(found)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::glob_parts;
+    use super::{SECTION_DOC_CHARS, capped_doc, glob_parts};
+    use sinter_core::{Node, NodeId, Span, SymbolKind};
 
     #[test]
     fn glob_parts_splits_single_star() {
@@ -150,5 +184,29 @@ mod tests {
         assert_eq!(glob_parts("resolve_*").unwrap(), Some(("resolve_", "")));
         assert_eq!(glob_parts("run").unwrap(), None);
         assert!(glob_parts("a*b*").is_err());
+    }
+
+    fn node(kind: SymbolKind, doc: &str) -> Node {
+        Node {
+            id: NodeId::new("README.md#Intro@0"),
+            kind,
+            name: "Intro".into(),
+            file: "README.md".into(),
+            span: Span { start: 0, end: 1 },
+            signature: String::new(),
+            doc: Some(doc.into()),
+        }
+    }
+
+    #[test]
+    fn section_bodies_are_capped_and_code_docs_are_not() {
+        let long = "x".repeat(SECTION_DOC_CHARS + 50);
+        let section = capped_doc(&node(SymbolKind::Section, &long)).unwrap();
+        assert_eq!(section.chars().count(), SECTION_DOC_CHARS + 1);
+        assert!(section.ends_with('…'));
+        assert_eq!(
+            capped_doc(&node(SymbolKind::Function, &long)).as_deref(),
+            Some(long.as_str())
+        );
     }
 }

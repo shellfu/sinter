@@ -756,11 +756,27 @@ fn show_card_and_ambiguity() {
         .filter(|l| l.starts_with("  | ") && !l.starts_with("  | …"))
         .collect();
     assert_eq!(shown.len(), 2, "{two}");
-    // The cut is announced, with the count that would show everything.
+    // The cut is announced, with the flag that shows everything.
     assert!(
-        two.contains("  | … 4 more lines (--context-lines 6 for all)"),
+        two.contains("  | … 4 more lines (--context-lines 0 for all)"),
         "{two}"
     );
+    // `0` is the whole span, reported as uncut.
+    let (ok, whole) = sinter(
+        repo,
+        &[
+            "show",
+            "PlayerCharacterV2",
+            "--json",
+            "--body",
+            "--context-lines",
+            "0",
+        ],
+    );
+    assert!(ok, "{whole}");
+    let v: serde_json::Value = serde_json::from_str(&whole).unwrap();
+    assert_eq!(v["excerpt_truncated"], false, "{whole}");
+    assert_eq!(v["excerpt"].as_str().unwrap().lines().count(), 6, "{whole}");
 
     // JSON: `excerpt` only with --body.
     let (ok, plain) = sinter(repo, &["show", "PlayerCharacterV2", "--json"]);
