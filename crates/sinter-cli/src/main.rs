@@ -28,6 +28,7 @@ mod repository_tools;
 mod scip;
 mod serve;
 mod show;
+mod testcmd;
 mod tool_catalog;
 mod uninit;
 mod unresolved;
@@ -495,15 +496,19 @@ enum Command {
         #[command(flatten)]
         filter: FilterArgs,
     },
-    /// Text search bounded by a graph traversal: `sinter grep '<pat>'
-    /// --within 'affected(Decision)'`
+    /// Text search over the indexed corpus, optionally bounded by a graph
+    /// traversal: `sinter grep '<pat>' --within 'affected(Decision)'`
     Grep {
         /// Regular expression to search for
         pattern: String,
         /// Traversal that bounds the search: `affected(SYM)`, `deps(SYM)`,
-        /// `file(PATH)`. Repeatable; the bounded file sets are unioned.
-        #[arg(long = "within", required = true, value_name = "TRAVERSAL")]
+        /// `file(PATH|DIR)`. Repeatable; the bounded file sets are unioned.
+        /// Without it every indexed file in `--scope` is searched.
+        #[arg(long = "within", value_name = "TRAVERSAL")]
         within: Vec<String>,
+        /// Leave test-scoped files out of the search
+        #[arg(long)]
+        no_tests: bool,
         /// Repository to query
         #[arg(long, default_value = ".")]
         repo: PathBuf,
@@ -1272,6 +1277,7 @@ fn cli_main() -> ExitCode {
         Command::Grep {
             pattern,
             within,
+            no_tests,
             repo,
             max_depth,
             limit,
@@ -1280,8 +1286,11 @@ fn cli_main() -> ExitCode {
             filter,
             relations,
         } => {
-            let result = traversal_filter(&filter, &relations, &scope)
-                .and_then(|f| grep::run(&repo, &pattern, &within, &f, max_depth, limit, json));
+            let result = traversal_filter(&filter, &relations, &scope).and_then(|f| {
+                grep::run(
+                    &repo, &pattern, &within, &f, max_depth, limit, no_tests, json,
+                )
+            });
             return if json {
                 grep_exit_json("grep", result)
             } else {
