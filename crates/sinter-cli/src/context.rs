@@ -1,14 +1,15 @@
 //! `sinter context "<task>"`: the smallest evidence packet an agent needs
 //! before editing. Pure composition over `ask`, `show`-style cards, depth-1
-//! `deps`/`affected`, `impact`'s affected-test selection, and one coverage
-//! envelope. No new graph machinery, no scoring of its own.
+//! `deps`/`affected`, `impact`'s affected-test selection, `grep`'s literal
+//! pass, and one coverage envelope. No new graph machinery, no scoring of
+//! its own.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 use anyhow::Result;
 use serde_json::{Value, json};
-use sinter_core::{Confidence, Node, NodeId, Relation, SymbolKind};
+use sinter_core::{Confidence, CorpusScope, Node, NodeId, Relation, SymbolKind};
 use sinter_resolve::qualified_of;
 use sinter_store::{EdgeFilter, Reached, Store};
 
@@ -34,8 +35,28 @@ const MIN_WORD_LEN: usize = 3;
 const MAX_IDENTIFIERS: usize = 12;
 /// A name with more definitions than this grounds nothing in particular.
 const MAX_ANCHOR_NODES: usize = 3;
-/// Content terms (already stop-filtered by the `ask` parser) offered to `rg`.
-const RG_TERMS: usize = 4;
+/// Content terms (already stop-filtered by the `ask` parser) offered to
+/// `sinter grep` when nothing ranked.
+const GREP_TERMS: usize = 4;
+/// Lexical hits below which an abstaining `ask` also abstains the packet;
+/// at or above it the list is an answer whatever the calibration says.
+const MIN_LEXICAL_HITS: usize = 3;
+/// Trigram candidates consulted for one fuzzy anchor hop, and the
+/// shortest word worth a hop (`CLI` lands on anything; `supervisor` does
+/// not).
+const FUZZY_CANDIDATES: usize = 10;
+const MIN_FUZZY_LEN: usize = 5;
+/// Literal-pass bounds: hits scanned, rows kept per list.
+const LITERAL_CAP: usize = 200;
+const LITERAL_ROWS: usize = 12;
+/// Package manifests that bound a test command's working directory.
+const MANIFESTS: &[&str] = &[
+    "Cargo.toml",
+    "go.mod",
+    "package.json",
+    "pyproject.toml",
+    "setup.py",
+];
 /// Symbols a file anchor contributes as candidates, highest in-degree first.
 const FILE_CANDIDATES: usize = 10;
 /// A bare token ending in one of these names a file, never a symbol.
@@ -169,13 +190,15 @@ struct Anchor {
     node: Node,
     /// Symbols defined in an anchored file, highest in-degree first.
     contained: Vec<Node>,
+    /// Reached by one trigram hop, not by name.
+    fuzzy: bool,
 }
 
 /// What the task's identifiers grounded to, and what they did not.
 #[derive(Default)]
 struct Grounding {
     anchors: Vec<Anchor>,
-    unresolved: Vec<String>,
+    unresolved: Vec<(Shape, String)>,
     /// `(term, matching paths)` for a file name that fits several files.
     ambiguous_files: Vec<(String, Vec<String>)>,
 }
@@ -237,13 +260,53 @@ fn file_anchor(store: &Store, term: &str) -> Result<Result<Option<Anchor>, Vec<S
             .take(FILE_CANDIDATES)
             .map(|(_, n)| n)
             .collect(),
+        fuzzy: false,
     })))
 }
 
+/// `main`, `run*`, `*Command`: where a task usually starts.
+fn is_entry_point(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower == "main" || lower.starts_with("run") || lower.ends_with("command")
+}
+
+/// One trigram hop for an intent word nothing grounded (`supervisor` ->
+/// `supervisorCommand`). Only a name that contains the word, in preferred
+/// scope; a bare English word may only land on an entry point, since it
+/// otherwise names the lexical bait this pre-pass exists to avoid.
+fn fuzzy_anchor(
+    store: &Store,
+    scope_index: &sinter_store::ScopeIndex,
+    preferred: &BTreeSet<CorpusScope>,
+    shape: Shape,
+    term: &str,
+) -> Result<Option<Node>> {
+    let lower = term.to_lowercase();
+    let mut close: Vec<Node> = store
+        .search(term, FUZZY_CANDIDATES)?
+        .into_iter()
+        .filter(|n| !matches!(n.kind, SymbolKind::File | SymbolKind::Section))
+        .filter(|n| {
+            let name = n.name.to_lowercase();
+            name != lower && name.contains(&lower)
+        })
+        .filter(|n| shape != Shape::Bare || is_entry_point(&n.name))
+        .filter(|n| preferred.contains(&scope_index.scope_of(n)))
+        .collect();
+    close.sort_by(|a, b| {
+        is_entry_point(&b.name)
+            .cmp(&is_entry_point(&a.name))
+            .then_with(|| a.name.len().cmp(&b.name.len()))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(close.into_iter().next())
+}
+
 /// Resolve the task string's identifiers against real node names before any
-/// lexical scoring runs. Exact and qualified-suffix matches only — the fuzzy
-/// path is the guessing this pre-pass exists to replace. Whatever fails to
-/// ground is returned so the caller can report it instead of dropping it.
+/// lexical scoring runs. Exact and qualified-suffix matches first; only when
+/// none grounds does one bounded fuzzy hop run (see `fuzzy_anchor`).
+/// Whatever fails to ground is returned so the caller can report it instead
+/// of dropping it.
 fn anchors_of(store: &Store, task: &str) -> Result<Grounding> {
     let scope_index = store.scope_index()?;
     let preferred = ScopeSelection::agent_default().as_set();
@@ -255,7 +318,7 @@ fn anchors_of(store: &Store, task: &str) -> Result<Grounding> {
         if is_path_like(&term) {
             match file_anchor(store, &term)? {
                 Ok(Some(anchor)) => g.anchors.push(anchor),
-                Ok(None) => g.unresolved.push(term),
+                Ok(None) => g.unresolved.push((shape, term)),
                 Err(paths) => g.ambiguous_files.push((term, paths)),
             }
             continue;
@@ -263,7 +326,7 @@ fn anchors_of(store: &Store, task: &str) -> Result<Grounding> {
         let nodes = match find_symbol(store, &term)? {
             Found::Exact(nodes) if nodes.len() <= MAX_ANCHOR_NODES => nodes,
             _ => {
-                g.unresolved.push(term);
+                g.unresolved.push((shape, term));
                 continue;
             }
         };
@@ -277,7 +340,7 @@ fn anchors_of(store: &Store, task: &str) -> Result<Grounding> {
             .filter(|n| preferred.contains(&scope_index.scope_of(n)))
             .collect();
         if grounded.is_empty() {
-            g.unresolved.push(term);
+            g.unresolved.push((shape, term));
             continue;
         }
         for node in grounded {
@@ -289,6 +352,29 @@ fn anchors_of(store: &Store, task: &str) -> Result<Grounding> {
                     term: term.clone(),
                     node,
                     contained: Vec::new(),
+                    fuzzy: false,
+                });
+            }
+        }
+    }
+    // Nothing named a node outright: one fuzzy hop per intent word, so a
+    // task can still ground before lexical ranking guesses for it.
+    if g.anchors.is_empty() {
+        for (shape, term) in &g.unresolved {
+            if g.anchors.len() == MAX_FOCUS {
+                break;
+            }
+            if is_path_like(term) || term.chars().count() < MIN_FUZZY_LEN {
+                continue;
+            }
+            if let Some(node) = fuzzy_anchor(store, &scope_index, &preferred, *shape, term)?
+                && g.anchors.iter().all(|a| a.node.id != node.id)
+            {
+                g.anchors.push(Anchor {
+                    term: term.clone(),
+                    node,
+                    contained: Vec::new(),
+                    fuzzy: true,
                 });
             }
         }
@@ -297,15 +383,156 @@ fn anchors_of(store: &Store, task: &str) -> Result<Grounding> {
 }
 
 /// `card` reads its provenance from an `ask` hit; an anchor states its own.
-fn anchor_hit(node: &Node, term: &str) -> Value {
+fn anchor_hit(anchor: &Anchor) -> Value {
+    let node = &anchor.node;
     json!({
         "id": node.symbol_key().as_str(),
         "snapshot_id": node.id.as_str(),
         "doc": node.doc,
-        "matched": [term],
+        "matched": [anchor.term],
         "roles": ["anchor"],
-        "channels": ["identifier"],
+        "channels": [if anchor.fuzzy { "fuzzy" } else { "identifier" }],
     })
+}
+
+/// Language key `testcmd` understands, from a file's extension.
+fn language_of(file: &str) -> &'static str {
+    match file.rsplit('.').next().unwrap_or("") {
+        "rs" => "rust",
+        "go" => "go",
+        "ts" | "tsx" | "mts" => "typescript",
+        "js" | "jsx" | "mjs" | "cjs" => "javascript",
+        "py" => "python",
+        _ => "",
+    }
+}
+
+/// Nearest ancestor of `file` holding a package manifest, repository-
+/// relative; empty for the root.
+fn package_dir_of(root: &Path, file: &str) -> String {
+    let mut dir = Path::new(file).parent();
+    while let Some(d) = dir {
+        if MANIFESTS.iter().any(|m| root.join(d).join(m).is_file()) {
+            return d.to_string_lossy().into_owned();
+        }
+        dir = d.parent();
+    }
+    String::new()
+}
+
+/// Conventional test file names, for a file node the scope index did not
+/// mark (`index.test.ts` beside its source).
+fn is_test_file(file: &str) -> bool {
+    let base = file.rsplit('/').next().unwrap_or(file);
+    base.contains(".test.")
+        || base.contains(".spec.")
+        || base.ends_with("_test.go")
+        || base.ends_with("_test.py")
+        || base.starts_with("test_")
+        || file.starts_with("tests/")
+        || file.contains("/tests/")
+        || file.contains("/test/")
+        || file.contains("/__tests__/")
+}
+
+/// The runnable command for one affected test: the exact cargo target
+/// when the layout names one, otherwise the ecosystem's runner.
+fn command_for(root: &Path, store: &Store, test: &crate::impact::SymbolRef) -> Option<String> {
+    let language = language_of(&test.file);
+    if language == "rust"
+        && let Some(cmd) =
+            test_node(store, test).and_then(|n| crate::impact::test_command(root, &n))
+    {
+        return Some(cmd);
+    }
+    if language.is_empty() {
+        return None;
+    }
+    let name = if test.kind == "file" {
+        ""
+    } else {
+        test.qualified
+            .rsplit("::")
+            .next()
+            .unwrap_or(&test.qualified)
+    };
+    Some(crate::testcmd::test_command(
+        language,
+        &package_dir_of(root, &test.file),
+        &test.file,
+        name,
+    ))
+}
+
+/// Affected-test rows for the focus set: `impact`'s selection plus test
+/// *files* the radius reached by import (a TS suite keeps its cases in
+/// callbacks the graph has no node for, so the file is the test). Each
+/// row carries `via`, the first hop, when the test was not a direct
+/// dependent; direct rows sort first.
+fn test_rows(
+    root: &Path,
+    store: &Store,
+    focus: &[Node],
+    filter: &EdgeFilter,
+) -> Result<Vec<Value>> {
+    let mut reached: BTreeMap<String, (Node, String)> = BTreeMap::new();
+    for node in focus {
+        for r in store.dependents(&node.id, filter, 25)? {
+            reached
+                .entry(r.node.id.as_str().to_owned())
+                .or_insert((r.node, r.via.dst.as_str().to_owned()));
+        }
+    }
+    for node in focus {
+        reached.remove(node.id.as_str());
+    }
+    let radius: BTreeMap<String, Node> = reached
+        .iter()
+        .map(|(id, (node, _))| (id.clone(), node.clone()))
+        .collect();
+    let scope_index = store.scope_index()?;
+    let mut tests = crate::impact::affected_tests(store, &radius, focus)?;
+    for (node, _) in reached.values() {
+        if node.kind == SymbolKind::File
+            && (scope_index.scope_of(node) == CorpusScope::Test || is_test_file(&node.file))
+        {
+            tests.push(crate::impact::SymbolRef {
+                qualified: node.file.clone(),
+                kind: "file",
+                file: node.file.clone(),
+            });
+        }
+    }
+    let focus_ids: BTreeSet<&str> = focus.iter().map(|n| n.id.as_str()).collect();
+    let via_of: HashMap<(String, String), Option<String>> = reached
+        .values()
+        .map(|(node, via)| {
+            let hop = (!focus_ids.contains(via.as_str())).then(|| qualified_of(via).to_owned());
+            (
+                (node.file.clone(), qualified_of(node.id.as_str()).to_owned()),
+                hop,
+            )
+        })
+        .collect();
+    let mut rows: Vec<(Option<String>, Value)> = tests
+        .iter()
+        .map(|t| {
+            let via = via_of
+                .get(&(t.file.clone(), t.qualified.clone()))
+                .cloned()
+                .flatten();
+            let row = json!({
+                "qualified": t.qualified,
+                "kind": t.kind,
+                "file": t.file,
+                "cmd": command_for(root, store, t),
+                "via": via,
+            });
+            (via, row)
+        })
+        .collect();
+    rows.sort_by_key(|(via, _)| via.is_some());
+    Ok(rows.into_iter().map(|(_, row)| row).collect())
 }
 
 /// The node behind one affected-test row, so `impact` can render its
@@ -318,7 +545,8 @@ fn test_node(store: &Store, test: &crate::impact::SymbolRef) -> Option<Node> {
 }
 
 /// Every `ask` hit across topics, best first, deduplicated by handle.
-fn ranked_hits(ask: &Value) -> Vec<Value> {
+/// Prose sections sit below code unless the task reaches for docs.
+fn ranked_hits(ask: &Value, wants_docs: bool) -> Vec<Value> {
     let mut hits: Vec<Value> = ask["topics"]
         .as_array()
         .into_iter()
@@ -326,6 +554,9 @@ fn ranked_hits(ask: &Value) -> Vec<Value> {
         .flat_map(|topic| topic["hits"].as_array().into_iter().flatten().cloned())
         .collect();
     hits.sort_by(|a, b| b["score"].as_i64().cmp(&a["score"].as_i64()));
+    if !wants_docs {
+        hits.sort_by_key(|hit| hit["kind"] == "section");
+    }
     let mut seen = BTreeSet::new();
     hits.retain(|hit| seen.insert(hit["id"].as_str().unwrap_or("").to_owned()));
     hits
@@ -431,7 +662,7 @@ pub(crate) fn response(repo: &Path, store: &Store, task: &str) -> Result<Value> 
         unresolved: unresolved_intents,
         ambiguous_files,
     } = anchors_of(store, task)?;
-    let hits = ranked_hits(&ask);
+    let hits = ranked_hits(&ask, crate::ask::query::wants_docs(task));
     let top = hits.first().and_then(|h| h["score"].as_i64()).unwrap_or(0);
 
     let filter = EdgeFilter::default();
@@ -441,7 +672,7 @@ pub(crate) fn response(repo: &Path, store: &Store, task: &str) -> Result<Value> 
     let mut unresolved = 0usize;
     let mut rank = 0usize;
     for anchor in &anchors {
-        let hit = anchor_hit(&anchor.node, &anchor.term);
+        let hit = anchor_hit(anchor);
         let mut entry = card(&root, store, &hit, &anchor.node, &filter, &mut confidences)?;
         rank += 1;
         entry["rank"] = json!(rank);
@@ -516,25 +747,29 @@ pub(crate) fn response(repo: &Path, store: &Store, task: &str) -> Result<Value> 
         candidates.push(entry);
     }
 
-    let radius = crate::impact::blast_radius(store, &filter, &focus)?;
-    let tests = crate::impact::affected_tests(store, &radius, &focus)?;
-    let tests_total = tests.len();
-    let test_rows: Vec<Value> = tests
+    let mut test_rows = test_rows(&root, store, &focus, &filter)?;
+    let tests_total = test_rows.len();
+    test_rows.truncate(TEST_ROWS);
+
+    // Literal pass: the task's quoted strings and flags, verbatim, which no
+    // symbol name carries. Manifest and completion-table hits are mirrors
+    // of a registration made in code.
+    let literal_hits =
+        crate::grep::literal_scan(&root, &crate::grep::literal_tokens(task), LITERAL_CAP);
+    let (mirrors, literals): (Vec<&crate::grep::Hit>, Vec<&crate::grep::Hit>) = literal_hits
         .iter()
-        .take(TEST_ROWS)
-        .map(|t| {
-            let cmd = test_node(store, t).and_then(|n| crate::impact::test_command(&root, &n));
-            json!({"qualified": t.qualified, "kind": t.kind, "file": t.file, "cmd": cmd})
-        })
-        .collect();
+        .partition(|h| crate::grep::is_mirror_file(&h.file));
 
     let evidence = crate::coverage::TraversalEvidence::from_confidences(confidences, unresolved);
     let coverage =
         crate::coverage::traversal_json(&root, store, &filter, evidence, !focus.is_empty())?;
 
     let grounded = !anchors.is_empty();
+    // An anchor or a real candidate list is an answer whatever `ask`'s
+    // calibration says about its own top hit.
+    let ranked = grounded || hits.len() >= MIN_LEXICAL_HITS || (!abstain && !focus.is_empty());
     let mut next_actions: Vec<String> = Vec::new();
-    if !grounded && (abstain || focus.is_empty()) {
+    if !ranked {
         let terms = ask["topics"]
             .as_array()
             .into_iter()
@@ -542,10 +777,10 @@ pub(crate) fn response(repo: &Path, store: &Store, task: &str) -> Result<Value> 
             .flat_map(|t| t["query_terms"].as_array().into_iter().flatten())
             .filter_map(Value::as_str)
             .filter(|term| term.len() > 2)
-            .take(RG_TERMS)
+            .take(GREP_TERMS)
             .collect::<Vec<_>>()
             .join("|");
-        next_actions.push(format!("rg -n \"{terms}\""));
+        next_actions.push(format!("sinter grep '{terms}'"));
         next_actions.push("sinter map".to_string());
         next_actions.push("sinter ask \"<one concrete term from the task>\"".to_string());
     }
@@ -560,7 +795,7 @@ pub(crate) fn response(repo: &Path, store: &Store, task: &str) -> Result<Value> 
     Ok(json!({
         "task": task,
         "snapshot": snapshot,
-        "outcome": if grounded || !(abstain || focus.is_empty()) { "ranked" } else { "abstain" },
+        "outcome": if ranked { "ranked" } else { "abstain" },
         "anchors": anchors
             .iter()
             .map(|a| json!({
@@ -568,12 +803,17 @@ pub(crate) fn response(repo: &Path, store: &Store, task: &str) -> Result<Value> 
                 "qualified": qualified_of(a.node.id.as_str()),
                 "k": a.node.kind.as_str(),
                 "f": a.node.file,
+                "fuzzy": a.fuzzy,
             }))
             .collect::<Vec<_>>(),
-        "unresolved_intents": unresolved_intents,
+        "unresolved_intents": unresolved_intents.iter().map(|(_, t)| t).collect::<Vec<_>>(),
         "candidates": candidates,
         "tests": test_rows,
         "tests_total": tests_total,
+        "literals": literals.iter().take(LITERAL_ROWS).map(|h| h.json()).collect::<Vec<_>>(),
+        "literals_total": literals.len(),
+        "mirrors": mirrors.iter().take(LITERAL_ROWS).map(|h| h.json()).collect::<Vec<_>>(),
+        "mirrors_total": mirrors.len(),
         "gaps": {
             "abstain_reason": abstain_reason,
             "ambiguous_files": ambiguous_files
@@ -643,23 +883,15 @@ fn print_packet(p: &Value) {
         .flatten()
         .map(|a| {
             format!(
-                "{} -> {}",
+                "{} {} {}",
                 a["term"].as_str().unwrap_or(""),
+                if a["fuzzy"] == true { "~>" } else { "->" },
                 a["qualified"].as_str().unwrap_or("")
             )
         })
         .collect();
     if !anchors.is_empty() {
         println!("anchors: {}", anchors.join(", "));
-    }
-    let intents: Vec<&str> = p["unresolved_intents"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect();
-    if !intents.is_empty() {
-        println!("unresolved intents: {}", intents.join(", "));
     }
     for a in p["gaps"]["ambiguous_files"]
         .as_array()
@@ -732,10 +964,13 @@ fn print_packet(p: &Value) {
         tests.len()
     );
     for t in tests.iter().take(PRINTED_TESTS) {
+        let via = t["via"]
+            .as_str()
+            .map_or(String::new(), |via| format!("  (via {via})"));
         match t["cmd"].as_str() {
-            Some(cmd) => println!("  {cmd}"),
+            Some(cmd) => println!("  {cmd}{via}"),
             None => println!(
-                "  # {} ({})",
+                "  # {} ({}){via}",
                 t["qualified"].as_str().unwrap_or(""),
                 t["file"].as_str().unwrap_or("")
             ),
@@ -743,6 +978,25 @@ fn print_packet(p: &Value) {
     }
     if let Some(rest) = tests.len().checked_sub(PRINTED_TESTS).filter(|n| *n > 0) {
         println!("  # +{rest} more (--json for all)");
+    }
+    for key in ["literals", "mirrors"] {
+        let rows = p[key].as_array().map_or(&[][..], Vec::as_slice);
+        if rows.is_empty() {
+            continue;
+        }
+        println!(
+            "{key} ({} found, {} shown):",
+            p[format!("{key}_total")],
+            rows.len()
+        );
+        for row in rows {
+            println!(
+                "  {}:{}: {}",
+                row["f"].as_str().unwrap_or(""),
+                row["l"],
+                ellipsize(row["t"].as_str().unwrap_or("").trim(), 100)
+            );
+        }
     }
     println!(
         "gaps: coverage {}; unresolved refs naming candidates {}; abstain {}",
@@ -759,7 +1013,23 @@ fn print_packet(p: &Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Shape, identifier_candidates, lexical_query, one_line};
+    use super::{
+        Shape, identifier_candidates, is_entry_point, is_test_file, language_of, lexical_query,
+        one_line,
+    };
+
+    #[test]
+    fn test_rows_know_their_language_and_file_shape() {
+        assert_eq!(language_of("src/index.test.ts"), "typescript");
+        assert_eq!(language_of("pkg/a_test.go"), "go");
+        assert_eq!(language_of("notes.md"), "");
+        assert!(is_test_file("packages/cli/src/index.test.ts"));
+        assert!(is_test_file("tests/surface.rs"));
+        assert!(!is_test_file("src/testing_helpers.rs"));
+        assert!(is_entry_point("supervisorCommand"));
+        assert!(is_entry_point("runCLI"));
+        assert!(!is_entry_point("NewThreadField"));
+    }
 
     fn terms(task: &str) -> Vec<String> {
         identifier_candidates(task)

@@ -19,7 +19,7 @@ fn build_repo(root: &Path) -> PathBuf {
     );
     write(
         "lib_test.go",
-        "package main\n\nimport \"testing\"\n\n// TestBase covers Base.\nfunc TestBase(t *testing.T) { Base() }\n",
+        "package main\n\nimport \"testing\"\n\n// TestBase covers Base.\nfunc TestBase(t *testing.T) { Base() }\n\n// TestA1 reaches Base only through A1.\nfunc TestA1(t *testing.T) { A1() }\n",
     );
     let out = Command::new(env!("CARGO_BIN_EXE_sinter"))
         .args(["build"])
@@ -173,7 +173,11 @@ fn abstaining_ask_still_yields_a_packet_with_fallbacks() {
     assert!(
         actions
             .iter()
-            .any(|a| a.as_str().unwrap().starts_with("rg -n")),
+            .any(|a| a.as_str().unwrap().starts_with("sinter grep '")),
+        "{actions:?}"
+    );
+    assert!(
+        !actions.iter().any(|a| a.as_str().unwrap().contains("rg ")),
         "{actions:?}"
     );
     assert!(
@@ -288,4 +292,72 @@ fn ranking_terms_skip_extensions_filler_and_hyphen_fragments() {
     for junk in ["go", "rs", "per", "honor", "make", "lib_test.go"] {
         assert!(!matched.contains(&junk), "ranked on `{junk}`: {matched:?}");
     }
+}
+
+#[test]
+fn tests_carry_runnable_commands_and_direct_rows_come_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = build_repo(dir.path());
+    let (_, packet) = cli(&repo, "change the Base root of the blast radius", &[]);
+    let tests = packet["tests"].as_array().unwrap();
+    let base = tests.iter().find(|t| t["qualified"] == "TestBase").unwrap();
+    assert_eq!(base["cmd"], "go test . -run '^TestBase$'", "{packet}");
+    assert!(base["via"].is_null(), "{base}");
+    // TestA1 depends on Base only through A1: it ranks below the direct
+    // test and names its hop.
+    let a1 = tests.iter().find(|t| t["qualified"] == "TestA1").unwrap();
+    assert_eq!(a1["via"], "A1", "{packet}");
+    let position = |name: &str| tests.iter().position(|t| t["qualified"] == name).unwrap();
+    assert!(position("TestBase") < position("TestA1"), "{tests:?}");
+}
+
+#[test]
+fn literals_in_the_task_are_found_verbatim() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        "{\"name\": \"fixture\", \"bin\": {\"fixture\": \"cli.js\"}, \"flags\": [\"--resolution\"]}\n",
+    )
+    .unwrap();
+    let repo = build_repo(dir.path());
+    std::fs::write(
+        repo.join("cli.go"),
+        "package main\n\n// Flags parses --resolution.\nfunc Flags() string { return \"--resolution\" }\n",
+    )
+    .unwrap();
+    let (_, packet) = cli(&repo, "wire the --resolution flag through Base", &[]);
+    let files = |key: &str| -> Vec<String> {
+        let mut files: Vec<String> = packet[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["f"].as_str().unwrap().to_owned())
+            .collect();
+        files.dedup();
+        files
+    };
+    assert_eq!(files("literals"), ["cli.go"], "{packet}");
+    assert_eq!(files("mirrors"), ["package.json"], "{packet}");
+    assert!(packet["literals"][0]["l"].is_u64(), "{packet}");
+    // Plain prose runs no literal pass.
+    let (_, packet) = cli(&repo, "change the Base root of the blast radius", &[]);
+    assert_eq!(packet["literals_total"], 0, "{packet}");
+}
+
+#[test]
+fn a_bare_intent_word_reaches_an_entry_point_by_one_fuzzy_hop() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = build_repo(dir.path());
+    std::fs::write(
+        repo.join("cmd.go"),
+        "package main\n\n// supervisorCommand wires the supervisor subcommand.\nfunc supervisorCommand() int { return Base() }\n\n// supervisorHelper is not an entry point.\nfunc supervisorHelper() int { return 1 }\n",
+    )
+    .unwrap();
+    let (_, packet) = cli(&repo, "wire the supervisor subcommand", &[]);
+    assert_eq!(packet["outcome"], "ranked", "{packet}");
+    let anchors = packet["anchors"].as_array().unwrap();
+    assert_eq!(anchors.len(), 1, "{packet}");
+    assert_eq!(anchors[0]["qualified"], "supervisorCommand");
+    assert_eq!(anchors[0]["fuzzy"], true);
+    assert_eq!(packet["candidates"][0]["why"]["channels"][0], "fuzzy");
 }

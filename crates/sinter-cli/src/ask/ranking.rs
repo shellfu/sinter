@@ -9,6 +9,7 @@ use sinter_core::{CorpusScope, Node, Relation, SymbolKind};
 use sinter_resolve::qualified_of;
 use sinter_store::{EdgeFilter, Store};
 
+use super::confidence::Evidence;
 use super::query::{Query, identifier_tokens};
 use crate::corpus::ScopeSelection;
 
@@ -121,6 +122,12 @@ pub(super) struct ScoreBreakdown {
     rarest_miss: bool,
     /// Boosted because a hit in the neighbouring topic is graph-connected.
     connected: bool,
+    /// Every field match came through a query synonym; nothing the user
+    /// literally said appears on the symbol.
+    pub(super) synonym_only: bool,
+    /// `name`, `field`, or `weak`: the strongest literal channel matched
+    /// (see `Evidence`).
+    pub(super) evidence_class: &'static str,
     final_score: i64,
 }
 
@@ -181,6 +188,48 @@ impl Hit {
     pub(super) fn coverage(&self) -> (usize, usize) {
         coverage(&self.breakdown)
     }
+
+    /// What this hit matched on, for the confidence level.
+    pub(super) fn evidence(&self) -> Evidence {
+        Evidence::from_label(self.breakdown.evidence_class)
+            .unwrap_or_else(|| evidence_of(&self.channels))
+    }
+}
+
+/// Evidence class from the matched channels alone, for a serialized hit
+/// whose breakdown was stripped. Cannot tell a synonym match from a
+/// literal one; the breakdown's `evidence_class` is authoritative.
+pub(super) fn evidence_of(channels: &[impl AsRef<str>]) -> Evidence {
+    let has = |wanted: &[&str]| channels.iter().any(|c| wanted.contains(&c.as_ref()));
+    if has(&["name", "action-name"]) {
+        Evidence::Name
+    } else if has(&["doc", "sig", "owner", "path", "phrase", "callee"]) {
+        Evidence::Field
+    } else {
+        Evidence::Weak
+    }
+}
+
+/// Sample and fixture corpora that path classification does not always
+/// catch (`worked/**/raw/*.py`, `tools/skillgen/expected/*.md`): they
+/// imitate production names wholesale and rank like fixtures.
+// ponytail: path heuristic until corpus.rs classifies fixture dirs; then
+// scope_of() carries this and the branch goes.
+fn is_sample_path(file: &str) -> bool {
+    file.to_lowercase().split('/').any(|segment| {
+        matches!(
+            segment,
+            "fixture"
+                | "fixtures"
+                | "expected"
+                | "worked"
+                | "example"
+                | "examples"
+                | "sample"
+                | "samples"
+                | "testdata"
+        )
+    })
 }
 
 fn is_test_path(file: &str) -> bool {
@@ -516,8 +565,12 @@ pub(super) fn score_candidates(
         let mut body_matched = Vec::new();
         let mut channels = Vec::new();
         let mut roles = Vec::new();
+        let mut literal_any = false;
+        let mut name_literal = false;
         for (index, term) in terms.iter().enumerate() {
             let hit = evidence[index];
+            literal_any |= hit.any() && !hit.synonym_only;
+            name_literal |= (hit.name_exact || hit.name_close) && !hit.synonym_only;
             let w = if hit.synonym_only {
                 weigh(idf[index], SYNONYM_PERMILLE)
             } else {
@@ -596,6 +649,8 @@ pub(super) fn score_candidates(
             PRIOR_PRODUCTION
         } else if scope == CorpusScope::Production && is_vendor_path(&node.file) {
             PRIOR_GENERATED
+        } else if scope == CorpusScope::Production && is_sample_path(&node.file) {
+            PRIOR_FIXTURE
         } else if scope == CorpusScope::Production
             && (is_test_path(&node.file) || is_test_name(qualified_of(node.id.as_str())))
         {
@@ -617,6 +672,14 @@ pub(super) fn score_candidates(
         breakdown.penalty_numerator = penalty_numerator;
         breakdown.penalty_denominator = penalty_denominator;
         breakdown.idf_permille = idf.clone();
+        breakdown.synonym_only = !literal_any && body_matched.is_empty();
+        breakdown.evidence_class = if name_literal {
+            "name"
+        } else if literal_any {
+            "field"
+        } else {
+            "weak"
+        };
         breakdown.rarest_miss = rarest.is_some_and(|term| !matched.iter().any(|m| m == term));
         let score = combine(&mut breakdown);
         let parent = in_edges
@@ -1221,6 +1284,24 @@ mod tests {
         assert_eq!(scored(CorpusScope::Production), 100);
         assert!(scored(CorpusScope::Fixture) < scored(CorpusScope::Test));
         assert!(scored(CorpusScope::Test) < scored(CorpusScope::Production));
+    }
+
+    #[test]
+    fn evidence_class_falls_back_to_channels() {
+        use super::super::confidence::Evidence;
+        use super::evidence_of;
+        assert_eq!(evidence_of(&["doc", "name"]), Evidence::Name);
+        assert_eq!(evidence_of(&["doc", "sig"]), Evidence::Field);
+        assert_eq!(evidence_of(&["body"]), Evidence::Weak);
+        assert_eq!(Evidence::from_label("weak"), Some(Evidence::Weak));
+        assert_eq!(Evidence::from_label(""), None);
+    }
+
+    #[test]
+    fn sample_corpora_rank_like_fixtures() {
+        assert!(super::is_sample_path("worked/day1/raw/model.py"));
+        assert!(super::is_sample_path("tools/skillgen/expected/out.md"));
+        assert!(!super::is_sample_path("src/examples.rs"));
     }
 
     #[test]

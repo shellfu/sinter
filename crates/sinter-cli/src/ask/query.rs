@@ -398,6 +398,13 @@ const CODE_WORDS: &[&str] = &[
     "where",
 ];
 
+/// The text reaches for prose (install guide, publishing steps) rather
+/// than the code that implements it.
+pub(crate) fn wants_docs(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    DOC_MARKERS.iter().any(|marker| lower.contains(marker))
+}
+
 /// `parse_args`, `Index::build`, `src/ask.rs`, `fooBar`, `run(`.
 fn looks_like_identifier(word: &str) -> bool {
     word.contains('_')
@@ -454,7 +461,7 @@ impl Query {
             .collect();
         let terms: Vec<QueryTerm> = positioned.into_iter().map(|(_, term)| term).collect();
         let action = terms.iter().any(QueryTerm::is_action);
-        let wants_docs = DOC_MARKERS.iter().any(|marker| lower.contains(marker));
+        let wants_docs = wants_docs(&lower);
         let words = lower.split_whitespace().collect::<Vec<_>>();
         let engineering = !wants_docs
             && (action

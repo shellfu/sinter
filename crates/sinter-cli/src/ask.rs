@@ -57,14 +57,14 @@ pub(crate) fn annotate(hits: &mut [serde_json::Value]) {
         return;
     };
     let (matched, total) = coverage_of_json(top);
-    let assessment = confidence::assess_top(&scores, matched, total);
+    let assessment = confidence::assess_top(&scores, matched, total, evidence_of_json(top));
     let name = top["name"].as_str().unwrap_or("");
     let family_size = names.iter().filter(|other| *other == name).count();
     // `confidence` and `confidence_reason` are v1 compatibility aliases.
     // New consumers should use the explicitly named ranking fields and the
     // topic-level decision.
     top["ranking_bucket"] = json!(assessment.ranking_bucket);
-    top["confidence"] = json!(assessment.ranking_bucket);
+    top["confidence"] = json!(assessment.level);
     top["ranking_margin"] = json!(assessment.ranking_margin);
     top["calibration"] = json!(assessment.calibration);
     top["term_coverage"] = json!(assessment.term_coverage);
@@ -91,6 +91,24 @@ fn coverage_of_json(hit: &serde_json::Value) -> (usize, usize) {
     }
 }
 
+/// Evidence class of a serialized hit: the breakdown's own class while it
+/// is still attached, the channels otherwise.
+fn evidence_of_json(hit: &serde_json::Value) -> confidence::Evidence {
+    if let Some(class) = hit["score_breakdown"]["evidence_class"]
+        .as_str()
+        .and_then(confidence::Evidence::from_label)
+    {
+        return class;
+    }
+    let channels = hit["channels"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>();
+    ranking::evidence_of(&channels)
+}
+
 pub(crate) fn advice_for(hits: &[serde_json::Value]) -> Option<String> {
     let hit = hits.first()?;
     let ranking_bucket = confidence::RankingBucket::from_label(
@@ -99,7 +117,10 @@ pub(crate) fn advice_for(hits: &[serde_json::Value]) -> Option<String> {
             .or_else(|| hit["confidence"].as_str())
             .unwrap_or(""),
     )?;
+    let level = confidence::RankingBucket::from_label(hit["confidence"].as_str().unwrap_or(""))
+        .unwrap_or(ranking_bucket);
     let top = confidence::Assessment {
+        level,
         ranking_bucket,
         ranking_margin: confidence::RankingMargin {
             absolute: hit["ranking_margin"]["absolute"].as_i64(),
@@ -136,7 +157,7 @@ pub(crate) fn advice_for(hits: &[serde_json::Value]) -> Option<String> {
             "no_runner_up" => "no_runner_up",
             "non_positive_score" => "non_positive_score",
             "weak_term_coverage" => "weak_term_coverage",
-            "insufficient_calibration_sample" => "insufficient_calibration_sample",
+            "weak_evidence" => "weak_evidence",
             "calibrated_ranking" => "calibrated_ranking",
             _ => "unknown_confidence_state",
         },
@@ -278,7 +299,12 @@ pub fn run_workspace(
         .take(limit)
         .filter(|(_, _, h)| h.node.name == all[0].2.node.name)
         .count();
-    let assessment = confidence::assess_top(&scores, all[0].2.coverage().0, all[0].2.coverage().1);
+    let assessment = confidence::assess_top(
+        &scores,
+        all[0].2.coverage().0,
+        all[0].2.coverage().1,
+        all[0].2.evidence(),
+    );
     print_caveat(assessment, family, explain);
     for (rank, (member, repo, hit)) in all.iter().take(limit).enumerate() {
         let line = line_of(repo, &hit.node.file, hit.node.span.start);
@@ -447,7 +473,52 @@ pub(crate) fn ask_response_with_store(
     {
         topics.push(topic_json(repo, label, query, hits, topic_limit, explain));
     }
-    Ok(response_json(question, limit, scopes, topics, connects))
+    let mut response = response_json(question, limit, scopes, topics, connects);
+    let literals = literal_rows(repo, question);
+    if literals.as_array().is_some_and(|rows| !rows.is_empty()) {
+        response["literals"] = literals;
+    }
+    Ok(response)
+}
+
+/// Literal rows scanned; the JSON and text surfaces show the first few.
+const LITERAL_CAP: usize = 200;
+const LITERAL_ROWS: usize = 12;
+
+/// `literals:` rows for a question that names a flag or a quoted string:
+/// the verbatim occurrences, which no symbol name carries. Empty when the
+/// question has no literal.
+fn literal_rows(repo: &Path, question: &str) -> serde_json::Value {
+    let tokens = crate::grep::literal_tokens(question);
+    if tokens.is_empty() {
+        return json!([]);
+    }
+    let root = crate::pipeline::discover_root(repo);
+    json!(
+        crate::grep::literal_scan(&root, &tokens, LITERAL_CAP)
+            .iter()
+            .take(LITERAL_ROWS)
+            .map(crate::grep::Hit::json)
+            .collect::<Vec<_>>()
+    )
+}
+
+fn print_literals(repo: &Path, question: &str) {
+    let rows = literal_rows(repo, question);
+    let rows = rows.as_array().map_or(&[][..], Vec::as_slice);
+    if rows.is_empty() {
+        return;
+    }
+    println!("literals ({} shown):", rows.len());
+    for row in rows {
+        println!(
+            "  {}:{}: {}",
+            row["f"].as_str().unwrap_or(""),
+            row["l"],
+            ellipsize(row["t"].as_str().unwrap_or("").trim(), 100)
+        );
+    }
+    println!();
 }
 
 fn response_json(
@@ -528,7 +599,8 @@ fn topic_from_rendered(
     explain: bool,
 ) -> serde_json::Value {
     if hits.is_empty() || limit == 0 {
-        let assessment = confidence::assess_top(&[], 0, query_terms.len());
+        let assessment =
+            confidence::assess_top(&[], 0, query_terms.len(), confidence::Evidence::Weak);
         let reason = if limit == 0 && !hits.is_empty() {
             "limit_exhausted"
         } else {
@@ -793,7 +865,12 @@ fn run_multi(
             .map(|hit| hit.score)
             .collect::<Vec<_>>();
         print_caveat(
-            confidence::assess_top(&scores, hits[0].coverage().0, hits[0].coverage().1),
+            confidence::assess_top(
+                &scores,
+                hits[0].coverage().0,
+                hits[0].coverage().1,
+                hits[0].evidence(),
+            ),
             family_size(&hits[..topic_limit.min(hits.len())], 0),
             explain,
         );
@@ -848,8 +925,10 @@ pub fn run(
             let names: Vec<&str> = close.iter().map(|n| n.name.as_str()).collect();
             println!("closest symbols: {}", names.join(", "));
         }
+        print_literals(&repo, question);
         return Ok(false);
     }
+    print_literals(&repo, question);
 
     println!(
         "Best matches ({} terms: {}):\n",
@@ -864,7 +943,12 @@ pub fn run(
     let shown = limit.min(hits.len());
     if shown > 0 {
         print_caveat(
-            confidence::assess_top(&scores, hits[0].coverage().0, hits[0].coverage().1),
+            confidence::assess_top(
+                &scores,
+                hits[0].coverage().0,
+                hits[0].coverage().1,
+                hits[0].evidence(),
+            ),
             family_size(&hits[..shown], 0),
             explain,
         );
@@ -959,6 +1043,7 @@ mod tests {
                     "qualified": "dispatch",
                     "score": 400,
                     "matched": ["request", "flow"],
+                    "channels": ["name", "doc"],
                     "score_breakdown": {"coverage_denominator": 2}
                 }),
                 json!({
