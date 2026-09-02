@@ -314,12 +314,20 @@ enum Command {
         /// Fail if the graph changed since this snapshot token was returned
         #[arg(long)]
         if_snapshot: Option<String>,
-        /// Include a bounded source excerpt for the symbol
+        /// Include a source excerpt: whole when short, else up to the byte
+        /// budget (`--budget-bytes`)
         #[arg(long)]
         body: bool,
-        /// Lines of the excerpt to print with --body
-        #[arg(long, default_value_t = show::DEFAULT_BODY_LINES, requires = "body")]
-        context_lines: usize,
+        /// Lines of the excerpt to print with --body (0 = whole span; with
+        /// `X@file:line`, the half-window around that line)
+        #[arg(long, requires = "body")]
+        context_lines: Option<usize>,
+        /// List the used-by files instead of the one-line tally
+        #[arg(long)]
+        callers: bool,
+        /// Print the bodies of the type's `impl` blocks
+        #[arg(long)]
+        impls: bool,
         #[command(flatten)]
         relations: RelationsArg,
     },
@@ -677,6 +685,30 @@ enum Assertion {
         #[arg(long)]
         if_snapshot: Option<String>,
     },
+    /// Tally every depth-one dependent of a symbol across all corpus scopes,
+    /// grouped by scope (`has_dependents` exits 1, `none_observed` 0)
+    Deletable {
+        /// Symbol: stable key, name, qualified suffix, or name@file
+        symbol: String,
+        /// Repository to query
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// Assert across a declared multi-repository workspace
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+        /// Maximum dependent rows to print (the decision always counts all)
+        #[arg(long, default_value_t = no_callers::DEFAULT_LIMIT)]
+        limit: usize,
+        /// Compact `sinter.agent.v1` assertion data
+        #[arg(long)]
+        json: bool,
+        /// Keep the full envelope (symbol identity, coverage detail)
+        #[arg(long)]
+        verbose: bool,
+        /// Fail if the repository/workspace graph changed since this token
+        #[arg(long)]
+        if_snapshot: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -822,6 +854,12 @@ fn cli_main() -> ExitCode {
             update::mark_nudged();
         }
     }
+    // `show --body` reads the same flag: unset = its own default, 0 = unlimited.
+    let body_budget = match cli.budget_bytes {
+        None => Some(show::DEFAULT_BODY_BYTES),
+        Some(0) => None,
+        Some(n) => Some(n),
+    };
     let result = match cli.command {
         Command::Workspace { manifest } => workspace::run(&manifest),
         Command::Ensure { repo } => init::ensure(repo.path()),
@@ -1047,6 +1085,27 @@ fn cli_main() -> ExitCode {
                     verbose,
                     if_snapshot,
                 ),
+                Assertion::Deletable {
+                    symbol,
+                    repo,
+                    workspace,
+                    limit,
+                    json,
+                    verbose,
+                    if_snapshot,
+                } => (
+                    &no_callers::DELETABLE,
+                    "assert_deletable",
+                    symbol,
+                    repo,
+                    workspace,
+                    vec!["all".to_string()],
+                    false,
+                    limit,
+                    json,
+                    verbose,
+                    if_snapshot,
+                ),
             };
             let result =
                 corpus::ScopeSelection::parse(&scope, corpus::ScopeSelection::agent_default())
@@ -1074,11 +1133,19 @@ fn cli_main() -> ExitCode {
                             if_snapshot.as_deref(),
                         ),
                     });
-            return if json {
+            // An assertion about a symbol that does not exist is an error
+            // (2), never "did not pass" (1): a typo must not read as a
+            // violation.
+            let code = match &result {
+                Err(e) if e.is::<lookup::NoMatch>() => Some(ExitCode::from(2)),
+                _ => None,
+            };
+            let exit = if json {
                 grep_exit_json(tool, result)
             } else {
                 grep_exit(result)
             };
+            return code.unwrap_or(exit);
         }
         Command::Cite {
             symbol,
@@ -1115,21 +1182,24 @@ fn cli_main() -> ExitCode {
             if_snapshot,
             body,
             context_lines,
+            callers,
+            impls,
             relations,
         } => {
-            let excerpt = body.then_some(context_lines);
-            let result =
-                traversal_filter(&FilterArgs::default(), &relations, &scope).and_then(|f| {
-                    show::run(
-                        &repo,
-                        &symbol,
-                        &f,
-                        limit,
-                        json,
-                        if_snapshot.as_deref(),
-                        excerpt,
-                    )
-                });
+            let opts = show::Options {
+                limit,
+                json,
+                if_snapshot,
+                body: body.then_some(match context_lines {
+                    Some(n) => show::BodyLimit::Lines(n),
+                    None => show::BodyLimit::Budget(body_budget),
+                }),
+                callers,
+                impls,
+                budget_bytes: body_budget,
+            };
+            let result = traversal_filter(&FilterArgs::default(), &relations, &scope)
+                .and_then(|f| show::run(&repo, &symbol, &f, &opts));
             return if json {
                 grep_exit_json("show", result)
             } else {

@@ -163,11 +163,17 @@ pub fn candidate_labels(nodes: &[Node]) -> Vec<String> {
         .collect()
 }
 
+/// `Name@file` selectors, one per node, disambiguated within the list the
+/// same way [`candidate_labels`] is — the JSON form of [`short_list`].
+pub fn selectors(nodes: &[Node]) -> Vec<String> {
+    selectors_from(nodes, 1, line_of)
+}
+
 /// Comma-joined `Name@file` list for one-line notes, disambiguated within
 /// the list the same way [`candidate_labels`] is.
 pub fn short_list(nodes: &[Node]) -> String {
     const SHOWN: usize = 5;
-    let all = selectors_from(nodes, 1, line_of);
+    let all = selectors(nodes);
     if all.len() <= SHOWN {
         return all.join(", ");
     }
@@ -313,7 +319,7 @@ pub fn find_symbol(store: &Store, symbol: &str) -> Result<Found> {
 /// part, so a qualified name's `::`, a Windows drive letter (`C:\src\x.rs`)
 /// and a node id's own `@offset` are never mistaken for one. Node ids are
 /// answered before this is reached — they carry a `#`.
-fn split_handle(handle: &str) -> (&str, Option<&str>, Option<usize>) {
+pub(crate) fn split_handle(handle: &str) -> (&str, Option<&str>, Option<usize>) {
     match handle.rsplit_once('@') {
         Some((symbol, file)) if !symbol.is_empty() && !file.is_empty() => {
             let (file, line) = split_line(file);
@@ -325,7 +331,7 @@ fn split_handle(handle: &str) -> (&str, Option<&str>, Option<usize>) {
 
 /// `src/client.rs:709` → (`src/client.rs`, 709). A colon that is not
 /// followed by digits belongs to the path.
-fn split_line(file: &str) -> (&str, Option<usize>) {
+pub(crate) fn split_line(file: &str) -> (&str, Option<usize>) {
     match file.rsplit_once(':') {
         Some((path, line)) if !path.is_empty() => match line.parse() {
             Ok(line) => (path, Some(line)),
@@ -417,7 +423,11 @@ pub fn unique_symbol_in(
     symbol: &str,
     scopes: Option<&BTreeSet<CorpusScope>>,
 ) -> Result<Node> {
-    resolve_symbol_in(store, symbol, scopes).map(|r| r.node)
+    let resolved = resolve_symbol_in(store, symbol, scopes)?;
+    if !resolved.ignored.is_empty() {
+        crate::agent_protocol::warn(resolved.note(symbol));
+    }
+    Ok(resolved.node)
 }
 
 /// A symbol that resolved to one node, plus the same-name candidates the
@@ -432,6 +442,26 @@ pub struct Resolved {
 }
 
 impl Resolved {
+    /// A node reached without a name lookup (`@file:line`): nothing to ignore.
+    pub fn unique(node: Node) -> Self {
+        Self {
+            node,
+            ignored: Vec::new(),
+            reason: String::new(),
+        }
+    }
+
+    /// The one-line "N other ignored" diagnostic. Verbs that print a card
+    /// say it on stdout as `resolved:`; every other caller warns with it.
+    pub fn note(&self, symbol: &str) -> String {
+        format!(
+            "{} other `{symbol}` ignored ({}): {}",
+            self.ignored.len(),
+            self.reason,
+            short_list(&self.ignored)
+        )
+    }
+
     /// The handle a follow-up should paste: the bare qualified name when
     /// it was unique, otherwise the shortest selector (`Name@file`, or
     /// `Name@file:line`) that beats every ignored candidate.
@@ -489,8 +519,8 @@ struct Narrowed {
 }
 
 /// Exact matches split into the survivors and the candidates the scope
-/// tiering and tie-break dropped. Emits the "N other ignored" note once, so
-/// every caller (text stderr or the JSON `warnings` field) sees it.
+/// tiering and tie-break dropped. Silent: [`unique_symbol_in`] warns,
+/// [`resolve_symbol_in`] hands the pick to a caller that prints it.
 fn narrowed(
     store: &Store,
     symbol: &str,
@@ -536,13 +566,6 @@ fn narrowed(
                     ignored = dropped;
                     reason = why.to_string();
                 }
-            }
-            if keep.len() == 1 && !ignored.is_empty() {
-                crate::agent_protocol::warn(format!(
-                    "{} other `{symbol}` ignored ({reason}): {}",
-                    ignored.len(),
-                    short_list(&ignored)
-                ));
             }
             Ok(Narrowed {
                 keep,
@@ -652,6 +675,76 @@ fn break_ties(
         }
     }
     (keep, dropped, reason)
+}
+
+/// Same-stem siblings of a resolved symbol that live in another file
+/// (`excerpt` in context.rs beside `excerpt_json`/`excerpt_lines` in
+/// show.rs): an exact hit that is quietly the wrong family member is worse
+/// than an ambiguity error, so cards and assertions print these.
+pub fn also_see(store: &Store, node: &Node) -> Result<Vec<Node>> {
+    let head = format!("{}_", qualified_of(node.id.as_str()));
+    let mut family: Vec<Node> = store
+        .nodes_glob(&head, "")?
+        .into_iter()
+        .filter(|n| n.file != node.file)
+        .collect();
+    family.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(family)
+}
+
+/// `@file:line` (or `@file`): the innermost symbol whose span covers the
+/// start of `line`, falling back to the file node. `file` may be a path
+/// suffix (`@impact.rs:1361`); a suffix matching several indexed files is
+/// ambiguous.
+pub fn enclosing_at(store: &Store, repo: &Path, handle: &str) -> Result<Node> {
+    let (file, line) = split_line(handle.trim_start_matches('@'));
+    let mut files: Vec<String> = store
+        .file_scopes()?
+        .into_keys()
+        .filter(|f| f == file || f.ends_with(&format!("/{file}")))
+        .collect();
+    files.sort();
+    let file = match files.len() {
+        0 => return Err(NoMatch(format!("no indexed file matches `{file}`")).into()),
+        1 => files.remove(0),
+        _ => bail!("`{file}` matches several files: {}", files.join(", ")),
+    };
+    let Some(file_node) = store.node(&NodeId::new(&file))? else {
+        return Err(NoMatch(format!("no file node for `{file}`")).into());
+    };
+    let Some(line) = line else {
+        return Ok(file_node);
+    };
+    let source =
+        std::fs::read_to_string(repo.join(&file)).with_context(|| format!("read {file}"))?;
+    let offset = source
+        .split_inclusive('\n')
+        .take(line.saturating_sub(1))
+        .map(str::len)
+        .sum::<usize>() as u64;
+    // Walk containment from the file node; the innermost covering span wins.
+    let mut best: Option<Node> = None;
+    let mut frontier = vec![file_node.id.clone()];
+    while let Some(id) = frontier.pop() {
+        for edge in store.out_edges(&id)? {
+            if edge.relation != Relation::Contains {
+                continue;
+            }
+            let Some(child) = store.node(&edge.dst)? else {
+                continue;
+            };
+            if child.span.start <= offset && offset < child.span.end {
+                frontier.push(child.id.clone());
+                if best
+                    .as_ref()
+                    .is_none_or(|b| child.span.end - child.span.start < b.span.end - b.span.start)
+                {
+                    best = Some(child);
+                }
+            }
+        }
+    }
+    Ok(best.unwrap_or(file_node))
 }
 
 /// One place a symbol not defined in this repo is referenced: the

@@ -347,10 +347,11 @@ fn no_writers_assertion_mirrors_no_callers_semantics() {
         "{out}"
     );
 
-    // Unknown table: structured no_match, exit 1 — identical to the
-    // `assert no-callers` lookup-miss contract (grep-style exit codes).
+    // Unknown table: structured no_match, exit 2 — identical to the
+    // `assert no-callers` lookup-miss contract (a typo is an error, never
+    // a failed assertion).
     let (code, out) = sinter_raw(repo, &["assert", "no-writers", "no_such_table", "--json"]);
-    assert_eq!(code, Some(1), "lookup miss must exit 1: {out}");
+    assert_eq!(code, Some(2), "lookup miss must exit 2: {out}");
     let miss: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(miss["error"]["code"], "no_match", "{out}");
 

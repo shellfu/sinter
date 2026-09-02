@@ -46,6 +46,16 @@ struct GraphHealth {
     failed_files: BTreeMap<String, String>,
 }
 
+/// Files the graph does not fully represent: indexed from a partial syntax
+/// tree, or not indexed at all. A negative claim over a corpus scope needs
+/// none of these inside it.
+pub(crate) fn unindexed_files(repo: &Path) -> BTreeSet<String> {
+    let health = read_health(repo);
+    let mut files = health.syntax_error_files;
+    files.extend(health.failed_files.into_keys());
+    files
+}
+
 fn health_path(repo: &Path) -> std::path::PathBuf {
     repo.join(".sinter").join("health.json")
 }

@@ -925,13 +925,17 @@ fn lookup_prefers_production_over_fixture_copies() {
     let (ok, out) = sinter(repo, &["show", "entry"]);
     assert!(ok, "{out}");
     assert!(out.contains("src/lib.rs"), "{out}");
-    assert!(out.contains("1 other `entry` ignored (fixture)"), "{out}");
-    // The pick leads the card, and the Next hint carries the selector
-    // that re-resolves to the same node.
+    // The pick leads the card, said once (no stderr `note:` twin), and the
+    // Next hint carries the selector that re-resolves to the same node.
     assert!(
         out.starts_with("resolved: entry@src/lib.rs (1 other ignored by fixture: "),
         "{out}"
     );
+    assert!(!out.contains("note:"), "{out}");
+    // JSON keeps the diagnostic in the envelope.
+    let (ok, json) = sinter(repo, &["show", "entry", "--json"]);
+    assert!(ok, "{json}");
+    assert!(json.contains("1 other `entry` ignored (fixture)"), "{json}");
     assert!(
         out.contains("Next: sinter affected entry@src/lib.rs --max-depth 3"),
         "{out}"
@@ -980,9 +984,18 @@ fn show_is_bounded_by_limit_relations_and_scope() {
     let (ok, out) = sinter(repo, &["build", "."]);
     assert!(ok, "{out}");
 
-    let (ok, full) = sinter(repo, &["show", "Node", "--scope", "production"]);
+    // Used-by is a one-line tally unless `--callers` asks for the files.
+    let (ok, tally) = sinter(repo, &["show", "Node", "--scope", "production"]);
+    assert!(ok, "{tally}");
+    assert!(tally.contains("used by: 1 files, 5 edges ("), "{tally}");
+    assert!(!tally.contains("src/lib.rs:2   5 edges"), "{tally}");
+    let (ok, full) = sinter(
+        repo,
+        &["show", "Node", "--scope", "production", "--callers"],
+    );
     assert!(ok, "{full}");
     assert!(full.contains("used by (1 files, 5 edges)"), "{full}");
+    assert!(full.contains("src/lib.rs:2   5 edges"), "{full}");
     assert!(!full.contains("--limit"), "{full}");
 
     let (ok, out) = sinter(repo, &["show", "user_0", "--limit", "0"]);
@@ -1078,4 +1091,176 @@ fn no_dependents_assertion_counts_non_call_edges_and_no_callers_hints_at_it() {
     let (_, text) = sinter(repo, &["assert", "no-dependents", "Unused"]);
     assert!(text.contains("assert no-dependents"), "{text}");
     assert!(text.contains("0 observed dependent(s)"), "{text}");
+}
+
+/// `assert deletable` tallies every scope; a missing symbol is an error
+/// (2), not a failed assertion (1); the compact JSON stays small; the
+/// holding rule ignores partial files outside the asserted scope; `show`
+/// answers `@file:line`, marks the line, and names same-stem siblings.
+#[test]
+fn deletable_no_match_exit_and_scope_local_completeness() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::create_dir_all(repo.join("tests/fixtures")).unwrap();
+    std::fs::write(
+        repo.join("src/lib.rs"),
+        "pub mod env;\npub fn called() {}\npub fn production_caller() { called(); }\npub fn leaf() {}\n\n#[cfg(test)]\nmod tests {\n    use super::called;\n    #[test]\n    fn test_caller() { called(); }\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("src/env.rs"),
+        "pub struct Env;\npub fn leaf_helper() {}\n",
+    )
+    .unwrap();
+    std::fs::write(repo.join("tests/env.rs"), "pub struct Env;\n").unwrap();
+    // A fixture with a syntax error: partial syntax tree, outside production.
+    std::fs::write(repo.join("tests/fixtures/broken.rs"), "fn broken( {\n").unwrap();
+    std::fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname='fixture'\nversion='0.1.0'\nedition='2024'\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("index.scip"),
+        Index::default().write_to_bytes().unwrap(),
+    )
+    .unwrap();
+    git(repo, &["init", "-q"]);
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "init"]);
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+
+    // deletable: every scope, grouped, plain words, exit 1 when anything depends.
+    let (code, out) = sinter_code(repo, &["assert", "deletable", "called", "--json"]);
+    assert_eq!(code, Some(1), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["status"], "has_dependents", "{out}");
+    assert_eq!(v["dependents_by_scope"]["production"], 1, "{out}");
+    assert_eq!(v["dependents_by_scope"]["test"], 1, "{out}");
+    assert!(v["coverage"]["universe"]["mode"].is_string(), "{out}");
+    assert!(v["coverage"]["limitations"].is_array(), "{out}");
+    assert!(v["snapshot"].is_string(), "{out}");
+    assert_eq!(
+        v["coverage"]["compiler_index"],
+        serde_json::json!({"state": "fresh"}),
+        "{out}"
+    );
+    assert!(v["assertion"].get("meaning").is_none(), "{out}");
+    let row = &v["dependents"][0];
+    for key in [
+        "name",
+        "site",
+        "relation",
+        "evidence",
+        "confidence",
+        "scope",
+    ] {
+        assert!(row.get(key).is_some(), "{key} missing: {out}");
+    }
+    assert!(row.get("signature").is_none(), "{out}");
+    let (code, text) = sinter_code(repo, &["assert", "deletable", "called"]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("has_dependents"), "{text}");
+    assert!(
+        text.contains("  production (1)\n    production_caller"),
+        "{text}"
+    );
+    assert!(
+        text.contains("  test (1)\n    tests::test_caller"),
+        "{text}"
+    );
+    let (code, out) = sinter_code(repo, &["assert", "deletable", "leaf", "--json"]);
+    assert_eq!(code, Some(0), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["status"], "none_observed", "{out}");
+    // --verbose keeps the full envelope.
+    let (_, out) = sinter_code(
+        repo,
+        &["assert", "deletable", "leaf", "--json", "--verbose"],
+    );
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v["assertion"]["meaning"].is_string(), "{out}");
+    assert!(v["coverage"]["graph"].is_object(), "{out}");
+
+    // A symbol that does not exist is an error, not a failed assertion.
+    let (code, out) = sinter_code(repo, &["assert", "no-callers", "no_such_symbol_xyz"]);
+    assert_eq!(code, Some(2), "{out}");
+    let (code, out) = sinter_code(
+        repo,
+        &["assert", "no-callers", "no_such_symbol_xyz", "--json"],
+    );
+    assert_eq!(code, Some(2), "{out}");
+    assert!(out.contains("no_match"), "{out}");
+
+    // Ignored out-of-scope rows are tallied inline by scope; the compact
+    // JSON is the decision and its qualifiers only.
+    let (_, out) = sinter_code(repo, &["assert", "no-callers", "called"]);
+    assert!(out.contains("ignored out of scope: test 1;"), "{out}");
+    let (_, out) = sinter_code(repo, &["assert", "no-callers", "called", "--json"]);
+    assert!(
+        out.len() < 800,
+        "compact assert JSON is {} bytes: {out}",
+        out.len()
+    );
+
+    // The partial fixture file is outside `production`, so the negative
+    // claim over production still holds for the indexed snapshot.
+    let (code, out) = sinter_code(repo, &["assert", "no-callers", "leaf", "--json"]);
+    assert_eq!(code, Some(0), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["status"], "holds_for_indexed_snapshot", "{out}");
+    // Asserting over the fixture scope too puts the gap inside the claim.
+    let (code, out) = sinter_code(
+        repo,
+        &[
+            "assert",
+            "no-callers",
+            "leaf",
+            "--scope",
+            "production,fixture",
+            "--json",
+        ],
+    );
+    assert_eq!(code, Some(1), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["status"], "not_proven", "{out}");
+    assert!(
+        v["coverage"]["limitations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l
+                .as_str()
+                .unwrap_or("")
+                .contains("tests/fixtures/broken.rs")),
+        "{out}"
+    );
+
+    // show: same-stem sibling in another file, `@file:line`, marked line.
+    let (ok, out) = sinter(repo, &["show", "leaf"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("also_see: leaf_helper@src/env.rs"), "{out}");
+    let (ok, out) = sinter(repo, &["show", "@src/lib.rs:3", "--body"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("function production_caller"), "{out}");
+    assert!(out.contains("  > pub fn production_caller()"), "{out}");
+    let (ok, out) = sinter(repo, &["show", "@lib.rs:3", "--json"]);
+    assert!(ok, "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["symbol"]["qualified"], "production_caller", "{out}");
+    let (ok, out) = sinter(repo, &["assert", "no-callers", "leaf"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("also_see: leaf_helper@src/env.rs"), "{out}");
+
+    // query: fuzzy is exit 1; production copies rank first.
+    let (code, out) = sinter_code(repo, &["query", "calle"]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains("close names"), "{out}");
+    let (code, out) = sinter_code(repo, &["query", "Env", "--scope", "all", "--json"]);
+    assert_eq!(code, Some(0), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["results"][0]["file"], "src/env.rs", "{out}");
+    assert_eq!(v["results"][1]["file"], "tests/env.rs", "{out}");
 }

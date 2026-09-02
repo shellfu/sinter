@@ -1,13 +1,15 @@
 //! Snapshot-scoped assertions that a symbol has no observed incoming edges
-//! of a given shape (`no-callers`, `no-writers`, `no-dependents`).
+//! of a given shape (`no-callers`, `no-writers`, `no-dependents`), plus the
+//! `deletable` tally over every scope.
 //!
 //! This is deliberately narrower than `affected`: rows are depth-one
 //! edges of the spec's relations, the requested corpus scope is explicit, and an empty
-//! traversal becomes a claim only when the indexed snapshot is complete and
-//! no unresolved reference still names the symbol. It never claims runtime
-//! exhaustiveness; the ordinary coverage envelope keeps `conclusive: false`.
+//! traversal becomes a claim only when the indexed snapshot is complete for
+//! that scope and no unresolved reference still names the symbol. It never
+//! claims runtime exhaustiveness; the ordinary coverage envelope keeps
+//! `conclusive: false`.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
 use anyhow::Result;
@@ -17,7 +19,9 @@ use sinter_resolve::qualified_of;
 use sinter_store::{EdgeFilter, Reached, Store};
 
 use crate::coverage::{TraversalEvidence, traversal_json, workspace_json};
-use crate::lookup::{ensure_snapshot, ensure_snapshot_token, open_store, unique_symbol_in};
+use crate::lookup::{
+    also_see, ensure_snapshot, ensure_snapshot_token, open_store, selectors, unique_symbol_in,
+};
 
 pub(crate) const DEFAULT_LIMIT: usize = 50;
 
@@ -32,6 +36,9 @@ pub(crate) struct AssertionSpec {
     pub rows: &'static str,
     pub meaning: &'static str,
     pub relations: &'static [Relation],
+    /// A tally over every scope (`has_dependents` / `none_observed`), not a
+    /// scoped negative proof.
+    pub tally: bool,
 }
 
 pub(crate) const NO_CALLERS: AssertionSpec = AssertionSpec {
@@ -41,6 +48,7 @@ pub(crate) const NO_CALLERS: AssertionSpec = AssertionSpec {
     rows: "callers",
     meaning: "no observed depth-one call edges in the requested corpus scope",
     relations: &[Relation::Calls],
+    tally: false,
 };
 
 pub(crate) const NO_WRITERS: AssertionSpec = AssertionSpec {
@@ -50,7 +58,21 @@ pub(crate) const NO_WRITERS: AssertionSpec = AssertionSpec {
     rows: "callers",
     meaning: "no observed depth-one writes/alters/drops edges in the requested corpus scope",
     relations: &[Relation::Writes, Relation::Alters, Relation::Drops],
+    tally: false,
 };
+
+const DEPENDENT_RELATIONS: &[Relation] = &[
+    Relation::Calls,
+    Relation::Uses,
+    Relation::Imports,
+    Relation::Implements,
+    Relation::Extends,
+    Relation::Reads,
+    Relation::Writes,
+    Relation::Creates,
+    Relation::Alters,
+    Relation::Drops,
+];
 
 /// Every non-containment incoming relation. `imports` edges only ever
 /// count as `possible`: a `use` line names a symbol without proving a
@@ -61,18 +83,19 @@ pub(crate) const NO_DEPENDENTS: AssertionSpec = AssertionSpec {
     noun: "dependent",
     rows: "dependents",
     meaning: "no observed depth-one non-containment edges (calls, uses, imports as possible, implements, extends, reads, writes, creates, alters, drops) in the requested corpus scope",
-    relations: &[
-        Relation::Calls,
-        Relation::Uses,
-        Relation::Imports,
-        Relation::Implements,
-        Relation::Extends,
-        Relation::Reads,
-        Relation::Writes,
-        Relation::Creates,
-        Relation::Alters,
-        Relation::Drops,
-    ],
+    relations: DEPENDENT_RELATIONS,
+    tally: false,
+};
+
+/// "Can I delete this?": every dependent in every scope, grouped by scope.
+pub(crate) const DELETABLE: AssertionSpec = AssertionSpec {
+    kind: "deletable",
+    label: "deletable",
+    noun: "dependent",
+    rows: "dependents",
+    meaning: "depth-one non-containment dependents observed in any corpus scope, grouped by scope",
+    relations: DEPENDENT_RELATIONS,
+    tally: true,
 };
 
 fn edge_confidence(relation: Relation, confidence: Confidence) -> Confidence {
@@ -97,20 +120,74 @@ fn kind_hint(spec: &AssertionSpec, kind: SymbolKind) -> Option<String> {
     })
 }
 
-/// Per-query envelope minus the repository-wide `graph` block that
-/// `doctor` already reports; `--verbose` keeps it.
-fn trim_coverage(coverage: &mut Value, verbose: bool) {
+/// Default `--json` is the decision and its qualifiers: status, rows as
+/// `{name, site, relation, evidence, confidence, scope}`, the compiler
+/// index state and the limitations. `--verbose` keeps the full envelope.
+fn compact(response: &mut Value, spec: &AssertionSpec, verbose: bool) {
     if verbose || crate::coverage::verbose() {
         return;
     }
-    if let Some(object) = coverage.as_object_mut() {
-        object.remove("graph");
-        if let Some(members) = object.get_mut("members").and_then(Value::as_object_mut) {
-            for member in members.values_mut() {
-                if let Some(member) = member.as_object_mut() {
-                    member.remove("graph");
-                }
-            }
+    let keep = |value: &mut Value, keys: &[&str]| {
+        if let Some(object) = value.as_object_mut() {
+            object.retain(|key, _| keys.contains(&key.as_str()));
+        }
+    };
+    keep(&mut response["assertion"], &["kind", "runtime_exhaustive"]);
+    keep(
+        &mut response["symbol"],
+        &["qualified", "kind", "file", "scope"],
+    );
+    if let Some(rows) = response[spec.rows].as_array_mut() {
+        for row in rows {
+            keep(
+                row,
+                &[
+                    "name",
+                    "site",
+                    "relation",
+                    "evidence",
+                    "confidence",
+                    "scope",
+                ],
+            );
+        }
+    }
+    keep(
+        &mut response["coverage"],
+        &[
+            "completeness",
+            "conclusive",
+            "universe",
+            "compiler_index",
+            "limitations",
+            "members",
+        ],
+    );
+    keep(&mut response["coverage"]["compiler_index"], &["state"]);
+    // Repository-wide tallies the claim no longer rests on (per-scope gaps
+    // and name-matching unresolved refs qualify it instead). ponytail:
+    // matched by wording; a reworded line only makes the compact form longer.
+    // The two constant disclaimers are `assertion.runtime_exhaustive: false`
+    // in prose; the compact form keeps only limitations naming a gap.
+    if let Some(limitations) = response["coverage"]["limitations"].as_array_mut() {
+        limitations.retain(|line| {
+            let line = line.as_str().unwrap_or("");
+            !(line.starts_with("a missing graph edge is not proof")
+                || line.starts_with("dynamic dispatch edges are conservative")
+                || line.starts_with("one or more files were indexed from partial syntax trees")
+                || line.contains("unresolved references point inside this repository"))
+        });
+    }
+    if response["ignored_out_of_scope"]["count"] == 0 {
+        response["ignored_out_of_scope"] = json!({"count": 0});
+    }
+    if let Some(members) = response["coverage"]
+        .get_mut("members")
+        .and_then(Value::as_object_mut)
+    {
+        for member in members.values_mut() {
+            keep(member, &["completeness", "compiler_index", "limitations"]);
+            keep(&mut member["compiler_index"], &["state"]);
         }
     }
 }
@@ -144,18 +221,32 @@ fn unresolved_in_scopes(
     Ok(count)
 }
 
-fn status(callers: usize, completeness: &Value, unresolved: usize) -> &'static str {
-    if callers > 0 {
-        "violated"
-    } else if completeness == "complete_for_indexed_snapshot" && unresolved == 0 {
-        "holds_for_indexed_snapshot"
-    } else {
-        "not_proven"
+/// Partially indexed files inside the asserted scopes. A partial file in
+/// another scope (a fixture with a syntax error) cannot hide an in-scope
+/// edge, so it does not block the claim.
+fn index_gaps(root: &Path, store: &Store, scopes: &BTreeSet<CorpusScope>) -> Result<Vec<String>> {
+    let mut gaps = Vec::new();
+    for file in crate::coverage::unindexed_files(root) {
+        if scopes.contains(&store.file_scope(&file)?) {
+            gaps.push(file);
+        }
+    }
+    Ok(gaps)
+}
+
+fn status(spec: &AssertionSpec, callers: usize, complete: bool, unresolved: usize) -> &'static str {
+    match (spec.tally, callers > 0) {
+        (true, true) => "has_dependents",
+        (true, false) => "none_observed",
+        (false, true) => "violated",
+        (false, false) if complete && unresolved == 0 => "holds_for_indexed_snapshot",
+        (false, false) => "not_proven",
     }
 }
 
 fn caller_row(repo: &Path, reached: &Reached, scopes: &sinter_store::ScopeIndex) -> Value {
     let mut node = crate::graph_tool::scoped_node_json(&reached.node, scopes);
+    node["name"] = json!(qualified_of(reached.node.id.as_str()));
     node["relation"] = json!(reached.via.relation.as_str());
     node["evidence"] = json!(reached.via.evidence.as_str());
     node["confidence"] = json!(
@@ -168,6 +259,13 @@ fn caller_row(repo: &Path, reached: &Reached, scopes: &sinter_store::ScopeIndex)
         node["site"] = json!(site);
     }
     node
+}
+
+fn by_scope<'a>(scopes: impl Iterator<Item = &'a str>) -> BTreeMap<&'a str, usize> {
+    scopes.fold(BTreeMap::new(), |mut counts, scope| {
+        *counts.entry(scope).or_default() += 1;
+        counts
+    })
 }
 
 /// Repository assertion producer.
@@ -205,9 +303,33 @@ fn repository_response(
             .map(|item| edge_confidence(item.via.relation, item.via.confidence)),
         unresolved,
     );
-    let coverage = traversal_json(&root, store, &filter, evidence, !callers.is_empty())?;
-    let assertion_status = status(callers.len(), &coverage["completeness"], unresolved);
+    let mut coverage = traversal_json(&root, store, &filter, evidence, !callers.is_empty())?;
+    // Completeness for *this* claim: a fresh compiler index and no partial
+    // file inside the asserted scopes. Repository-wide unresolved counts
+    // stay in the envelope; only refs naming the symbol qualify the claim.
+    let gaps = index_gaps(&root, store, &scopes)?;
+    let complete = coverage["compiler_index"]["state"] == "fresh" && gaps.is_empty();
+    coverage["completeness"] = json!(if complete {
+        "complete_for_indexed_snapshot"
+    } else {
+        "partial"
+    });
+    if !gaps.is_empty()
+        && let Some(limitations) = coverage["limitations"].as_array_mut()
+    {
+        limitations.push(json!(format!(
+            "{} partially indexed file(s) in the asserted scope: {}",
+            gaps.len(),
+            gaps.join(", ")
+        )));
+    }
+    let assertion_status = status(spec, callers.len(), complete, unresolved);
     let scope_index = store.scope_index()?;
+    let rows: Vec<Value> = callers
+        .iter()
+        .take(limit)
+        .map(|r| caller_row(&root, r, &scope_index))
+        .collect();
     let mut out = json!({
         "status": assertion_status,
         "assertion": {
@@ -217,13 +339,11 @@ fn repository_response(
         },
         "symbol": crate::graph_tool::scoped_node_json(&node, &scope_index),
         format!("observed_{}", spec.rows): callers.len(),
-        spec.rows: callers.iter().take(limit).map(|r| caller_row(&root, r, &scope_index)).collect::<Vec<_>>(),
+        format!("{}_by_scope", spec.rows): by_scope(callers.iter().map(|r| scope_index.scope_of(&r.node).as_str())),
+        spec.rows: rows,
         "ignored_out_of_scope": {
             "count": ignored.len(),
-            "by_scope": ignored.iter().fold(std::collections::BTreeMap::<&str, usize>::new(), |mut counts, r| {
-                *counts.entry(scope_index.scope_of(&r.node).as_str()).or_default() += 1;
-                counts
-            }),
+            "by_scope": by_scope(ignored.iter().map(|r| scope_index.scope_of(&r.node).as_str())),
         },
         "unresolved_refs_matching_name": unresolved,
         "coverage": coverage,
@@ -234,6 +354,10 @@ fn repository_response(
     if let Some(hint) = kind_hint(spec, node.kind) {
         out["hint"] = json!(hint);
     }
+    let family = also_see(store, &node)?;
+    if !family.is_empty() {
+        out["also_see"] = json!(selectors(&family));
+    }
     Ok(out)
 }
 
@@ -243,7 +367,7 @@ fn workspace_node(member: &str, node: &Node, scope: CorpusScope) -> Value {
         "id": format!("{member}:{}", node.symbol_key()),
         "symbol_key": node.symbol_key().as_str(),
         "qualified": format!("{member}:{}", qualified_of(node.id.as_str())),
-        "name": node.name,
+        "name": format!("{member}:{}", qualified_of(node.id.as_str())),
         "kind": node.kind.as_str(),
         "scope": scope.as_str(),
         "file": node.file,
@@ -309,7 +433,22 @@ fn workspace_response(
         unresolved,
     );
     let coverage = workspace_json(workspace, &filter, evidence, !callers.is_empty())?;
-    let assertion_status = status(callers.len(), &coverage["completeness"], unresolved);
+    let complete = coverage["completeness"] == "complete_for_indexed_snapshot";
+    let assertion_status = status(spec, callers.len(), complete, unresolved);
+    let rows: Vec<Value> = callers
+        .iter()
+        .take(limit)
+        .map(|r| {
+            let mut row = workspace_node(&r.member, &r.node, scope_of(&r.member, &r.node));
+            row["relation"] = json!(r.relation.as_str());
+            row["evidence"] = json!(r.evidence.as_str());
+            row["confidence"] = json!(match edge_confidence(r.relation, r.evidence.confidence()) {
+                Confidence::Certain => "certain",
+                Confidence::Inferred => "possible",
+            });
+            row
+        })
+        .collect();
     let mut out = json!({
         "status": assertion_status,
         "assertion": {
@@ -319,22 +458,11 @@ fn workspace_response(
         },
         "symbol": workspace_node(&member, &node, owner_scope),
         format!("observed_{}", spec.rows): callers.len(),
-        spec.rows: callers.iter().take(limit).map(|r| {
-            let mut row = workspace_node(&r.member, &r.node, scope_of(&r.member, &r.node));
-            row["relation"] = json!(r.relation.as_str());
-            row["evidence"] = json!(r.evidence.as_str());
-            row["confidence"] = json!(match edge_confidence(r.relation, r.evidence.confidence()) {
-                Confidence::Certain => "certain",
-                Confidence::Inferred => "possible",
-            });
-            row
-        }).collect::<Vec<_>>(),
+        format!("{}_by_scope", spec.rows): by_scope(callers.iter().map(|r| scope_of(&r.member, &r.node).as_str())),
+        spec.rows: rows,
         "ignored_out_of_scope": {
             "count": ignored.len(),
-            "by_scope": ignored.iter().fold(std::collections::BTreeMap::<&str, usize>::new(), |mut counts, r| {
-                *counts.entry(scope_of(&r.member, &r.node).as_str()).or_default() += 1;
-                counts
-            }),
+            "by_scope": by_scope(ignored.iter().map(|r| scope_of(&r.member, &r.node).as_str())),
         },
         "unresolved_refs_matching_name": unresolved,
         "coverage": coverage,
@@ -348,6 +476,30 @@ fn workspace_response(
     Ok(out)
 }
 
+/// `test 4, fixture 1` from a `by_scope` object; empty when nothing counted.
+fn scope_tally(counts: &Value) -> String {
+    counts
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(scope, n)| format!("{scope} {n}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn print_row(indent: &str, row: &Value) {
+    println!(
+        "{indent}{}  {}  [{} / {}]",
+        row["name"].as_str().unwrap_or("?"),
+        row["site"]
+            .as_str()
+            .or_else(|| row["file"].as_str())
+            .unwrap_or("?"),
+        row["relation"].as_str().unwrap_or("calls"),
+        row["evidence"].as_str().unwrap_or("?"),
+    );
+}
+
 fn print_response(spec: &AssertionSpec, response: &Value) {
     let symbol = response["symbol"]["qualified"].as_str().unwrap_or("?");
     let count = response[format!("observed_{}", spec.rows)]
@@ -359,26 +511,47 @@ fn print_response(spec: &AssertionSpec, response: &Value) {
         response["status"].as_str().unwrap_or("not_proven"),
         spec.noun,
     );
-    for caller in response[spec.rows].as_array().into_iter().flatten() {
+    if let Some(family) = response["also_see"].as_array() {
+        let list: Vec<&str> = family.iter().filter_map(Value::as_str).collect();
+        println!("  also_see: {}", list.join(", "));
+    }
+    let rows = response[spec.rows].as_array().into_iter().flatten();
+    if spec.tally {
+        // Grouped by scope, in the order the tally lists them.
+        let by_scope = &response[format!("{}_by_scope", spec.rows)];
+        let rows: Vec<&Value> = rows.collect();
+        for (scope, n) in by_scope.as_object().into_iter().flatten() {
+            println!("  {scope} ({n})");
+            for row in rows.iter().filter(|r| r["scope"] == scope.as_str()) {
+                print_row("    ", row);
+            }
+        }
+    } else {
+        for row in rows {
+            print_row("  ", row);
+        }
+        let ignored = &response["ignored_out_of_scope"];
+        let ignored = match ignored["count"].as_u64().unwrap_or(0) {
+            0 => "0".to_string(),
+            _ => scope_tally(&ignored["by_scope"]),
+        };
         println!(
-            "  {}  {}  [{} / {}]",
-            caller["qualified"].as_str().unwrap_or("?"),
-            caller["site"]
-                .as_str()
-                .or_else(|| caller["file"].as_str())
-                .unwrap_or("?"),
-            caller["relation"].as_str().unwrap_or("calls"),
-            caller["evidence"].as_str().unwrap_or("?"),
+            "  ignored out of scope: {ignored}; unresolved refs matching name: {}",
+            response["unresolved_refs_matching_name"],
         );
     }
-    println!(
-        "  ignored out of scope: {}; unresolved refs matching name: {}",
-        response["ignored_out_of_scope"]["count"], response["unresolved_refs_matching_name"],
-    );
     if let Some(hint) = response["hint"].as_str() {
         println!("  hint: {hint}");
     }
     crate::coverage::print_traversal_footer(&response["coverage"], response["snapshot"].as_str());
+}
+
+/// Exit 0 for `holds_for_indexed_snapshot` and `none_observed`.
+fn passes(response: &Value) -> bool {
+    matches!(
+        response["status"].as_str(),
+        Some("holds_for_indexed_snapshot" | "none_observed")
+    )
 }
 
 #[allow(clippy::too_many_arguments)] // mirrors the clap subcommand one-to-one
@@ -396,15 +569,14 @@ pub(crate) fn run_repository(
     let store = open_store(repo)?;
     let snapshot = ensure_snapshot(&store, if_snapshot)?;
     let mut response = repository_response(repo, &store, spec, symbol, scopes, certain, limit)?;
-    trim_coverage(&mut response["coverage"], verbose);
+    compact(&mut response, spec, verbose);
     response["snapshot"] = json!(snapshot);
-    let holds = response["status"] == "holds_for_indexed_snapshot";
     if json_output {
         crate::agent_protocol::write_json(&response)?;
     } else {
         print_response(spec, &response);
     }
-    Ok(holds)
+    Ok(passes(&response))
 }
 
 #[allow(clippy::too_many_arguments)] // mirrors the clap subcommand one-to-one
@@ -429,13 +601,70 @@ pub(crate) fn run_workspace(
     let snapshot = crate::workspace::snapshot_token(&workspace)?;
     ensure_snapshot_token(if_snapshot, &snapshot)?;
     let mut response = workspace_response(&workspace, spec, symbol, scopes, certain, limit)?;
-    trim_coverage(&mut response["coverage"], verbose);
+    compact(&mut response, spec, verbose);
     response["snapshot"] = json!(snapshot);
-    let holds = response["status"] == "holds_for_indexed_snapshot";
     if json_output {
         crate::agent_protocol::write_json(&response)?;
     } else {
         print_response(spec, &response);
     }
-    Ok(holds)
+    Ok(passes(&response))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DELETABLE, NO_CALLERS, compact, scope_tally, status};
+    use serde_json::json;
+
+    #[test]
+    fn status_words_follow_the_spec() {
+        assert_eq!(status(&NO_CALLERS, 1, true, 0), "violated");
+        assert_eq!(
+            status(&NO_CALLERS, 0, true, 0),
+            "holds_for_indexed_snapshot"
+        );
+        assert_eq!(status(&NO_CALLERS, 0, true, 1), "not_proven");
+        assert_eq!(status(&NO_CALLERS, 0, false, 0), "not_proven");
+        assert_eq!(status(&DELETABLE, 2, false, 3), "has_dependents");
+        assert_eq!(status(&DELETABLE, 0, false, 3), "none_observed");
+    }
+
+    #[test]
+    fn compact_keeps_the_decision_and_its_qualifiers() {
+        let mut response = json!({
+            "status": "violated",
+            "assertion": {"kind": "no_callers", "meaning": "long", "runtime_exhaustive": false},
+            "symbol": {"qualified": "f", "kind": "function", "file": "a.rs", "scope": "production", "signature": "fn f()", "doc": "x"},
+            "callers": [{"name": "g", "site": "a.rs:3", "relation": "calls", "evidence": "structural", "confidence": "certain", "scope": "test", "signature": "fn g()", "id": "k"}],
+            "coverage": {"completeness": "partial", "conclusive": false, "universe": {"mode": "repository"}, "compiler_index": {"state": "missing", "projects": []}, "limitations": ["l"], "graph": {}, "snapshot": {}, "evidence": {}},
+        });
+        compact(&mut response, &NO_CALLERS, false);
+        assert_eq!(
+            response["assertion"],
+            json!({"kind": "no_callers", "runtime_exhaustive": false})
+        );
+        assert!(response["symbol"].get("signature").is_none());
+        assert_eq!(
+            response["callers"][0],
+            json!({"name": "g", "site": "a.rs:3", "relation": "calls", "evidence": "structural", "confidence": "certain", "scope": "test"})
+        );
+        assert_eq!(
+            response["coverage"]["compiler_index"],
+            json!({"state": "missing"})
+        );
+        assert!(response["coverage"].get("graph").is_none());
+        assert_eq!(response["coverage"]["limitations"], json!(["l"]));
+        let mut verbose = response.clone();
+        compact(&mut verbose, &NO_CALLERS, true);
+        assert_eq!(verbose, response);
+    }
+
+    #[test]
+    fn scope_tally_lists_counts_inline() {
+        assert_eq!(
+            scope_tally(&json!({"fixture": 1, "test": 4})),
+            "fixture 1, test 4"
+        );
+        assert_eq!(scope_tally(&json!({})), "");
+    }
 }
