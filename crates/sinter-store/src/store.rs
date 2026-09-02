@@ -168,6 +168,16 @@ impl Db {
     }
 }
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static QUIET: AtomicBool = AtomicBool::new(false);
+
+/// Silence the lock-wait notice. Stdio transports (`sinter serve`) own
+/// stderr and must not narrate on it.
+pub fn quiet_notices() {
+    QUIET.store(true, Ordering::Relaxed);
+}
+
 /// redb opens are exclusive, so a query racing a short-lived build (or a
 /// queue of sibling queries — parallel agents fan out dozens) sees
 /// AlreadyOpen. Backoff rides out the queue (a full rebuild of a large
@@ -187,7 +197,7 @@ pub(crate) fn open_retrying<D>(
     loop {
         match open(path) {
             Err(redb::DatabaseError::DatabaseAlreadyOpen) if started.elapsed() < budget => {
-                if !noticed && started.elapsed() >= notice_after {
+                if !noticed && started.elapsed() >= notice_after && !QUIET.load(Ordering::Relaxed) {
                     noticed = true;
                     eprintln!(
                         "sinter: waiting for another sinter process holding {} (a build in progress?)",

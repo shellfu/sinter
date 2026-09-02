@@ -32,6 +32,7 @@ fn serve(scope: Scope) -> Result<()> {
     // Diagnostics ride inside every envelope; stderr stays silent on a
     // stdio transport.
     crate::agent_protocol::set_json_mode();
+    sinter_store::quiet_notices();
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
     // The repository-wide coverage half already sent in this session. One
