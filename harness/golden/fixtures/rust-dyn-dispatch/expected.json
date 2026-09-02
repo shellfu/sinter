@@ -38,7 +38,9 @@
     ["scope", "uses", "announce", "Speak"],
     ["scope", "uses", "announce", "Speak"],
     ["scope", "uses", "src/lib.rs", "Cat"],
-    ["scope", "uses", "src/lib.rs", "Dog"]
+    ["scope", "uses", "src/lib.rs", "Dog"],
+    ["scope", "implements", "Cat::speak", "Speak::speak", "src/lib.rs", "src/lib.rs", "", ""],
+    ["scope", "implements", "Dog::speak", "Speak::speak", "src/lib.rs", "src/lib.rs", "", ""]
   ],
   "unresolved_count": 0
 }

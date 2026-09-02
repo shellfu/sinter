@@ -25,7 +25,8 @@
     ["import", "uses", "Dog", "Animal", "dog.py", "animal.py"],
     ["import", "extends", "Dog", "Animal", "dog.py", "animal.py"],
     ["scope", "calls", "Dog::greet", "Dog::speak", "dog.py", "dog.py"],
-    ["dynamic", "calls", "Animal::speak", "Dog::speak", "animal.py", "dog.py"]
+    ["dynamic", "calls", "Animal::speak", "Dog::speak", "animal.py", "dog.py"],
+    ["import", "extends", "Dog::speak", "Animal::speak", "dog.py", "animal.py", "", ""]
   ],
   "unresolved_count": 0
 }

@@ -306,3 +306,59 @@ fn dangling_qualified_path_is_actionable() {
     assert_eq!(row["category"], "actionable_anchored_miss", "{out}");
     assert_eq!(row["reason"], "missing_internal_target", "{out}");
 }
+
+/// A miss the resolver recognises as its own limitation must not be
+/// counted as a repository gap. `u::Helper::assist` names a member that is
+/// right there in the corpus: the module alias is what resolution did not
+/// follow, so the row belongs in `resolver_gap` and out of `actionable`.
+#[test]
+fn aliased_import_misses_are_resolver_gaps_not_user_gaps() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(
+        repo.join("src/util.rs"),
+        "pub struct Helper;\n\nimpl Helper {\n    pub fn assist(&self) {}\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("src/lib.rs"),
+        "pub mod util;\n\nuse crate::util as u;\n\npub fn run() {\n    u::Helper::assist();\n}\n",
+    )
+    .unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+
+    let (_, out) = sinter(repo, &["unresolved", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&out).expect(&out);
+    assert_eq!(json["by_category"]["resolver_gap"], 1, "{out}");
+    assert_eq!(json["actionable"], 0, "{out}");
+}
+
+/// A path anchored into a file the graph only partly represents is not the
+/// user's dangling reference: the target may sit in the statements the
+/// parser could not read. Without the anchor evidence this row reads as a
+/// plain external miss and the partial parse never gets named.
+#[test]
+fn misses_into_partial_syntax_files_are_resolver_gaps() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("pkg")).unwrap();
+    std::fs::write(
+        repo.join("pkg/broken.py"),
+        "def ok():\n    return 1\n\ndef bad(:\n    return 2\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("pkg/app.py"),
+        "from pkg import broken\n\n\ndef run():\n    return broken.thing()\n",
+    )
+    .unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+
+    let (_, out) = sinter(repo, &["unresolved", "--all", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&out).expect(&out);
+    assert_eq!(json["by_category"]["resolver_gap"], 1, "{out}");
+    assert_eq!(json["actionable"], 0, "{out}");
+}

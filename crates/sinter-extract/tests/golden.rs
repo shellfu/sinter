@@ -757,3 +757,10 @@ fn golden_rust_async_trait_cross_crate() {
 fn golden_go_cross_package_implements() {
     check("go-cross-package-implements");
 }
+
+/// Module alias with a two-segment tail: extraction records the alias and
+/// the reference; resolution is where the limitation shows up.
+#[test]
+fn golden_rust_module_alias_gap() {
+    check("rust-module-alias-gap");
+}

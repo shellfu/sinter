@@ -14,6 +14,11 @@ type Tuple = Vec<String>;
 struct Expected {
     resolved: Vec<Tuple>,
     unresolved_count: usize,
+    /// `[gap kind, reference name, reference file]` per unbound reference
+    /// whose failure the resolver recognised as its own limitation.
+    /// Absent means "no gaps expected".
+    #[serde(default)]
+    resolver_gaps: Vec<Tuple>,
 }
 
 fn source_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -121,7 +126,7 @@ fn check_inner(fixture: &str) {
     let roots: Vec<sinter_extract::ModuleRoot> = walk_manifests(&root);
     let index =
         sinter_resolve::Index::build(&nodes, &all_imports, &locals, &fields, &embeds, &roots);
-    let (bindings, stats, _, _) = resolve(&index, &references);
+    let (bindings, stats, _, _, gaps) = resolve(&index, &references);
     let dynamic = dynamic_edges(&index, &nodes, &trait_impls);
 
     // Every resolved binding carries its call site — the span of the
@@ -217,6 +222,34 @@ fn check_inner(fixture: &str) {
         expected.unresolved_count,
         "{fixture}: unresolved count moved"
     );
+
+    // Resolver-gap observations: what resolution recognised as its own
+    // limitation rather than a dangling reference in the fixture.
+    let mut found_gaps: Vec<Tuple> = gaps
+        .iter()
+        .map(|(i, gap)| {
+            let kind = match gap {
+                sinter_core::ResolverGap::AliasedImport => "aliased_import".to_string(),
+                sinter_core::ResolverGap::Reexport => "reexport".to_string(),
+                sinter_core::ResolverGap::AnchoredFile(file) => format!("anchored_file:{file}"),
+            };
+            vec![
+                kind,
+                references[*i].name.clone(),
+                references[*i].file.clone(),
+            ]
+        })
+        .collect();
+    found_gaps.sort();
+    found_gaps.dedup();
+    let mut expected_gaps = expected.resolver_gaps;
+    expected_gaps.sort();
+    for row in &expected_gaps {
+        assert!(
+            found_gaps.iter().any(|f| f[..row.len()] == row[..]),
+            "{fixture}: missing resolver gap {row:?} (found {found_gaps:?})"
+        );
+    }
 }
 
 #[test]
@@ -760,4 +793,12 @@ fn resolution_rust_async_trait_cross_crate() {
 #[test]
 fn resolution_go_cross_package_implements() {
     check("go-cross-package-implements");
+}
+
+/// Resolution recording its own limitation: a module alias with a
+/// two-segment tail. The target is right there in the corpus, so the miss
+/// must not read as a dangling reference.
+#[test]
+fn resolution_rust_module_alias_gap() {
+    check("rust-module-alias-gap");
 }

@@ -25,7 +25,8 @@
     ["scope", "uses", "LoudGreeter", "Greeter"],
     ["scope", "implements", "ConsoleGreeter", "Greeter"],
     ["scope", "extends", "LoudGreeter", "Greeter"],
-    ["dynamic", "calls", "Greeter::greet", "ConsoleGreeter::greet"]
+    ["dynamic", "calls", "Greeter::greet", "ConsoleGreeter::greet"],
+    ["scope", "implements", "ConsoleGreeter::greet", "Greeter::greet", "greeter.ts", "greeter.ts", "", ""]
   ],
   "unresolved_count": 0
 }

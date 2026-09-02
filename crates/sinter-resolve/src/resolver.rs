@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use sinter_core::{
     Confidence, Edge, Embed, Evidence, FieldBinding, LocalBinding, Node, NodeId, Reference,
-    Relation, SymbolKind, TraitImpl,
+    Relation, ResolverGap, SymbolKind, TraitImpl,
 };
 use sinter_extract::{LanguageSpec, ModuleRoot, spec_for_path};
 
@@ -154,6 +154,9 @@ struct Import {
     binding: String,
     /// Dot/star import: binds every top-level name of the module.
     glob: bool,
+    /// The binding came from an explicit `as` clause, so the local name is
+    /// not the target's name.
+    aliased: bool,
 }
 
 struct FileDef<'a> {
@@ -434,6 +437,7 @@ fn build_index<'a>(
         let glob = matches!(r.alias.as_deref(), Some("*") | Some("."));
         let raw = strip_glob(&r.name);
         let segments = expand(spec, roots, &r.file, (spec.absolutize)(raw, &r.file));
+        let aliased = r.alias.is_some() && !glob;
         let binding = match (&r.alias, glob) {
             (Some(alias), false) => alias.clone(),
             _ => segments.last().cloned().unwrap_or_default(),
@@ -446,6 +450,7 @@ fn build_index<'a>(
                 segments,
                 binding,
                 glob,
+                aliased,
             });
     }
     for l in locals {
@@ -719,6 +724,25 @@ impl<'a> Index<'a> {
         })
     }
 
+    /// Corpus files of a written module path — the key it names exactly, or
+    /// the single key it is a suffix of (a written `broken.thing` under a
+    /// `pkg.broken` key). Unique or nothing: a same-tailed sibling module
+    /// makes the anchor ambiguous, and an ambiguous anchor is no evidence.
+    fn module_files(&self, module: &[String]) -> Option<&[&'a str]> {
+        let candidates: Vec<&ModuleFiles<'a>> = self
+            .files_of_module
+            .get(module.last()?.as_str())?
+            .iter()
+            .filter(|m| {
+                suffix_len(&m.key, module).is_some() || suffix_len(module, &m.key).is_some()
+            })
+            .collect();
+        match candidates.as_slice() {
+            [only] => Some(only.files.as_slice()),
+            _ => None,
+        }
+    }
+
     /// File node for an import path, matching either containment
     /// direction: Go-style (long import, short module key) or
     /// include-root style (protoc, C headers) where the import resolves
@@ -880,20 +904,30 @@ fn namespace_pick(candidates: Vec<&Node>, relation: Relation) -> Option<&Node> {
     }
 }
 
+/// One resolution pass: bindings, pass statistics, indices of references
+/// the heuristic anchored in the corpus but could not bind, the dangling
+/// subset of those, and the resolution limitations recognised per unbound
+/// reference.
+pub type Resolution = (
+    Vec<Binding>,
+    ResolutionStats,
+    Vec<usize>,
+    Vec<usize>,
+    Vec<(usize, ResolverGap)>,
+);
+
 /// Bindings, pass statistics, indices of references the heuristic anchored
-/// in the corpus but could not bind, and the subset of those whose absolute
-/// path names a corpus module that has no such member (dangling).
-pub fn resolve(
-    index: &Index<'_>,
-    references: &[Reference],
-) -> (Vec<Binding>, ResolutionStats, Vec<usize>, Vec<usize>) {
+/// in the corpus but could not bind, the subset of those whose absolute
+/// path names a corpus module that has no such member (dangling), and the
+/// resolution limitations recognised per unbound reference.
+pub fn resolve(index: &Index<'_>, references: &[Reference]) -> Resolution {
     use rayon::prelude::*;
-    let results: Vec<Res> = references
+    let results: Vec<(Res, Option<ResolverGap>)> = references
         .par_iter()
         .enumerate()
         .map(|(i, r)| {
             let Some(spec) = spec_for_path(&r.file) else {
-                return Res::External;
+                return (Res::External, None);
             };
             let src = r
                 .enclosing
@@ -902,6 +936,7 @@ pub fn resolve(
             let file_module = key_of(spec, &index.roots, &r.file);
             let imports = index.imports.get(r.file.as_str());
             let (target, evidence, internal) = resolve_one(index, spec, r, &file_module, imports);
+            let gap = || resolver_gap(index, spec, r, imports);
             match target {
                 // A function binding to itself is recursion: a resolved
                 // fact, never an anchored miss. Any other self-binding (a
@@ -918,32 +953,38 @@ pub fn resolve(
                     } else {
                         r.relation
                     };
-                    Res::Bound(Binding {
-                        edge: Edge {
-                            src,
-                            dst: node.id.clone(),
-                            relation,
-                            evidence,
-                            // Convention-bound (proto client) references
-                            // are declared but never compiler-checked.
-                            confidence: if evidence == Evidence::Declared {
-                                Confidence::Inferred
-                            } else {
-                                evidence.confidence()
+                    (
+                        Res::Bound(Binding {
+                            edge: Edge {
+                                src,
+                                dst: node.id.clone(),
+                                relation,
+                                evidence,
+                                // Convention-bound (proto client) references
+                                // are declared but never compiler-checked.
+                                confidence: if evidence == Evidence::Declared {
+                                    Confidence::Inferred
+                                } else {
+                                    evidence.confidence()
+                                },
+                                site: Some(r.span),
                             },
-                            site: Some(r.span),
-                        },
-                        reference: i,
-                    })
+                            reference: i,
+                        }),
+                        None,
+                    )
                 }
-                _ if internal => Res::Internal {
-                    dangling: r.path.as_deref().is_some_and(|path| {
-                        !spec.file_refs
-                            && r.relation != Relation::Imports
-                            && is_dangling_path(index, spec, r, path)
-                    }),
-                },
-                _ => Res::External,
+                _ if internal => (
+                    Res::Internal {
+                        dangling: r.path.as_deref().is_some_and(|path| {
+                            !spec.file_refs
+                                && r.relation != Relation::Imports
+                                && is_dangling_path(index, spec, r, path)
+                        }),
+                    },
+                    gap(),
+                ),
+                _ => (Res::External, gap()),
             }
         })
         .collect();
@@ -951,7 +992,11 @@ pub fn resolve(
     let mut stats = ResolutionStats::default();
     let mut internal_indices = Vec::new();
     let mut dangling_indices = Vec::new();
-    for (i, result) in results.into_iter().enumerate() {
+    let mut gaps = Vec::new();
+    for (i, (result, gap)) in results.into_iter().enumerate() {
+        if let Some(gap) = gap {
+            gaps.push((i, gap));
+        }
         match result {
             Res::Bound(binding) => {
                 match binding.edge.evidence {
@@ -970,7 +1015,60 @@ pub fn resolve(
             Res::External => stats.unresolved_external += 1,
         }
     }
-    (bindings, stats, internal_indices, dangling_indices)
+    (bindings, stats, internal_indices, dangling_indices, gaps)
+}
+
+/// A resolution limitation the resolver recognises in its own failure to
+/// bind `r`. Every branch reads facts the index already holds — an `as`
+/// clause on an import, glob re-exports in the anchored module, the single
+/// file a written path anchors to — so nothing here infers from name shape.
+fn resolver_gap(
+    index: &Index<'_>,
+    spec: &LanguageSpec,
+    r: &Reference,
+    imports: Option<&Vec<Import>>,
+) -> Option<ResolverGap> {
+    if r.relation == Relation::Imports {
+        return None; // an import's own path is the thing being bound
+    }
+    let head = r
+        .path
+        .as_deref()
+        .and_then(|path| {
+            path.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .find(|segment| !segment.is_empty())
+        })
+        .unwrap_or(r.name.as_str());
+    if imports
+        .into_iter()
+        .flatten()
+        .any(|i| i.aliased && (i.binding == head || i.binding == r.name))
+    {
+        return Some(ResolverGap::AliasedImport);
+    }
+    let path = r.path.as_deref()?;
+    let segments = expand(
+        spec,
+        &index.roots,
+        &r.file,
+        (spec.absolutize)(path, &r.file),
+    );
+    let (_, module) = segments.split_last()?;
+    let files = index.module_files(module)?;
+    if files.iter().any(|file| {
+        index
+            .imports
+            .get(*file)
+            .into_iter()
+            .flatten()
+            .any(|i| i.glob)
+    }) {
+        return Some(ResolverGap::Reexport);
+    }
+    match files {
+        [file] => Some(ResolverGap::AnchoredFile((*file).to_string())),
+        _ => None,
+    }
 }
 
 /// A written path that absolutizes without an implicit module prefix
@@ -1506,6 +1604,7 @@ pub fn dynamic_edges(index: &Index<'_>, nodes: &[Node], trait_impls: &[TraitImpl
             continue; // external trait: nothing in the corpus to fan into
         };
         let mut impl_methods: Vec<&Node> = Vec::new();
+        let mut method_pairs: Vec<(&Node, &Node)> = Vec::new();
         for method in by_file.get(ti.file.as_str()).into_iter().flatten() {
             if !(ti.span.start <= method.span.start && method.span.end <= ti.span.end) {
                 continue;
@@ -1514,6 +1613,7 @@ pub fn dynamic_edges(index: &Index<'_>, nodes: &[Node], trait_impls: &[TraitImpl
             if let Some(trait_method) = index.member_of(trait_node, &method.name, 1)
                 && trait_method.id != method.id
             {
+                method_pairs.push((method, trait_method));
                 edges.push(Edge {
                     src: trait_method.id.clone(),
                     dst: method.id.clone(),
@@ -1545,14 +1645,13 @@ pub fn dynamic_edges(index: &Index<'_>, nodes: &[Node], trait_impls: &[TraitImpl
                 })?;
                 index.type_def(&ti.file, &file_module, prefix)
             });
+        let relation = match impl_type {
+            Some(t) if t.kind == trait_node.kind => Relation::Extends,
+            _ => Relation::Implements,
+        };
         if let Some(impl_type) = impl_type
             && impl_type.id != trait_node.id
         {
-            let relation = if impl_type.kind == trait_node.kind {
-                Relation::Extends
-            } else {
-                Relation::Implements
-            };
             edges.push(Edge {
                 src: impl_type.id.clone(),
                 dst: trait_node.id.clone(),
@@ -1562,6 +1661,22 @@ pub fn dynamic_edges(index: &Index<'_>, nodes: &[Node], trait_impls: &[TraitImpl
                 // The impl block's span lives in ti.file, which may not be
                 // the impl type's file — a site here could point into the
                 // wrong file, so none is carried.
+                site: None,
+            });
+        }
+        // Method-level reverse arrow, mirroring the type-level one, so a
+        // trait/interface method's blast radius reaches its implementations
+        // (`affected Trait::method`). Explicit `impl Trait for T` is written
+        // in the source, so this carries the evidence that bound the pairing
+        // (scope/import) rather than the Dynamic evidence structural
+        // satisfaction (Go) must use.
+        for (method, trait_method) in method_pairs {
+            edges.push(Edge {
+                src: method.id.clone(),
+                dst: trait_method.id.clone(),
+                relation,
+                evidence: pair_evidence,
+                confidence: pair_evidence.confidence(),
                 site: None,
             });
         }

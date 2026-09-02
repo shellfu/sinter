@@ -25,7 +25,7 @@ fn reads_of_users(files: &[(&str, &str)]) -> Vec<(String, String)> {
         .cloned()
         .collect();
     let index = sinter_resolve::Index::build(&nodes, &imports, &[], &[], &[], &[]);
-    let (bindings, _, _, _) = resolve(&index, &references);
+    let (bindings, ..) = resolve(&index, &references);
     bindings
         .iter()
         .map(|b| &b.edge)

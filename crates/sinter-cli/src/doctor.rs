@@ -1350,6 +1350,7 @@ mod tests {
                     alias: None,
                 },
                 reason: UnresolvedReason::SyntaxAnchoredMiss,
+                gap: None,
             }
         }
 

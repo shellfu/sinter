@@ -35,7 +35,8 @@
     ["scope", "uses", "HarnessGrpcService", "Arc"],
     ["scope", "uses", "HarnessGrpcService", "Harness"],
     ["scope", "uses", "src/lib.rs", "CedarPolicyHarness"],
-    ["scope", "uses", "src/lib.rs", "HarnessGrpcService"]
+    ["scope", "uses", "src/lib.rs", "HarnessGrpcService"],
+    ["scope", "implements", "CedarPolicyHarness::check", "Harness::check", "src/lib.rs", "src/lib.rs", "", ""]
   ],
   "unresolved_count": 1
 }
