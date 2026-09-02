@@ -43,8 +43,9 @@ const GREP_TERMS: usize = 4;
 const MIN_LEXICAL_HITS: usize = 3;
 /// Trigram candidates consulted for one fuzzy anchor hop, and the
 /// shortest word worth a hop (`CLI` lands on anything; `supervisor` does
-/// not).
-const FUZZY_CANDIDATES: usize = 10;
+/// not). Wide enough that test symbols and same-prefix neighbours cannot
+/// crowd the one name the word belongs to out of the window.
+const FUZZY_CANDIDATES: usize = 40;
 const MIN_FUZZY_LEN: usize = 5;
 /// Literal-pass bounds: hits scanned, rows kept per list.
 const LITERAL_CAP: usize = 200;
@@ -326,6 +327,16 @@ fn entry_point_ids(store: &Store) -> Result<BTreeSet<String>> {
     Ok(reached)
 }
 
+/// `runSupervisorCommand` spells `supervisorCommand` out in full: it is
+/// machinery around the shorter name, reachable from it, and never the
+/// thing a task is about when the thing itself is also a candidate.
+fn wraps_another(name: &str, candidates: &[String]) -> bool {
+    let lower = name.to_lowercase();
+    candidates
+        .iter()
+        .any(|other| other.len() < lower.len() && lower.contains(other.as_str()))
+}
+
 /// `main`, `run*`, `*Command`: where a task usually starts.
 fn is_entry_point(name: &str) -> bool {
     let lower = name.to_lowercase();
@@ -355,6 +366,8 @@ fn fuzzy_anchor(
         .filter(|n| shape != Shape::Bare || is_entry_point(&n.name))
         .filter(|n| preferred.contains(&scope_index.scope_of(n)))
         .collect();
+    let names: Vec<String> = close.iter().map(|n| n.name.to_lowercase()).collect();
+    close.retain(|node| !wraps_another(&node.name, &names));
     close.sort_by(|a, b| {
         is_entry_point(&b.name)
             .cmp(&is_entry_point(&a.name))
@@ -729,10 +742,16 @@ pub(crate) fn response(repo: &Path, store: &Store, task: &str) -> Result<Value> 
     // point outranks an equally-scored candidate that is not one.
     if is_feature_task(task) {
         let entries = entry_point_ids(store)?;
+        let names: Vec<String> = hits
+            .iter()
+            .map(|hit| hit["name"].as_str().unwrap_or("").to_lowercase())
+            .collect();
         let biased = |hit: &Value| {
             let score = hit["score"].as_i64().unwrap_or(0);
-            let entry = is_entry_point(hit["name"].as_str().unwrap_or(""))
-                || entries.contains(hit["snapshot_id"].as_str().unwrap_or(""));
+            let name = hit["name"].as_str().unwrap_or("");
+            let entry = !wraps_another(name, &names)
+                && (is_entry_point(name)
+                    || entries.contains(hit["snapshot_id"].as_str().unwrap_or("")));
             if entry {
                 score * (1000 + ENTRY_BIAS_PERMILLE) / 1000
             } else {
@@ -1136,7 +1155,7 @@ fn print_packet(p: &Value) {
 mod tests {
     use super::{
         Shape, identifier_candidates, is_entry_point, is_feature_task, is_test_file, language_of,
-        lexical_query, one_line,
+        lexical_query, one_line, wraps_another,
     };
 
     #[test]
@@ -1147,6 +1166,12 @@ mod tests {
         assert!(is_test_file("packages/cli/src/index.test.ts"));
         assert!(is_test_file("tests/surface.rs"));
         assert!(!is_test_file("src/testing_helpers.rs"));
+        let names = [
+            "supervisorcommand".to_owned(),
+            "runsupervisorcommand".to_owned(),
+        ];
+        assert!(wraps_another("runSupervisorCommand", &names));
+        assert!(!wraps_another("supervisorCommand", &names));
         assert!(is_feature_task("add a --json flag to the doctor command"));
         assert!(!is_feature_task("where is the trie node stored"));
         assert!(is_entry_point("supervisorCommand"));

@@ -285,6 +285,10 @@ const ACTION_VERBS: &[&str] = &[
     "yield",
 ];
 
+/// Below this length a bare substring match inside an identifier is
+/// noise; the term has to stand as a whole token.
+const WHOLE_WORD_LEN: usize = 4;
+
 #[derive(Clone, Debug)]
 pub(super) struct QueryTerm {
     surface: String,
@@ -309,6 +313,13 @@ impl QueryTerm {
         self.is_action
     }
 
+    /// True when `token` is a literal word of this term: a core form, or
+    /// a word the core form spells out in full (`command` for
+    /// `subcommand`). Morphology, not a thesaurus hop.
+    pub(super) fn core_spells_out(&self, token: &str) -> bool {
+        token.len() >= WHOLE_WORD_LEN && self.core.iter().any(|core| core.contains(token))
+    }
+
     /// True when `token` is exactly a literal form of this term (no synonym).
     pub(super) fn is_core_token(&self, token: &str) -> bool {
         self.core.iter().any(|core| core == token)
@@ -325,6 +336,12 @@ impl QueryTerm {
         self.variants
             .iter()
             .any(|variant| haystack.contains(variant))
+    }
+
+    /// A term this short is only itself when it stands as a whole
+    /// identifier token: `cli` inside `client` is a coincidence.
+    pub(super) fn is_short(&self) -> bool {
+        self.core.iter().map(String::len).min().unwrap_or(0) < WHOLE_WORD_LEN
     }
 
     /// True when `token` is one identifier token for this term: equal to a
@@ -726,6 +743,20 @@ fn flush(tokens: &mut Vec<String>, current: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::{Query, clauses_of, identifier_tokens, normalize_term};
+
+    #[test]
+    fn short_terms_are_whole_tokens_and_long_ones_spell_words_out() {
+        let cli = normalize_term("cli");
+        assert!(cli.is_short());
+        assert!(cli.is_core_token("cli"));
+        assert!(!cli.is_core_token("client"));
+        // A longer term keeps substring reach.
+        assert!(!normalize_term("supervisor").is_short());
+        // `subcommand` spells `command` out; it is morphology, not a
+        // thesaurus hop, so a name carrying `command` counts as literal.
+        assert!(normalize_term("subcommand").core_spells_out("command"));
+        assert!(!normalize_term("subcommand").core_spells_out("client"));
+    }
 
     #[test]
     fn conservative_morphology_normalizes_code_actions() {

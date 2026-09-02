@@ -319,6 +319,8 @@ fn doc_summary(doc: &str) -> String {
 
 /// Trigram closeness alone credits `sync` to `syntax_error_files`; a
 /// close name must also share a four-character prefix with one token.
+/// A shorter term than that never qualifies this way (`cli` would take
+/// `client`); its own token match is the only evidence it needs.
 const FUZZY_PREFIX_CHARS: usize = 4;
 
 fn shares_prefix(variants: &[String], tokens: &[String]) -> bool {
@@ -427,6 +429,9 @@ fn gather(
     let qualified = qualified_of(node.id.as_str()).to_lowercase();
     let owner = owner_of(&qualified).unwrap_or("").to_owned();
     let name_tokens = identifier_tokens(&node.name);
+    let owner_tokens = owner_of(qualified_of(node.id.as_str()))
+        .map(identifier_tokens)
+        .unwrap_or_default();
     let doc = doc_summary(node.doc.as_deref().unwrap_or(""));
     // The signature always echoes the name; credit it only for what it
     // adds (parameters, return type), or a bare name match on a common
@@ -440,18 +445,33 @@ fn gather(
         .enumerate()
         .map(|(index, term)| {
             let token_hit = name_tokens.iter().any(|token| term.matches_token(token));
+            // An identifier is a sequence of words, so a short term must
+            // be one of them: `cli` is `runCLI` and `cli.go`, never
+            // `client`. Prose (doc, signature) keeps substring reach.
+            let short = term.is_short();
+            let in_identifier = |tokens: &[String], text: &str| {
+                if short {
+                    tokens.iter().any(|token| term.is_core_token(token))
+                } else {
+                    term.occurs_in(text)
+                }
+            };
             let mut hit = TermEvidence {
                 name_exact: term.variants().contains(&name),
                 name_close: token_hit
-                    || term.occurs_in(&name)
+                    || in_identifier(&name_tokens, &name)
                     || (close_ids[index].contains(node.id.as_str())
                         && shares_prefix(term.variants(), &name_tokens)),
-                owner: !owner.is_empty() && term.occurs_in(&owner),
+                owner: !owner.is_empty() && in_identifier(&owner_tokens, &owner),
                 doc: !doc.is_empty() && term.occurs_in(&doc),
                 signature: term.occurs_in(&signature),
-                path: file
-                    .split(['/', '.'])
-                    .any(|segment| term.occurs_in(segment)),
+                path: file.split(['/', '.', '-', '_']).any(|segment| {
+                    if short {
+                        term.is_core_token(segment)
+                    } else {
+                        term.occurs_in(segment)
+                    }
+                }),
                 body: body[index].ids.contains(node.id.as_str()),
                 ..TermEvidence::default()
             };
@@ -578,7 +598,8 @@ pub(super) fn score_candidates(
         for (index, term) in terms.iter().enumerate() {
             let hit = evidence[index];
             literal_any |= hit.any() && !hit.synonym_only;
-            if (hit.name_exact || hit.name_close) && !hit.synonym_only {
+            let name_spelled = name_tokens.iter().any(|token| term.core_spells_out(token));
+            if (hit.name_exact || hit.name_close) && (!hit.synonym_only || name_spelled) {
                 name_literal = true;
                 breakdown.name_terms += 1;
             }
