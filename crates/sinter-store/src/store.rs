@@ -83,7 +83,10 @@ pub(crate) const PENDING: TableDefinition<&str, &[u8]> = TableDefinition::new("p
 // v12: body-identifier terms (body_terms table, FileFacts.body_terms).
 // v13: SQL-specific symbol kinds and read/write relations extend postcard
 // enums; derived graphs rebuild before decoding their old discriminants.
-const SCHEMA_VERSION: u32 = 13;
+// v14: query changes (TS constructor calls, default exports, star re-exports; Go
+// cross-package implements; Python self-calls) and a new unresolved reason
+// change extracted facts; derived graphs re-extract rather than serve stale rows.
+const SCHEMA_VERSION: u32 = 14;
 
 /// Per-file freshness record: content hash plus the stat identity it was
 /// hashed at. On Unix the identity combines modification and change time,
