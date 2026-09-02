@@ -119,13 +119,9 @@ pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
             Ok(packet)
         }
         "grep" => {
+            // No `within` = the whole indexed corpus, like the CLI.
             let within = strings(args, "within");
-            if within.is_empty() {
-                anyhow::bail!(
-                    "missing required parameter `within` (e.g. [\"affected(Store::open)\"])"
-                );
-            }
-            crate::grep::json(
+            crate::grep::json_with(
                 store,
                 repo,
                 &required_string(args, "pattern")?,
@@ -133,6 +129,9 @@ pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
                 &traversal_filter(args)?,
                 args.get("max_depth").and_then(Value::as_u64).unwrap_or(10) as usize,
                 limit(args, 100),
+                args.get("no_tests")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             )
         }
         "affected" => affected(repo, store, args),
@@ -287,10 +286,25 @@ fn affected(repo: &Path, store: &sinter_store::Store, args: &Value) -> Result<Va
     let filter = traversal_filter(args)?;
     let depth = args.get("max_depth").and_then(Value::as_u64).unwrap_or(10) as usize;
     let (limit, detail) = affected_options(args);
-    let one = |symbol: &str| affected_one(store, repo, symbol, &filter, depth, limit, detail);
+    let include_tests = flag(args, "include_tests");
+    let through_hubs = flag(args, "through_hubs");
+    let one = |symbol: &str| {
+        affected_one(
+            store,
+            repo,
+            symbol,
+            &filter,
+            depth,
+            limit,
+            detail,
+            include_tests,
+            through_hubs,
+        )
+    };
     batch_or_one(args, "symbols", "symbol", one)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn affected_one(
     store: &sinter_store::Store,
     repo: &Path,
@@ -299,6 +313,8 @@ fn affected_one(
     depth: usize,
     limit: usize,
     detail: bool,
+    include_tests: bool,
+    through_hubs: bool,
 ) -> Result<Value> {
     let node = match unique_symbol(store, symbol) {
         Ok(node) => node,
@@ -332,8 +348,31 @@ fn affected_one(
         }
         Err(error) => return Err(error),
     };
-    let reached = store.dependents(&node.id, filter, depth)?;
+    let mut reached = store.dependents(&node.id, filter, depth)?;
     let scopes = store.scope_index()?;
+    // Same pruning as the CLI: tests are counted, hubs stop the walk, file
+    // rows go when a relations filter is set. `include_tests` and
+    // `through_hubs` restore the old shape.
+    let is_test = |node: &sinter_core::Node| crate::prune::is_test_scope(scopes.scope_of(node));
+    let direct = reached.iter().filter(|r| r.depth == 1).count();
+    let mut hubs: Vec<(String, usize)> = Vec::new();
+    if !through_hubs && direct > 50 && reached.iter().any(|r| r.depth > 1) {
+        reached.retain(|r| r.depth == 1);
+        hubs.push((qualified_of(node.id.as_str()).to_string(), direct));
+    }
+    let pruned = crate::prune::prune(
+        reached,
+        |r| &r.via.dst,
+        &crate::prune::Rules {
+            keep_tests: include_tests,
+            drop_file_rows: filter.relations.is_some(),
+            hub_fan_in: (!through_hubs).then_some(crate::prune::HUB_FAN_IN),
+            is_test: &is_test,
+        },
+    );
+    hubs.extend(pruned.hubs);
+    let tests_hidden = if include_tests { 0 } else { pruned.tests };
+    let reached = pruned.rows;
     let unresolved = store.unresolved_named(&node.name)?;
     let evidence = crate::coverage::TraversalEvidence::from_confidences(
         reached.iter().map(|item| item.via.confidence),
@@ -388,6 +427,16 @@ fn affected_one(
         },
         limit,
     );
+    if tests_hidden > 0 {
+        out["tests_hidden"] = json!(tests_hidden);
+    }
+    if !hubs.is_empty() {
+        out["stopped_at_hubs"] = json!(
+            hubs.iter()
+                .map(|(symbol, fan_in)| json!({"symbol": symbol, "fan_in": fan_in}))
+                .collect::<Vec<_>>()
+        );
+    }
     out["status"] = json!(if reached.is_empty() {
         "not_proven"
     } else {
@@ -398,6 +447,10 @@ fn affected_one(
     Ok(out)
 }
 
+fn flag(args: &Value, name: &str) -> bool {
+    args.get(name).and_then(Value::as_bool).unwrap_or(false)
+}
+
 fn dependencies(
     repo: &Path,
     store: &sinter_store::Store,
@@ -405,11 +458,27 @@ fn dependencies(
     filter: &sinter_store::EdgeFilter,
     symbol: &str,
 ) -> Result<Value> {
-    let depth = args.get("max_depth").and_then(Value::as_u64).unwrap_or(10) as usize;
+    // Depth 1 by default, like the CLI: the transitive closure of an entry
+    // point is a context bomb.
+    let depth = args.get("max_depth").and_then(Value::as_u64).unwrap_or(1) as usize;
     let limit = limit(args, 50);
     let node = unique_symbol(store, symbol)?;
     let reached = store.dependencies(&node.id, filter, depth)?;
     let scopes = store.scope_index()?;
+    let include_tests = flag(args, "include_tests");
+    let is_test = |node: &sinter_core::Node| crate::prune::is_test_scope(scopes.scope_of(node));
+    let pruned = crate::prune::prune(
+        reached,
+        |r| &r.via.dst,
+        &crate::prune::Rules {
+            keep_tests: include_tests,
+            drop_file_rows: filter.relations.is_some(),
+            hub_fan_in: None,
+            is_test: &is_test,
+        },
+    );
+    let tests_hidden = if include_tests { 0 } else { pruned.tests };
+    let reached = pruned.rows;
     let unresolved = store
         .references_in(&node.file)?
         .iter()
@@ -449,7 +518,11 @@ fn dependencies(
         "unresolved_refs_in_symbol": unresolved,
         "by_file": by_file(reached.iter().map(|reached| reached.node.file.clone())),
         "dependencies": entries,
+        "max_depth": depth,
     });
+    if tests_hidden > 0 {
+        out["tests_hidden"] = json!(tests_hidden);
+    }
     if reached.len() > limit {
         out["truncated"] = json!(reached.len() - limit);
     }

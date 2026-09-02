@@ -754,7 +754,7 @@ fn grep_is_advertised_and_matches_cli_json() {
         .unwrap_or_else(|| panic!("grep missing from tools/list: {}", responses[0]));
     assert_eq!(
         grep["inputSchema"]["required"],
-        serde_json::json!(["pattern", "within"])
+        serde_json::json!(["pattern"])
     );
     assert_eq!(grep["inputSchema"]["properties"]["within"]["type"], "array");
 

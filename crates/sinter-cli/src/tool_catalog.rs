@@ -184,6 +184,13 @@ fn limit(default: usize) -> Value {
     })
 }
 
+fn include_tests() -> Value {
+    json!({
+        "type": "boolean", "default": false,
+        "description": "list test-scope rows (default: counted only)",
+    })
+}
+
 fn max_depth() -> Value {
     json!({
         "type": "integer", "minimum": 0, "default": 10,
@@ -263,6 +270,9 @@ pub(crate) fn repository() -> Value {
                 "symbol": symbol(),
                 "symbols": symbols(),
                 "max_depth": max_depth(),
+                "include_tests": include_tests(),
+                "through_hubs": {"type": "boolean", "default": false,
+                    "description": "keep traversing past hubs (fan-in > 100)"},
                 "limit": limit(50),
                 "detail": boolean("full node objects instead of terse rows"),
                 "evidence": filters["evidence"],
@@ -274,11 +284,13 @@ pub(crate) fn repository() -> Value {
         },
         {
             "name": "deps",
-            "description": "What a symbol transitively depends on, by file; batch via symbols[].",
+            "description": "What a symbol depends on (depth 1 default), by file; batch via symbols[].",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": symbol(),
                 "symbols": symbols(),
-                "max_depth": max_depth(),
+                "max_depth": {"type": "integer", "minimum": 0, "default": 1,
+                    "description": "traversal depth; 0 = seed only"},
+                "include_tests": include_tests(),
                 "limit": limit(50),
                 "evidence": filters["evidence"],
                 "min_confidence": filters["min_confidence"],
@@ -289,18 +301,20 @@ pub(crate) fn repository() -> Value {
         },
         {
             "name": "grep",
-            "description": "Regex over file text bounded to a traversal (within[]); rows f/l/t.",
+            "description": "Regex over file text, whole corpus or bounded by within[]; rows f/l/t.",
             "inputSchema": {"type": "object", "properties": {
                 "pattern": string("regex over file text"),
-                "within": {"type": "array", "items": {"type": "string"}, "minItems": 1,
-                    "description": "affected(SYM)|deps(SYM)|file(PATH)"},
+                "within": {"type": "array", "items": {"type": "string"},
+                    "description": "affected(SYM)|deps(SYM)|file(PATH); omit = whole corpus"},
+                "no_tests": {"type": "boolean", "default": false,
+                    "description": "leave test-scoped files out"},
                 "max_depth": max_depth(),
                 "limit": limit(100),
                 "evidence": filters["evidence"],
                 "min_confidence": filters["min_confidence"],
                 "relations": filters["relations"],
                 "scope": scope_filter(&DEFAULT_SCOPE),
-            }, "required": ["pattern", "within"]},
+            }, "required": ["pattern"]},
         },
         {
             "name": "path",
@@ -488,7 +502,7 @@ mod tests {
     }
 
     /// Bytes of one scope's `tools/list` catalog, schemas included.
-    const BUDGET: usize = 14_500;
+    const BUDGET: usize = 15_500;
 
     #[test]
     fn catalog_stays_within_the_context_tax_budget() {

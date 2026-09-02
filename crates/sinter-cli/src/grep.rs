@@ -296,27 +296,6 @@ fn compile(pattern: &str) -> Result<Regex> {
     })
 }
 
-/// The `sinter grep` payload: what CLI `--json` prints and what the MCP
-/// `grep` tool returns, produced once so the two cannot drift.
-///
-/// The store handle belongs to the caller. `serve` opens one per call with
-/// `open_current` after its own freshness pass; a reader opened here would
-/// outlive nothing but would bypass that ownership, and a session-lived one
-/// holds redb's lock against the next rebuild.
-pub(crate) fn json(
-    store: &Store,
-    repo: &Path,
-    pattern: &str,
-    within: &[String],
-    filter: &EdgeFilter,
-    max_depth: usize,
-    limit: usize,
-) -> Result<serde_json::Value> {
-    json_with(
-        store, repo, pattern, within, filter, max_depth, limit, false,
-    )
-}
-
 /// `json` plus `--no-tests`: test-scoped files leave the bound before the
 /// scan, whichever traversal (or none) produced it.
 #[allow(clippy::too_many_arguments)]
