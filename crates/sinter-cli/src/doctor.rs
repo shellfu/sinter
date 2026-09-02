@@ -159,7 +159,7 @@ impl Report {
 }
 
 /// Workspace health: member freshness and boundary-link staleness.
-pub fn run_workspace(manifest: &Path, fix: bool, json: bool) -> Result<bool> {
+pub fn run_workspace(manifest: &Path, fix: bool, json: bool, verbose: bool) -> Result<bool> {
     // The one fix for every workspace finding is the build itself, and it
     // is stat-gated (cheap when fresh) — so `--fix` runs it up front and
     // the diagnosis below reports the post-fix state.
@@ -179,6 +179,13 @@ pub fn run_workspace(manifest: &Path, fix: bool, json: bool) -> Result<bool> {
                 "member {name}: graph present ({})",
                 repo.display()
             ));
+            // Same completeness gaps repository mode reports, per member,
+            // so `--verbose` names the partial-syntax files here too.
+            if let Ok(store) = Store::open(pipeline::db_path(repo))
+                && let Ok(coverage) = crate::coverage::repository_coverage(repo, &store)
+            {
+                completeness_warnings(&mut r, &coverage, verbose, &format!("member {name}: "));
+            }
         } else {
             r.warn(
                 &format!("member {name}: no graph at {}", repo.display()),
@@ -630,7 +637,7 @@ fn graph_checks(r: &mut Report, repo: &Path, verbose: bool) -> Result<()> {
         }
     }
     let coverage = crate::coverage::repository_coverage(repo, &store)?;
-    completeness_warnings(r, &coverage, verbose);
+    completeness_warnings(r, &coverage, verbose, "");
     let gap = schema_consistency(r, repo, &store, &coverage)?;
     let total_sql = stored.keys().filter(|f| f.ends_with(".sql")).count();
     sql_parse_gap(r, repo, &coverage, total_sql, gap);
@@ -1112,7 +1119,7 @@ fn sql_parse_gap(
 /// Gaps `map` already reports as `partial`, surfaced here so `0 problems`
 /// never reads as "complete". Same `repository_coverage` document, one
 /// line per gap.
-fn completeness_warnings(r: &mut Report, coverage: &serde_json::Value, verbose: bool) {
+fn completeness_warnings(r: &mut Report, coverage: &serde_json::Value, verbose: bool, label: &str) {
     let graph = &coverage["graph"];
     let count = |field: &str| graph[field].as_u64().unwrap_or(0);
     // .sql files have their own line (`sql_parse_gap`): one grammar gap, one row.
@@ -1131,7 +1138,7 @@ fn completeness_warnings(r: &mut Report, coverage: &serde_json::Value, verbose: 
         // see what it skipped, so no count of missing symbols exists;
         // only the shape of the loss does.
         r.completeness(&format!(
-            "{} file(s) indexed from partial syntax trees; statements after the first syntax error are absent{}",
+            "{label}{} file(s) indexed from partial syntax trees; statements after the first syntax error are absent{}",
             partial.len(),
             if verbose {
                 format!(": {}", partial.join(", "))
@@ -1146,13 +1153,13 @@ fn completeness_warnings(r: &mut Report, coverage: &serde_json::Value, verbose: 
     let waiting = count("missing_compiler_index");
     if scip_state != "fresh" && waiting > 0 {
         r.completeness(&format!(
-            "compiler index {scip_state}: {waiting} unresolved refs waiting on `sinter scip`"
+            "{label}compiler index {scip_state}: {waiting} unresolved refs waiting on `sinter scip`"
         ));
     }
     let actionable = count("actionable_unresolved");
     if actionable > 0 {
         r.completeness(&format!(
-            "{actionable} actionable unresolved refs point inside this repo (`sinter unresolved`)"
+            "{label}{actionable} actionable unresolved refs point inside this repo (`sinter unresolved`)"
         ));
     }
 }
@@ -1436,7 +1443,7 @@ mod tests {
                 "actionable_unresolved": 2,
             },
         });
-        completeness_warnings(&mut r, &coverage, false);
+        completeness_warnings(&mut r, &coverage, false, "");
         assert_eq!((r.problems, r.warnings, r.notes), (0, 3, 0));
         let graph = &r.json.as_ref().unwrap()["graph"];
         assert!(graph.iter().all(|f| f["status"] == "warn"));
@@ -1444,12 +1451,13 @@ mod tests {
         assert!(msg.starts_with("4 file(s)") && msg.contains("--verbose") && !msg.contains("d.rs"));
 
         let mut r = Report::new(false, true);
-        completeness_warnings(&mut r, &coverage, true);
+        completeness_warnings(&mut r, &coverage, true, "member x: ");
         let msg = r.json.as_ref().unwrap()["graph"][0]["message"]
             .as_str()
             .unwrap()
             .to_string();
         assert!(msg.contains("a.rs, b.rs, c.rs, d.rs"), "{msg}");
+        assert!(msg.starts_with("member x: "), "{msg}");
 
         let mut r = Report::new(false, true);
         completeness_warnings(
@@ -1459,6 +1467,7 @@ mod tests {
                 "graph": {"syntax_error_files": [], "missing_compiler_index": 0, "actionable_unresolved": 0},
             }),
             false,
+            "",
         );
         assert_eq!(r.warnings, 0);
     }
