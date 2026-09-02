@@ -1023,7 +1023,13 @@ fn show_is_bounded_by_limit_relations_and_scope() {
     );
     assert!(ok, "{full}");
     assert!(full.contains("used by (1 files, 5 edges)"), "{full}");
-    assert!(full.contains("src/lib.rs:2   5 edges"), "{full}");
+    // Every kept site, capped: five users referencing Node twice each
+    // (parameter and return type) list their lines instead of collapsing
+    // to one representative, and say how many the cap dropped.
+    assert!(
+        full.contains("src/lib.rs:2, :3, :4, :5 (+2 more)   5 edges"),
+        "{full}"
+    );
     assert!(!full.contains("--limit"), "{full}");
 
     let (ok, out) = sinter(repo, &["show", "user_0", "--limit", "0"]);

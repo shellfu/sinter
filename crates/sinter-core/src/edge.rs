@@ -104,14 +104,59 @@ pub struct Edge {
     /// is derivable from `src`). None when no single site exists:
     /// containment, dynamic fan-out, implements/extends pairing, declared
     /// links. When several sites bind the same (src, dst, relation,
-    /// evidence), storage keeps ONE representative site — the field is
-    /// last so identity orders before site.
+    /// evidence), this is the representative (smallest) one — the field is
+    /// after identity so identity orders first.
     pub site: Option<Span>,
+    /// Further sites binding the same identity, ascending, capped so that
+    /// `1 + extra_sites.len() <= MAX_SITES`. Empty for a single-site edge.
+    pub extra_sites: Vec<Span>,
+    /// Distinct sites observed for this identity, including the ones the
+    /// cap dropped. 0 when the edge has no site at all.
+    pub sites_total: u32,
 }
+
+/// Sites kept per edge. A hub edge can be called dozens of times; the
+/// answer stays bounded ("3 of 12 shown") instead of growing with fan-in.
+pub const MAX_SITES: usize = 8;
 
 impl Edge {
     /// Identity without the site: two edges equal here are the same
     /// dependency fact observed at (possibly) different call sites.
+    /// One edge with a single site: the shape extraction and resolution
+    /// produce, before storage merges same-identity sites together.
+    pub fn single(
+        src: NodeId,
+        dst: NodeId,
+        relation: Relation,
+        evidence: Evidence,
+        confidence: Confidence,
+        site: Option<Span>,
+    ) -> Self {
+        Self {
+            src,
+            dst,
+            relation,
+            evidence,
+            confidence,
+            site,
+            extra_sites: Vec::new(),
+            sites_total: u32::from(site.is_some()),
+        }
+    }
+
+    /// Every kept site, ascending (representative first). Empty when the
+    /// edge has none.
+    pub fn sites(&self) -> impl Iterator<Item = Span> + '_ {
+        self.site
+            .into_iter()
+            .chain(self.extra_sites.iter().copied())
+    }
+
+    /// Sites this edge has beyond the ones it kept.
+    pub fn sites_omitted(&self) -> u32 {
+        self.sites_total.saturating_sub(self.sites().count() as u32)
+    }
+
     pub fn identity(&self) -> (&NodeId, &NodeId, Relation, Evidence, Confidence) {
         (
             &self.src,

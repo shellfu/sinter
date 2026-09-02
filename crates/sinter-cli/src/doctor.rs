@@ -1332,6 +1332,8 @@ mod tests {
                     start: site,
                     end: site + 1,
                 }),
+                extra_sites: Vec::new(),
+                sites_total: 1,
             }
         }
 

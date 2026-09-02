@@ -111,8 +111,9 @@ pub struct ExpectSite {
     pub kind: &'static str,
     /// `file:line`; the file alone when the line cannot be read.
     pub at: String,
-    /// Admitted edges from this dependent into the expected symbol. More
-    /// edges, more a refactor probably owes here — this is the rank.
+    /// Admitted call sites from this dependent into the expected symbol
+    /// (an edge counts once per site it kept, so a caller that calls the
+    /// symbol three times ranks above one that calls it once).
     pub sites: usize,
 }
 
@@ -1031,7 +1032,8 @@ fn expect_reports(
             let mut importing_files: BTreeSet<String> = BTreeSet::new();
             for edge in store.in_edges(&target.id)? {
                 if filter.admits(&edge) {
-                    *edges.entry(edge.src.as_str().to_string()).or_default() += 1;
+                    *edges.entry(edge.src.as_str().to_string()).or_default() +=
+                        (edge.sites_total as usize).max(1);
                 }
                 if edge.relation == sinter_core::Relation::Imports {
                     let src = edge.src.as_str();

@@ -87,6 +87,7 @@ fn entry_json(root: &Path, r: &Reached, scope: &str, seeds: Option<&[String]>) -
     let site = crate::render::site_json(root, &r.via);
     if !site.is_null() {
         entry["site"] = site;
+        crate::render::add_sites(&mut entry, root, &r.via);
     }
     if let Some(seeds) = seeds {
         entry["seeds"] = serde_json::json!(seeds);
@@ -749,6 +750,8 @@ mod tests {
                 evidence: Evidence::Scope,
                 confidence: Confidence::Certain,
                 site: None,
+                extra_sites: Vec::new(),
+                sites_total: 0,
             },
         }
     }

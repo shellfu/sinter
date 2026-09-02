@@ -255,8 +255,10 @@ fn caller_row(repo: &Path, reached: &Reached, scopes: &sinter_store::ScopeIndex)
             Confidence::Inferred => "possible",
         }
     );
-    if let Some(site) = crate::render::site_location(repo, &reached.via) {
-        node["site"] = json!(site);
+    let site = crate::render::site_json(repo, &reached.via);
+    if !site.is_null() {
+        node["site"] = site;
+        crate::render::add_sites(&mut node, repo, &reached.via);
     }
     node
 }

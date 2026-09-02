@@ -143,7 +143,7 @@ pub fn run(
             edges
                 .iter()
                 .map(|e| {
-                    serde_json::json!({
+                    let mut row = serde_json::json!({
                         "from": qualified_of(e.src.as_str()),
                         "to": qualified_of(e.dst.as_str()),
                         "from_scope": scope_of_id(&e.src).as_str(),
@@ -155,7 +155,9 @@ pub fn run(
                             sinter_core::Confidence::Inferred => "possible",
                         },
                         "site": crate::render::site_json(&root, e),
-                    })
+                    });
+                    crate::render::add_sites(&mut row, &root, e);
+                    row
                 })
                 .collect::<Vec<_>>()
         };
@@ -584,12 +586,16 @@ pub fn explain_miss(
 pub fn miss_json(root: &Path, miss: &Miss) -> serde_json::Value {
     let mut out = serde_json::json!({
         "forward_reached": miss.forward_reached,
-        "reached_by": miss.reached_by.iter().map(|e| serde_json::json!({
-            "from": qualified_of(e.src.as_str()),
-            "relation": e.relation.as_str(),
-            "evidence": e.evidence.as_str(),
-            "site": crate::render::site_json(root, e),
-        })).collect::<Vec<_>>(),
+        "reached_by": miss.reached_by.iter().map(|e| {
+            let mut row = serde_json::json!({
+                "from": qualified_of(e.src.as_str()),
+                "relation": e.relation.as_str(),
+                "evidence": e.evidence.as_str(),
+                "site": crate::render::site_json(root, e),
+            });
+            crate::render::add_sites(&mut row, root, e);
+            row
+        }).collect::<Vec<_>>(),
         "reached_by_total": miss.reached_by_total,
         "excluded_by_filter": miss.excluded_by_filter,
         "unresolved_matching_target": miss.unresolved_matching_target,
@@ -755,6 +761,8 @@ mod tests {
             evidence,
             confidence: evidence.confidence(),
             site: None,
+            extra_sites: Vec::new(),
+            sites_total: 0,
         }
     }
 

@@ -135,7 +135,7 @@ pub fn write_json(value: &Value) -> Result<()> {
 
 /// Key legend for terse dependent rows, emitted only for keys actually
 /// present so repository (`d`) and workspace (`p`) rows each get theirs.
-const LEGEND: [(&str, &str); 11] = [
+const LEGEND: [(&str, &str); 13] = [
     ("s", "symbol"),
     ("k", "kind"),
     ("f", "file"),
@@ -144,6 +144,8 @@ const LEGEND: [(&str, &str); 11] = [
     ("d", "depth"),
     ("p", "parent"),
     ("site", "file:line"),
+    ("sites", "all kept call sites"),
+    ("sites_total", "call sites in all"),
     ("seeds", "reached-from"),
     ("l", "line"),
     ("t", "text"),

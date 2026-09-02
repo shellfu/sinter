@@ -932,6 +932,8 @@ pub fn resolve(
                                 evidence.confidence()
                             },
                             site: Some(r.span),
+                            extra_sites: Vec::new(),
+                            sites_total: 1,
                         },
                         reference: i,
                     })
@@ -1522,6 +1524,8 @@ pub fn dynamic_edges(index: &Index<'_>, nodes: &[Node], trait_impls: &[TraitImpl
                     confidence: Evidence::Dynamic.confidence(),
                     // Fan-out is assumed, not written anywhere: no site.
                     site: None,
+                    extra_sites: Vec::new(),
+                    sites_total: 0,
                 });
             }
         }
@@ -1563,6 +1567,8 @@ pub fn dynamic_edges(index: &Index<'_>, nodes: &[Node], trait_impls: &[TraitImpl
                 // the impl type's file — a site here could point into the
                 // wrong file, so none is carried.
                 site: None,
+                extra_sites: Vec::new(),
+                sites_total: 0,
             });
         }
     }
@@ -1672,6 +1678,8 @@ fn implicit_interface_edges(nodes: &[Node], roots: &[ModuleRoot]) -> Vec<Edge> {
                     evidence: Evidence::Dynamic,
                     confidence: Evidence::Dynamic.confidence(),
                     site: None,
+                    extra_sites: Vec::new(),
+                    sites_total: 0,
                 });
                 // The reverse arrow lets an interface method's blast
                 // radius reach the methods bound to it.
@@ -1682,6 +1690,8 @@ fn implicit_interface_edges(nodes: &[Node], roots: &[ModuleRoot]) -> Vec<Edge> {
                     evidence: Evidence::Dynamic,
                     confidence: Evidence::Dynamic.confidence(),
                     site: None,
+                    extra_sites: Vec::new(),
+                    sites_total: 0,
                 });
             }
             edges.push(Edge {
@@ -1691,6 +1701,8 @@ fn implicit_interface_edges(nodes: &[Node], roots: &[ModuleRoot]) -> Vec<Edge> {
                 evidence: Evidence::Dynamic,
                 confidence: Evidence::Dynamic.confidence(),
                 site: None,
+                extra_sites: Vec::new(),
+                sites_total: 0,
             });
         }
     }
@@ -1857,6 +1869,8 @@ pub fn resolve_boundary(
                     evidence: Evidence::Import,
                     confidence: Evidence::Import.confidence(),
                     site: Some(r.span),
+                    extra_sites: Vec::new(),
+                    sites_total: 1,
                 },
                 reference: i,
             });

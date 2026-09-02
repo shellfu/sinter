@@ -86,6 +86,7 @@ pub fn run(
                 let site = crate::render::site_json(&root, &r.via);
                 if !site.is_null() {
                     entry["site"] = site;
+                    crate::render::add_sites(&mut entry, &root, &r.via);
                 }
                 entry
             })

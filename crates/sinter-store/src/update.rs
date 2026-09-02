@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 
 use redb::{ReadableMultimapTable, ReadableTable};
-use sinter_core::{CorpusScope, Edge, Evidence, FileFacts, UnresolvedReference};
+use sinter_core::{CorpusScope, Edge, Evidence, FileFacts, MAX_SITES, UnresolvedReference};
 
 use crate::error::StoreError;
 use crate::search::{node_tokens, trigrams};
@@ -507,7 +507,7 @@ impl Store {
                     }
                 }
             }
-            for edge in representative_sites(edges) {
+            for edge in &merge_sites(edges) {
                 let bytes = postcard::to_allocvec(edge)?;
                 out.insert(edge.src.as_str(), bytes.as_slice())?;
                 inn.insert(edge.dst.as_str(), bytes.as_slice())?;
@@ -533,7 +533,7 @@ impl Store {
         {
             let mut out = txn.open_multimap_table(OUT_EDGES)?;
             let mut inn = txn.open_multimap_table(IN_EDGES)?;
-            for edge in representative_sites(edges) {
+            for edge in &merge_sites(edges) {
                 let bytes = postcard::to_allocvec(edge)?;
                 out.insert(edge.src.as_str(), bytes.as_slice())?;
                 inn.insert(edge.dst.as_str(), bytes.as_slice())?;
@@ -545,17 +545,34 @@ impl Store {
 }
 
 /// One edge per identity: several call sites binding the same
-/// (src, dst, relation, evidence) keep a single representative site (the
-/// smallest — deterministic), so `site` never multiplies edge cardinality.
-/// The multimap's byte-identical dedup handles exact repeats; this handles
-/// same-identity edges whose sites differ.
-fn representative_sites(edges: &[Edge]) -> Vec<&Edge> {
+/// (src, dst, relation, evidence) collapse into one edge carrying the
+/// smallest site as `site`, up to `MAX_SITES - 1` more in `extra_sites`,
+/// and `sites_total` counting every distinct site. Edge cardinality never
+/// multiplies with call-site count, the stored payload stays bounded on
+/// hub edges, and the count stays honest about what the cap dropped.
+fn merge_sites(edges: &[Edge]) -> Vec<Edge> {
     let mut ordered: Vec<&Edge> = edges.iter().collect();
-    // Edge's derived Ord puts `site` last, so identity groups are adjacent
-    // and the smallest site sorts first within each group.
+    // Edge's derived Ord puts `site` after identity, so identity groups are
+    // adjacent and the smallest site sorts first within each group.
     ordered.sort();
-    ordered.dedup_by(|a, b| a.identity() == b.identity());
-    ordered
+    let mut merged: Vec<Edge> = Vec::with_capacity(ordered.len());
+    for edge in ordered {
+        match merged.last_mut() {
+            Some(prev) if prev.identity() == edge.identity() => {
+                for span in edge.sites() {
+                    if prev.sites().any(|kept| kept == span) {
+                        continue;
+                    }
+                    prev.sites_total += 1;
+                    if prev.sites().count() < MAX_SITES {
+                        prev.extra_sites.push(span);
+                    }
+                }
+            }
+            _ => merged.push(edge.clone()),
+        }
+    }
+    merged
 }
 
 const PENDING_KEY: &str = "delta";

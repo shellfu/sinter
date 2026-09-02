@@ -99,6 +99,8 @@ pub fn proto_service_edges(nodes: &[Node], trait_impls: &[TraitImpl]) -> Vec<Edg
         evidence: Evidence::Declared,
         confidence: Evidence::Declared.confidence(),
         site: None,
+        extra_sites: Vec::new(),
+        sites_total: 0,
     };
     let mut edges = Vec::new();
     for n in nodes.iter().filter(|n| n.file.ends_with(".rs")) {

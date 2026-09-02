@@ -56,6 +56,8 @@ fn hand_built_roundtrip() {
             evidence: Evidence::Structural,
             confidence: Confidence::Certain,
             site: None,
+            extra_sites: Vec::new(),
+            sites_total: 0,
         })
         .unwrap();
     }
@@ -126,6 +128,8 @@ fn traversal_scope_blocks_excluded_nodes_without_blocking_exact_start() {
             evidence: Evidence::Structural,
             confidence: Confidence::Certain,
             site: None,
+            extra_sites: Vec::new(),
+            sites_total: 0,
         })
         .unwrap();
     store.write_graph(&graph).unwrap();
@@ -143,32 +147,55 @@ fn traversal_scope_blocks_excluded_nodes_without_blocking_exact_start() {
     assert!(store.node(&fixture.id).unwrap().is_some());
 }
 
-/// Sites persist, and several call sites for one dependency fact keep a
-/// single representative edge (the smallest site) — cardinality never
-/// multiplies with call-site count.
+/// Sites persist, and several call sites for one dependency fact collapse
+/// into ONE edge that keeps every site (capped at `MAX_SITES`, with
+/// `sites_total` counting the rest) — cardinality never multiplies with
+/// call-site count, and repeated calls from one caller stay visible.
 #[test]
-fn representative_site_per_edge_identity() {
+fn all_sites_merge_into_one_edge_capped() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("graph.redb");
     let store = Store::create(&path).unwrap();
-    let edge = |start: u64| Edge {
-        src: NodeId::new("src/a.rs#caller@3"),
-        dst: NodeId::new("src/b.rs#callee@3"),
-        relation: Relation::Calls,
-        evidence: Evidence::Scope,
-        confidence: Confidence::Inferred,
-        site: Some(Span {
-            start,
-            end: start + 6,
-        }),
+    let src = NodeId::new("src/a.rs#caller@3");
+    let dst = NodeId::new("src/b.rs#callee@3");
+    let edge = |start: u64| {
+        Edge::single(
+            src.clone(),
+            dst.clone(),
+            Relation::Calls,
+            Evidence::Scope,
+            Confidence::Inferred,
+            Some(Span {
+                start,
+                end: start + 6,
+            }),
+        )
     };
+    // Two calls from one caller (the shape a `from x import y as _y`
+    // second call takes) plus an exact repeat.
     store
         .insert_edges(&[edge(120), edge(80), edge(80)])
         .unwrap();
-    let out = store.out_edges(&NodeId::new("src/a.rs#caller@3")).unwrap();
-    assert_eq!(out, vec![edge(80)]);
-    let inn = store.in_edges(&NodeId::new("src/b.rs#callee@3")).unwrap();
-    assert_eq!(inn, vec![edge(80)]);
+    let out = store.out_edges(&src).unwrap();
+    assert_eq!(out.len(), 1, "one edge per identity: {out:?}");
+    assert_eq!(out[0].site, Some(Span { start: 80, end: 86 }));
+    assert_eq!(
+        out[0].sites().map(|s| s.start).collect::<Vec<_>>(),
+        vec![80, 120]
+    );
+    assert_eq!(out[0].sites_total, 2);
+    assert_eq!(out[0].sites_omitted(), 0);
+    assert_eq!(store.in_edges(&dst).unwrap(), out);
+
+    // Past the cap: the payload stays bounded, the count stays honest.
+    let hub = Store::create(dir.path().join("hub.redb")).unwrap();
+    let many: Vec<Edge> = (0..20).map(|i| edge(i * 10)).collect();
+    hub.insert_edges(&many).unwrap();
+    let out = hub.out_edges(&src).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].sites().count(), sinter_core::MAX_SITES);
+    assert_eq!(out[0].sites_total, 20);
+    assert_eq!(out[0].sites_omitted(), 20 - sinter_core::MAX_SITES as u32);
 }
 
 proptest! {
@@ -196,7 +223,9 @@ proptest! {
                 evidence: if *c == 0 { Evidence::Structural } else { Evidence::Scope },
                 confidence: if *c == 0 { Confidence::Certain } else { Confidence::Inferred },
         site: None,
-            }).unwrap();
+            extra_sites: Vec::new(),
+            sites_total: 0,
+        }).unwrap();
         }
 
         let dir = tempfile::tempdir().unwrap();
