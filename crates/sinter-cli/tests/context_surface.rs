@@ -60,7 +60,7 @@ fn mcp(repo: &Path, task: &str, budget: Option<u64>) -> serde_json::Value {
         .unwrap();
     let request = serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "context", "arguments": {"task": task}},
+        "params": {"name": "context", "arguments": {"task": task, "include_coverage": true}},
     });
     let mut request = request;
     if let Some(budget) = budget {
@@ -148,6 +148,38 @@ fn mcp_context_matches_cli_json() {
     data["coverage"].as_object_mut().unwrap().remove("ref");
     for side in [&mut data, &mut packet] {
         side["coverage"]["compiler_index"] = serde_json::Value::Null;
+    }
+    // Over MCP every next action is a tool call to send back, never a
+    // shell command; the CLI renders the same actions as commands.
+    let actions = data["next_actions"].as_array().unwrap();
+    assert!(!actions.is_empty(), "{data}");
+    for action in actions {
+        let tool = action["tool"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{action}"));
+        assert!(
+            matches!(tool, "show" | "affected" | "impact" | "map" | "ask"),
+            "{action}"
+        );
+        assert!(action["args"].is_object(), "{action}");
+        assert!(action.get("cli").is_none(), "{action}");
+    }
+    assert!(
+        actions
+            .iter()
+            .any(|a| a["tool"] == "show" && a["args"]["symbol"] == "Base@lib.go"),
+        "{data}"
+    );
+    assert!(
+        packet["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(serde_json::Value::is_string),
+        "{packet}"
+    );
+    for side in [&mut data, &mut packet] {
+        side.as_object_mut().unwrap().remove("next_actions");
     }
     assert_eq!(data, packet);
     let text = response["result"]["content"][0]["text"].as_str().unwrap();

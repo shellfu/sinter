@@ -160,10 +160,21 @@ fn affected_is_terse_capped_and_batchable() {
     let responses = serve(
         &repo,
         &[
-            call(1, serde_json::json!({"symbol": "Base"})),
+            call(
+                1,
+                serde_json::json!({"symbol": "Base", "include_coverage": true}),
+            ),
             call(2, serde_json::json!({"symbol": "Base", "limit": 2})),
-            call(3, serde_json::json!({"symbols": ["Base", "Helper"]})),
-            call_tool(4, "path", serde_json::json!({"from": "Base", "to": "A3"})),
+            call(
+                3,
+                serde_json::json!({"symbols": ["Base", "Helper", "Nope"], "include_coverage": true}),
+            ),
+            call_tool(
+                4,
+                "path",
+                serde_json::json!({"from": "Base", "to": "A3", "include_coverage": true}),
+            ),
+            call(5, serde_json::json!({"symbol": "Base"})),
         ],
     );
 
@@ -188,8 +199,18 @@ fn affected_is_terse_capped_and_batchable() {
             "{d}"
         );
     }
-    // Root symbol keeps its full node.
-    assert!(v["symbol"]["doc"].is_string(), "{text}");
+    // Root symbol echo is trimmed to what addresses it again.
+    assert!(v["symbol"]["symbol_key"].is_string(), "{text}");
+    assert_eq!(v["symbol"]["file"], "lib.go", "{text}");
+    assert!(v["symbol"]["line"].is_u64(), "{text}");
+    assert!(v["symbol"].get("doc").is_none(), "{text}");
+    assert!(v["symbol"].get("span").is_none(), "{text}");
+    // A dependent's site in its own file is just the line.
+    assert!(
+        deps.iter()
+            .all(|d| d.get("site").is_none() && d["l"].is_u64()),
+        "{text}"
+    );
     // Direct callers stated apart from the transitive total (CLI parity).
     assert!(v["direct"].as_u64().unwrap() >= 1, "{text}");
     assert!(v["direct_files"].as_u64().unwrap() >= 1, "{text}");
@@ -208,17 +229,41 @@ fn affected_is_terse_capped_and_batchable() {
         "CLI-compatible payload must be the MCP agent contract data"
     );
 
-    // (2) limit caps dependents and reports the omission.
+    // (2) limit caps dependents, reports the omission, and says where the
+    // next page starts.
     let v: serde_json::Value = body(&responses[1]);
     assert_eq!(v["dependents"].as_array().unwrap().len(), 2);
     assert!(v["truncated"].as_u64().unwrap() >= 1, "{v}");
+    assert_eq!(v["next_cursor"], 2, "{v}");
+    assert_eq!(
+        responses[1]["result"]["structuredContent"]["outcome"]["reason"],
+        "limit_reached"
+    );
 
-    // (3) Batch: one call, two results.
+    // (3) Batch: one call, three results; the miss is inline with the
+    // same typed error a single call would return.
     let v: serde_json::Value = body(&responses[2]);
     let results = v["results"].as_array().unwrap();
-    assert_eq!(results.len(), 2, "{v}");
-    assert!(results.iter().all(|r| r.get("error").is_none()), "{v}");
-    assert!(results.iter().all(|r| r["coverage"].is_object()), "{v}");
+    assert_eq!(results.len(), 3, "{v}");
+    assert!(results[..2].iter().all(|r| r.get("error").is_none()), "{v}");
+    assert!(
+        results[..2].iter().all(|r| r["coverage"].is_object()),
+        "{v}"
+    );
+    assert!(results[..2].iter().all(|r| r["status"] == "found"), "{v}");
+    assert_eq!(results[2]["symbol"], "Nope", "{v}");
+    assert_eq!(results[2]["status"], "not_found", "{v}");
+    assert_eq!(results[2]["error"]["code"], "no_match", "{v}");
+    assert!(results[2]["error"]["candidates"].is_array(), "{v}");
+    assert_eq!(v["status"], "partial", "{v}");
+
+    // (5) Coverage is opt-in over MCP; the verdict still reflects it.
+    let v: serde_json::Value = body(&responses[4]);
+    assert!(v.get("coverage").is_none(), "{v}");
+    assert_eq!(
+        responses[4]["result"]["structuredContent"]["outcome"]["status"],
+        "partial"
+    );
 
     // (4) A missed path explains itself (CLI parity): Base never reaches
     // A3, so the answer carries forward reach, who reaches A3, and the
@@ -229,10 +274,8 @@ fn affected_is_terse_capped_and_batchable() {
     assert!(v["miss"]["reached_by"].is_array(), "{v}");
     assert!(v["miss"]["excluded_by_filter"].is_u64(), "{v}");
     assert_eq!(v["coverage"]["status"], "not_proven", "{v}");
-    assert_eq!(
-        v["coverage"]["filters"]["relations"]["mode"], "all_dependencies",
-        "{v}"
-    );
+    // Default filters say nothing an agent did not know: omitted.
+    assert!(v["coverage"].get("filters").is_none(), "{v}");
     // The repository-wide half was already sent by the first answer in this
     // session, so the fourth carries only the reference to it.
     let first = body(&responses[0]);
@@ -271,7 +314,14 @@ fn coverage_reference_resolves_to_a_resource() {
     .to_string();
     let responses = serve(
         &repo,
-        &[call(1, serde_json::json!({"symbol": "Base"})), read, list],
+        &[
+            call(
+                1,
+                serde_json::json!({"symbol": "Base", "include_coverage": true}),
+            ),
+            read,
+            list,
+        ],
     );
 
     let carried = body(&responses[0])["coverage"]["ref"].clone();
@@ -384,8 +434,12 @@ fn map_tool_and_error_hints() {
         "CLI hint should be replaced, not doubled: {msg}"
     );
 
-    // Overlap needs at least two ranges.
-    let msg = responses[3]["error"]["message"].as_str().unwrap();
+    // Overlap needs at least two ranges: a tool outcome the caller fixes.
+    assert!(responses[3].get("error").is_none(), "{}", responses[3]);
+    assert_eq!(responses[3]["result"]["isError"], true);
+    let msg = responses[3]["result"]["structuredContent"]["error"]["message"]
+        .as_str()
+        .unwrap();
     assert!(msg.contains("two rev-ranges"), "{msg}");
 
     let all: serde_json::Value = body(&responses[4]);
@@ -614,23 +668,37 @@ fn mcp_reports_snapshot_staleness_and_handle_relocation_as_typed_errors() {
             ),
         ],
     );
+    // Both are tool outcomes the caller can act on: `isError` results
+    // whose candidates are pasteable `Name@file` selectors.
+    let relocated = &responses[0]["result"];
+    assert_eq!(relocated["isError"], true, "{}", responses[0]);
     assert_eq!(
-        responses[0]["error"]["data"]["error"]["code"], "relocated_handle",
+        relocated["structuredContent"]["error"]["code"], "relocated_handle",
+        "{}",
+        responses[0]
+    );
+    assert_eq!(
+        relocated["structuredContent"]["outcome"]["status"], "relocated",
         "{}",
         responses[0]
     );
     assert!(
-        responses[0]["error"]["data"]["error"]["candidates"][0]["symbol_key"].is_string(),
+        relocated["structuredContent"]["error"]["candidates"][0]
+            .as_str()
+            .is_some_and(|c| c.starts_with("Base@lib.go")),
         "{}",
         responses[0]
     );
+    let stale = &responses[1]["result"];
+    assert_eq!(stale["isError"], true, "{}", responses[1]);
     assert_eq!(
-        responses[1]["error"]["data"]["error"]["code"], "stale_snapshot",
+        stale["structuredContent"]["error"]["code"], "stale_snapshot",
         "{}",
         responses[1]
     );
+    assert_eq!(stale["structuredContent"]["error"]["retryable"], true);
     assert!(
-        responses[1]["error"]["data"]["error"]["actual_snapshot"].is_string(),
+        stale["structuredContent"]["error"]["actual_snapshot"].is_string(),
         "{}",
         responses[1]
     );
@@ -661,19 +729,11 @@ fn grep_is_advertised_and_matches_cli_json() {
     let dir = tempfile::tempdir().unwrap();
     let repo = build_repo(dir.path());
 
-    // `--scope all` on the CLI is the MCP default, left implicit here so the
-    // comparison also pins that default.
+    // No `--scope`: MCP searches the CLI default corpus, so the comparison
+    // pins that the two defaults agree.
     let cli = cli_json(
         &repo,
-        &[
-            "grep",
-            "Base",
-            "--within",
-            "affected(Base)",
-            "--scope",
-            "all",
-            "--json",
-        ],
+        &["grep", "Base", "--within", "affected(Base)", "--json"],
     );
     let responses = serve(
         &repo,
@@ -743,16 +803,7 @@ fn show_excerpt_matches_cli_json_and_is_omitted_by_default() {
 
     let cli = cli_json(
         &repo,
-        &[
-            "show",
-            "Base",
-            "--scope",
-            "all",
-            "--json",
-            "--body",
-            "--context-lines",
-            "2",
-        ],
+        &["show", "Base", "--json", "--body", "--context-lines", "2"],
     );
     let responses = serve(
         &repo,
@@ -766,7 +817,7 @@ fn show_excerpt_matches_cli_json_and_is_omitted_by_default() {
         ],
     );
 
-    let with_body = body(&responses[0]);
+    let mut with_body = body(&responses[0]);
     assert!(
         with_body["excerpt"]
             .as_str()
@@ -774,6 +825,16 @@ fn show_excerpt_matches_cli_json_and_is_omitted_by_default() {
             .contains("func Base()"),
         "{with_body}"
     );
+    // The symbol echo is the one MCP trim on this payload.
+    assert_eq!(
+        with_body["symbol"]["symbol_key"],
+        cli["symbol"]["symbol_key"]
+    );
+    assert!(with_body["symbol"].get("doc").is_none(), "{with_body}");
+    let mut cli = cli;
+    for side in [&mut with_body, &mut cli] {
+        side.as_object_mut().unwrap().remove("symbol");
+    }
     assert_eq!(with_body, cli, "MCP show data diverged from CLI --json");
     assert!(
         body(&responses[1]).get("excerpt").is_none(),

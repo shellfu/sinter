@@ -152,6 +152,12 @@ fn selectors_from(
         .collect()
 }
 
+/// `Name@path/to/file.rs[:line]` per candidate: the bare selector an agent
+/// pastes back as `symbol`, narrowed by [`selectors_from`].
+pub fn candidate_selectors(nodes: &[Node]) -> Vec<String> {
+    selectors_from(nodes, 1, line_of)
+}
+
 /// `Name@path/to/file.rs (kind)` per candidate — the form an agent pastes
 /// back, narrowed by [`selectors_from`] so no two lines of one listing carry
 /// the same handle. No symbol keys: nobody types those.

@@ -532,7 +532,7 @@ fn serve_workspace_answers_across_members() {
             stdin,
             // Workspace coverage alone exceeds MCP's default 8000-byte budget;
             // lift it so the full coverage shape is asserted below.
-            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"affected","arguments":{{"symbol":"common:Backoff","budget_bytes":0}}}}}}"#
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"affected","arguments":{{"symbol":"common:Backoff","budget_bytes":0,"include_coverage":true}}}}}}"#
         )
         .unwrap();
         writeln!(
@@ -557,17 +557,17 @@ fn serve_workspace_answers_across_members() {
         .unwrap();
         writeln!(
             stdin,
-            r#"{{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{{"name":"path","arguments":{{"from":"billing:Charge","to":"common:Backoff"}}}}}}"#
+            r#"{{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{{"name":"path","arguments":{{"from":"billing:Charge","to":"common:Backoff","include_coverage":true}}}}}}"#
         )
         .unwrap();
         writeln!(
             stdin,
-            r#"{{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{{"name":"deps","arguments":{{"symbol":"auth:Login","budget_bytes":0}}}}}}"#
+            r#"{{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{{"name":"deps","arguments":{{"symbol":"auth:Login","budget_bytes":0,"include_coverage":true}}}}}}"#
         )
         .unwrap();
         writeln!(
             stdin,
-            r#"{{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{{"name":"context","arguments":{{"task":"retry backoff"}}}}}}"#
+            r#"{{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{{"name":"context","arguments":{{"task":"retry backoff","include_coverage":true}}}}}}"#
         )
         .unwrap();
     }
@@ -672,12 +672,11 @@ fn serve_workspace_answers_across_members() {
     }
 
     let stale: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
-    assert_eq!(
-        stale["error"]["data"]["error"]["code"], "stale_snapshot",
-        "{stale}"
-    );
+    assert_eq!(stale["result"]["isError"], true, "{stale}");
+    let stale = &stale["result"]["structuredContent"];
+    assert_eq!(stale["error"]["code"], "stale_snapshot", "{stale}");
     assert!(
-        stale["error"]["data"]["error"]["actual_snapshot"]
+        stale["error"]["actual_snapshot"]
             .as_str()
             .is_some_and(|token| token.starts_with("workspace-")),
         "{stale}"

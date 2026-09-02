@@ -198,9 +198,21 @@ fn mcp_defaults_to_8000_bytes_and_accepts_budget_bytes() {
         |line: &str| serde_json::from_str::<serde_json::Value>(line).unwrap()["result"].clone();
     let default = result(lines[1]);
     assert!(serde_json::to_string(&default).unwrap().len() <= 8000);
-    assert_eq!(
-        default["structuredContent"]["data"]["budget_bytes"], 8000,
+    // Stamped only when the default budget had to cut something.
+    assert!(
+        default["structuredContent"]["data"]["budget_bytes"]
+            .as_u64()
+            .is_none_or(|budget| budget == 8000),
         "{default}"
+    );
+    // The tool's own `limit` left rows behind: the page says so.
+    assert_eq!(
+        default["structuredContent"]["data"]["next_cursor"], 50,
+        "{default}"
+    );
+    assert_eq!(
+        default["structuredContent"]["outcome"]["reason"],
+        "limit_reached"
     );
     let small = result(lines[2]);
     assert!(serde_json::to_string(&small).unwrap().len() <= 3000);

@@ -179,22 +179,35 @@ pub(crate) fn response(workspace: &crate::workspace::Workspace, task: &str) -> R
                 .strip_prefix(&format!("{member}:"))
                 .unwrap_or(qualified);
             let root = &workspace.members[member];
+            // MCP call plus CLI rendering per action; see `context::tool_calls`.
             [
-                format!(
-                    "sinter show {} --repo {}",
-                    shell_arg(local),
-                    shell_arg(&root.display().to_string())
-                ),
-                format!(
-                    "sinter affected {} --workspace {} --max-depth 3",
-                    shell_arg(qualified),
-                    shell_arg(&workspace.manifest_path.display().to_string())
-                ),
-                format!(
-                    "sinter impact HEAD --repo {} --workspace {}",
-                    shell_arg(&root.display().to_string()),
-                    shell_arg(&workspace.manifest_path.display().to_string())
-                ),
+                json!({
+                    "tool": "show",
+                    "args": {"symbol": qualified},
+                    "cli": format!(
+                        "sinter show {} --repo {}",
+                        shell_arg(local),
+                        shell_arg(&root.display().to_string())
+                    ),
+                }),
+                json!({
+                    "tool": "affected",
+                    "args": {"symbol": qualified, "max_depth": 3},
+                    "cli": format!(
+                        "sinter affected {} --workspace {} --max-depth 3",
+                        shell_arg(qualified),
+                        shell_arg(&workspace.manifest_path.display().to_string())
+                    ),
+                }),
+                json!({
+                    "tool": "impact",
+                    "args": {"member": member, "rev_range": "HEAD"},
+                    "cli": format!(
+                        "sinter impact HEAD --repo {} --workspace {}",
+                        shell_arg(&root.display().to_string()),
+                        shell_arg(&workspace.manifest_path.display().to_string())
+                    ),
+                }),
             ]
         })
         .collect::<Vec<_>>();
@@ -251,7 +264,8 @@ pub(crate) fn run(manifest: &Path, task: &str, json_output: bool) -> Result<bool
     if !crate::workspace::stale_members(&workspace)?.is_empty() {
         crate::workspace::refresh(&workspace)?;
     }
-    let packet = response(&workspace, task)?;
+    let mut packet = response(&workspace, task)?;
+    crate::context::cli_actions(&mut packet);
     let ranked = packet["outcome"] == "ranked";
     if json_output {
         crate::agent_protocol::write_json(&packet)?;

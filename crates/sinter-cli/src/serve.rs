@@ -86,22 +86,28 @@ fn error_response(id: Value, method: &str, params: &Value, error: &anyhow::Error
     } else {
         method
     };
-    let mut data = crate::agent_protocol::failure(operation, error);
+    let mut data = crate::agent_protocol::mcp_failure_document(operation, error);
     data["error"]["message"] = json!(message);
-    // A lookup that ran and found nothing is a tool outcome, delivered in
-    // `result` with `isError` so clients keep the candidates. Protocol
-    // faults (unknown tool, bad arguments, stale handles) stay JSON-RPC
-    // errors.
-    if data["outcome"]["status"] == "not_found" {
-        let subject = params.pointer("/arguments/symbol").and_then(Value::as_str);
-        let result = crate::agent_protocol::mcp_failure(subject, data);
-        return json!({"jsonrpc": "2.0", "id": id, "result": result});
+    // Anything the caller can fix or retry (a miss, an ambiguity, a moved
+    // handle, a bad argument, a failed run) is a tool outcome, delivered in
+    // `result` with `isError` so clients keep `code` and `candidates`.
+    // Only protocol faults (unknown method or tool, arguments that are not
+    // an object) stay JSON-RPC errors.
+    let protocol_fault = method != "tools/call"
+        || data["error"]["code"] == "unknown_operation"
+        || !params
+            .get("arguments")
+            .is_none_or(|arguments| arguments.is_object() || arguments.is_null());
+    if protocol_fault {
+        return json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {"code": -32000, "message": message, "data": data}
+        });
     }
-    json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "error": {"code": -32000, "message": message, "data": data}
-    })
+    let subject = params.pointer("/arguments/symbol").and_then(Value::as_str);
+    let result = crate::agent_protocol::mcp_failure(subject, data);
+    json!({"jsonrpc": "2.0", "id": id, "result": result})
 }
 
 fn handle(
@@ -182,21 +188,55 @@ fn call_tool(scope: &Scope, params: &Value, coverage_ref: &mut Option<String>) -
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| json!({}));
-    let budget = crate::agent_protocol::take_budget(&mut args)?;
     crate::agent_protocol::validate_arguments(name, &args, matches!(scope, Scope::Workspace(_)))?;
+    let budget = crate::agent_protocol::take_budget(&mut args);
 
     // A session-lived store would hold redb's exclusive lock across calls,
     // blocking graph refresh and pinning a stale snapshot.
     let mut result = match scope {
         Scope::Repo { repo, freshness } => {
             freshness.sync()?;
-            crate::repository_tools::call(repo, name, &args)?
+            let mut result = crate::repository_tools::call(repo, name, &args)?;
+            stamp_symbol_lines(&mut result, repo);
+            result
         }
         Scope::Workspace(manifest) => crate::workspace_tools::call(manifest, name, &args)?,
     };
-    let carried = crate::coverage::collapse_repeated(&mut result, coverage_ref.as_deref());
-    if carried.is_some() {
-        *coverage_ref = carried;
+    if args.get("include_coverage").and_then(Value::as_bool) == Some(true) {
+        let carried = crate::coverage::collapse_repeated(&mut result, coverage_ref.as_deref());
+        if carried.is_some() {
+            *coverage_ref = carried;
+        }
     }
-    crate::agent_protocol::mcp_success(name, &result, budget)
+    crate::agent_protocol::mcp_success(name, &result, budget, &args)
+}
+
+/// Add `line` to the `symbol` echo (and each batched entry's), read from
+/// the file's current content: the MCP trim keeps the echo to what an
+/// agent can act on, and a line is what it opens.
+fn stamp_symbol_lines(result: &mut Value, repo: &Path) {
+    let stamp = |echo: &mut Value| {
+        let (Some(file), Some(start)) = (
+            echo["file"].as_str().map(str::to_owned),
+            echo["span"]["start"].as_u64(),
+        ) else {
+            return;
+        };
+        if let Some(line) = crate::render::line_of(repo, &file, start) {
+            echo["line"] = json!(line);
+        }
+    };
+    if result.get("symbol").is_some_and(Value::is_object) {
+        stamp(&mut result["symbol"]);
+    }
+    for entry in result
+        .get_mut("results")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        if entry.get("symbol").is_some_and(Value::is_object) {
+            stamp(&mut entry["symbol"]);
+        }
+    }
 }

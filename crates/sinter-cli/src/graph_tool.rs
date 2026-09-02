@@ -55,18 +55,33 @@ pub(crate) fn traversal_filter(args: &Value) -> Result<sinter_store::EdgeFilter>
         .unwrap_or_default();
     let mut filter = crate::lookup::edge_filter(&evidence, certain)?;
     filter.relations = crate::lookup::relation_set(&relations)?;
-    let scopes =
-        crate::corpus::ScopeSelection::from_json(args, crate::corpus::ScopeSelection::all())?;
+    // The CLI default corpus (`production,test,docs`), so an MCP answer is
+    // the answer the same verb prints in a terminal.
+    let scopes = crate::corpus::ScopeSelection::from_json(
+        args,
+        crate::corpus::ScopeSelection::agent_default(),
+    )?;
     if !scopes.is_all() {
         filter.scopes = Some(scopes.as_set());
     }
     Ok(filter)
 }
 
+/// `limit` 0 means unlimited. Half of `usize::MAX`, not all of it: `ask`
+/// takes `limit + 1`.
+const UNLIMITED: usize = usize::MAX / 2;
+
+/// Rows a tool may return: the requested (or default) `limit`, extended by
+/// the MCP `cursor` so the page the envelope cuts at `cursor` is taken
+/// from the whole result rather than from the first `limit` rows.
 pub(crate) fn limit(args: &Value, default: usize) -> usize {
-    args.get("limit")
-        .and_then(Value::as_u64)
-        .unwrap_or(default as u64) as usize
+    let limit = match args.get("limit").and_then(Value::as_u64) {
+        Some(0) => return UNLIMITED,
+        Some(limit) => limit as usize,
+        None => default,
+    };
+    let cursor = args.get("cursor").and_then(Value::as_u64).unwrap_or(0) as usize;
+    limit.saturating_add(cursor).min(UNLIMITED)
 }
 
 pub(crate) fn affected_options(args: &Value) -> (usize, bool) {
@@ -142,7 +157,18 @@ pub(crate) fn affected_json(
 mod tests {
     use serde_json::json;
 
-    use super::{affected_json, required_string, traversal_filter};
+    use super::{affected_json, limit, required_string, traversal_filter};
+
+    #[test]
+    fn limit_pages_from_the_cursor_and_zero_is_unlimited() {
+        assert_eq!(limit(&json!({}), 50), 50);
+        assert_eq!(limit(&json!({"limit": 5, "cursor": 20}), 50), 25);
+        assert_eq!(limit(&json!({"cursor": 20}), 50), 70);
+        assert_eq!(
+            limit(&json!({"limit": 0, "cursor": 20}), 50),
+            super::UNLIMITED
+        );
+    }
 
     #[test]
     fn required_parameters_report_the_supplied_keys() {

@@ -38,7 +38,10 @@ pub(crate) fn call(manifest: &Path, name: &str, args: &Value) -> Result<Value> {
     let mut result = match name {
         "ask" => ask(&workspace, args),
         "context" => {
-            crate::workspace_context::response(&workspace, &required_string(args, "task")?)
+            let mut packet =
+                crate::workspace_context::response(&workspace, &required_string(args, "task")?)?;
+            crate::context::tool_calls(&mut packet);
+            Ok(packet)
         }
         "show" => show(&workspace, args),
         "impact" => impact(&workspace, args),
@@ -156,7 +159,11 @@ fn show(workspace: &crate::workspace::Workspace, args: &Value) -> Result<Value> 
 }
 
 fn impact(workspace: &crate::workspace::Workspace, args: &Value) -> Result<Value> {
-    let limit = limit(args, crate::impact::DEFAULT_LIMIT);
+    // `impact` pages per collection itself and treats 0 as "all".
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(crate::impact::DEFAULT_LIMIT as u64) as usize;
     let member = required_string(args, "member")?;
     let repo = workspace
         .members
@@ -245,8 +252,10 @@ fn unresolved(workspace: &crate::workspace::Workspace, args: &Value) -> Result<V
 fn query(workspace: &crate::workspace::Workspace, args: &Value) -> Result<Value> {
     let (member, node) =
         crate::workspace::find_symbol(workspace, &required_string(args, "symbol")?)?;
-    let selection =
-        crate::corpus::ScopeSelection::from_json(args, crate::corpus::ScopeSelection::all())?;
+    let selection = crate::corpus::ScopeSelection::from_json(
+        args,
+        crate::corpus::ScopeSelection::agent_default(),
+    )?;
     let store = sinter_store::Store::open(crate::pipeline::db_path(&workspace.members[&member]))?;
     let scope = store.file_scope(&node.file)?;
     if !selection.contains(scope) {
