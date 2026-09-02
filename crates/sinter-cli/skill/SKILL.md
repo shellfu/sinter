@@ -10,7 +10,7 @@ never treat it as stale-proof (`sinter doctor` names the fix). When
 `.sinter/graph.redb` exists, query sinter before any filesystem search; if
 missing, `sinter ensure <repo>` creates it (writes only `.sinter/`); `sinter
 init` only for full onboarding. Queries self-sync; `sinter build` stays for
-CI. Schema v14: an older graph rebuilds once on the first query.
+CI. Schema v16: an older graph rebuilds once on the first query.
 
 ## Routing (full table: the sinter block in AGENTS.md)
 
@@ -20,11 +20,12 @@ CI. Schema v14: an older graph rebuilds once on the first query.
 | Start a coding task | `sinter context "<task>"` (name real symbols; gives literals, mirrors, tests, next commands) |
 | Vague discovery | `sinter ask "<question>"` (`--explain` = ranking diagnostics) |
 | Exact/fuzzy symbol, members | `sinter query <sym>`, `'Type::*'`, `'*::method'` |
-| Inspect a symbol | `sinter show <sym>` (`--body` = whole source when short; `--outline` = landmarks inside a huge span, automatic over 8 KB; `--impls`, `--callers`, `X@file:line`) |
+| Inspect a symbol | `sinter show <sym>`: `--body` (whole source when short), `--outline` (huge spans, auto over 8 KB), `--impls`, `--callers`, `X@file:line` |
+| Where exactly is it called | rows list every site: `f.rs:12, :48 (+4 more)`; JSON adds `sites`/`sites_total` |
 | Dependents / deps / path | `sinter affected <sym>...` (`--include-tests`, `--through-hubs`), `sinter deps <sym>` (depth 1), `sinter path <A> <B>` (`-k N`) |
 | Text search | `sinter grep '<re>'` (unbounded); `--within 'affected(SYM)'`/`deps(SYM)`/`file(PATH)` narrows |
 | Can I delete this | `sinter assert deletable <sym>`: `has_dependents`/`none_observed`, all scopes |
-| No-production-caller proof | `sinter assert no-callers <sym> --json`: accept only `holds_for_indexed_snapshot` (judged within `--scope`) |
+| No-production-caller proof | `sinter assert no-callers <sym> --json`: accept only `holds_for_indexed_snapshot` |
 | Nothing-depends-on / nothing-writes-table proof | `sinter assert no-dependents <sym> --json`; `sinter assert no-writers <table> --json` |
 | User graph gaps | `sinter unresolved [--file f] [--name n]` (`--all` adds external/resolver gaps) |
 | Citations | `sinter cite <sym>`; gate: `sinter verify-doc <f.md> --json` |

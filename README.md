@@ -371,8 +371,16 @@ function-local `from m import f` calls, and calls inside nested `def`s;
 TypeScript `new X()` constructor calls, default exports, and `export *`
 barrel re-exports; Go interface implementations matched by method set
 across packages (an `affected` on an interface method that could not
-traverse implementations says `gap: implementations not traversed`). Graph
-schema v14 carries these facts; an existing graph rebuilds once on the
+traverse implementations says `gap: implementations not traversed`).
+Explicit implementations — Rust `impl Trait for T`, Java, C# and
+TypeScript `implements`, class inheritance — carry a method-level
+`implements` edge too, so `sinter affected Trait::method` reaches the
+implementing methods and not only the trait method's callers.
+
+An edge keeps every call site it saw, up to eight, plus the true total: a
+caller that calls a symbol twice renders as `path/to/file.rs:12, :48`, and
+`--json` adds `sites` and `sites_total` when there is more than one. Graph
+schema v16 carries these facts; an existing graph rebuilds once on the
 first query after upgrading.
 
 ### SQL graph

@@ -46,7 +46,7 @@ commit or edit it). When `.sinter/graph.redb` exists, query sinter BEFORE
 any broad filesystem search for symbol location, callers, dependency
 impact, structural paths, or diff impact. `sinter grep` is the text search
 (unbounded by default, `--within` narrows it to a blast radius); rg only for
-content sinter did not index. Schema v14: an older graph rebuilds once on
+content sinter did not index. Schema v16: an older graph rebuilds once on
 the first query.
 
 | Question | Command |
@@ -56,6 +56,7 @@ the first query.
 | Vague/conceptual discovery (calibrated lexical search) | `sinter ask "<question>"` (`--explain` adds ranking diagnostics) |
 | Exact or fuzzy symbol lookup | `sinter query <symbol>` (`'Type::*'`, `'*::method'`) |
 | Inspect one symbol | `sinter show <symbol>` — `--body` is a real read (whole source when ≤ 60 lines); `--outline` maps a span too big to read (automatic over 8 KB); `show X@file:line` for the enclosing symbol; `--impls` for a type's impl blocks; `--callers` for the used-by files |
+| Where exactly is a symbol called from | edge rows carry every site (up to 8) — `file.rs:12, :48 (+4 more)`; `--json` adds `sites` and `sites_total`. `affected <Trait>::<method>` reaches implementing methods in Rust, Java, C#, TypeScript and Go |
 | Who depends on X (direct dependents) | `sinter affected <symbol>...` — test rows hidden (`--include-tests`), stops at hubs and names them (`--through-hubs`); seeds repeatable and unioned |
 | What does X depend on (forward) | `sinter deps <symbol>` — depth 1 by default; `--max-depth N` widens |
 | How does A reach B | `sinter path <A> <B>` (`-k N` for N node-disjoint routes) |
