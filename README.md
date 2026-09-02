@@ -313,11 +313,27 @@ It also records the direction and purpose of object references:
 - `uses`: foreign-key and index dependencies
 
 A view owns the reads in its defining query. Top-level statements belong to
-their file, including migration files. To find every query and migration that
-touches a table:
+their file, including migration files.
+
+SQL embedded in Rust is extracted too, at known query sinks and for literal
+strings only: the `sqlx::query!`/`query_as!`/`query_scalar!` macros, the
+`sqlx::query*` and diesel `sql_query` functions, and the `query*`, `execute*`,
+`batch_execute`, and `prepare*` methods of tokio-postgres, rusqlite, and
+connection pools. The enclosing Rust function gains the `reads`/`writes`
+edges, so a table's blast radius crosses the language boundary. Table names
+resolve within a database root first (a directory holding migrations and
+queries), then fall back to the unique corpus-wide definition.
+
+To find every query, migration, and Rust function that touches a table:
 
 ```sh
 sinter affected users --relations reads,writes,creates,alters,drops
+```
+
+To prove nothing in the indexed snapshot writes, alters, or drops a table:
+
+```sh
+sinter assert no-writers users --json
 ```
 
 To inspect the data and schema dependencies of one migration:
@@ -327,11 +343,18 @@ sinter deps migrations/20260901_users.sql \
   --relations reads,writes,uses,creates,alters,drops
 ```
 
-This analysis covers SQL syntax in `.sql` files. Sinter does not yet extract
-SQL strings embedded in Rust, Go, Python, or application configuration. It
-does not infer column-level lineage, transaction scope, indexes required by a
-query, or PostgreSQL planner behavior. Use `EXPLAIN` against the target
-database for planner evidence.
+`sinter doctor` folds migrations in filename order and warns when a table is
+dropped at head but still referenced, or referenced but never created.
+
+Limits. The SQL grammar (tree-sitter-sequel) does not parse several
+PostgreSQL constructs — `CREATE FUNCTION`/`PROCEDURE`/`TRIGGER`/`POLICY`,
+`DO` blocks, row-level security. Files containing them are indexed from
+partial trees: the statements the grammar dropped are absent from the graph,
+and `doctor` reports the gap as one row naming the likely constructs. SQL
+strings built at runtime, and SQL embedded in Go, Python, or TypeScript, are
+not extracted. Sinter does not infer column-level lineage, transaction scope,
+indexes required by a query, or planner behavior; use `EXPLAIN` against the
+target database for planner evidence.
 
 Top-level `graphify-out/`, `memory/`, and `.memory/` are excluded from the
 semantic corpus and SCIP freshness inventory. These are derived analysis

@@ -25,6 +25,8 @@ is missing, `sinter ensure <repo>` creates it (writes only `.sinter/`); run
 | Text inside a blast radius | `sinter grep '<re>' --within 'affected(SYM)'` (also `deps(SYM)`, `file(PATH)`; repeatable) |
 | Graph gaps | `sinter unresolved [--file f] [--name n]` |
 | No-production-caller proof | `sinter assert no-callers <sym> --json`: accept only `holds_for_indexed_snapshot` |
+| Table readers/writers (SQL + Rust query strings) | `sinter affected <table> --relations reads,writes,creates,alters,drops` |
+| Nothing-writes-table proof | `sinter assert no-writers <table> --json` |
 | Nothing-depends-on proof (const/type/trait) | `sinter assert no-dependents <sym> --json` (`no-callers` counts `calls` only) |
 | Citations | `sinter cite <sym>`; gate with `sinter verify-doc <f.md> --json` |
 | Diff/PR impact; unfinished refactor | `sinter impact [rev-range]` (`--limit 0` = all); `sinter impact --expect <sym>` |
