@@ -28,6 +28,7 @@ mod repository_tools;
 mod scip;
 mod serve;
 mod show;
+mod testcmd;
 mod tool_catalog;
 mod uninit;
 mod unresolved;
@@ -492,6 +493,10 @@ enum Command {
         /// that the diff did NOT touch. Repeatable.
         #[arg(long = "expect", value_name = "SYMBOL")]
         expect: Vec<String>,
+        /// With --expect: print the full blast radius and affected tests
+        /// instead of a 5-row preview
+        #[arg(long)]
+        full: bool,
         #[command(flatten)]
         filter: FilterArgs,
     },
@@ -535,6 +540,9 @@ enum Command {
         /// Structured output
         #[arg(long)]
         json: bool,
+        /// Relations the radius tier follows (default: calls,uses)
+        #[arg(long, value_delimiter = ',')]
+        relations: Vec<String>,
     },
     /// MCP server over stdio
     Serve {
@@ -1296,6 +1304,7 @@ fn cli_main() -> ExitCode {
             limit,
             json,
             expect,
+            full,
             filter,
         } => {
             let result = impact::run(
@@ -1307,6 +1316,7 @@ fn cli_main() -> ExitCode {
                 &filter.evidence,
                 filter.certain,
                 limit,
+                full,
                 json,
             );
             if json {
@@ -1314,8 +1324,13 @@ fn cli_main() -> ExitCode {
             }
             result
         }
-        Command::Overlap { ranges, repo, json } => {
-            let result = overlap::run(&repo, &ranges, json);
+        Command::Overlap {
+            ranges,
+            repo,
+            json,
+            relations,
+        } => {
+            let result = overlap::run(&repo, &ranges, &relations, json);
             if json {
                 return exit_json("overlap", result);
             }

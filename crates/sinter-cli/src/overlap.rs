@@ -7,12 +7,16 @@
 //!     | xargs -I{} echo "main...{}" | xargs sinter overlap
 //!
 //! Spans are matched against the graph of the current working tree (build
-//! at the merge base for best fidelity — same caveat as `impact`).
+//! at the merge base for best fidelity — same caveat as `impact`, whose
+//! endpoint attribution this shares).
 //! Risk tiers per pair:
 //!   direct — both PRs touch the same node: textual or semantic collision
 //!   radius — one PR touches a node the other's touched code depends on:
 //!            merges clean, breaks semantically (invisible to the forge)
 //!   file   — same file only, disjoint nodes: usually fine
+//! A pair where one range's endpoint is an ancestor of the other's is
+//! sequential, not concurrent: its overlap is the earlier diff counted
+//! twice, so it is reported as such and not scored.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -39,6 +43,29 @@ pub struct Pair {
     direct: Vec<String>,
     radius: Vec<String>,
     files: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+}
+
+/// Radius tier default: call/use edges only, so file-level import noise
+/// does not turn every pair into MEDIUM.
+fn default_filter() -> sinter_store::EdgeFilter {
+    sinter_store::EdgeFilter {
+        relations: Some(
+            [sinter_core::Relation::Calls, sinter_core::Relation::Uses]
+                .into_iter()
+                .collect(),
+        ),
+        ..sinter_store::EdgeFilter::default()
+    }
+}
+
+fn endpoint(range: &str) -> &str {
+    let end = range
+        .split_once("...")
+        .or_else(|| range.split_once(".."))
+        .map_or(range, |(_, end)| end);
+    if end.is_empty() { "HEAD" } else { end }
 }
 
 /// `LABEL=RANGE` or bare `RANGE` (label = the range itself).
@@ -54,11 +81,11 @@ fn parse_arg(arg: &str) -> (String, String) {
 fn map_one(
     repo: &Path,
     store: &sinter_store::Store,
+    filter: &sinter_store::EdgeFilter,
     label: String,
     range: String,
 ) -> Result<PrMap> {
-    let report =
-        impact::compute_with_store(repo, &range, &sinter_store::EdgeFilter::default(), store)?;
+    let report = impact::compute_with_store(repo, &range, filter, store)?;
     let key = |s: &impact::SymbolRef| format!("{}:{}", s.file, s.qualified);
     Ok(PrMap {
         touched: report.changed_symbols.iter().map(key).collect(),
@@ -73,7 +100,32 @@ fn map_one(
     })
 }
 
-fn pair(a: &PrMap, b: &PrMap) -> Pair {
+fn pair(repo: &Path, a: &PrMap, b: &PrMap) -> Pair {
+    let (ea, eb) = (endpoint(&a.rev_range), endpoint(&b.rev_range));
+    // Both directions true means the same commit, which is a duplicate
+    // range, not a sequence.
+    let (a_in_b, b_in_a) = (
+        impact::is_ancestor(repo, ea, eb),
+        impact::is_ancestor(repo, eb, ea),
+    );
+    let sequential = match (a_in_b, b_in_a) {
+        (true, false) => Some(format!("{} contains {}'s endpoint", b.label, a.label)),
+        (false, true) => Some(format!("{} contains {}'s endpoint", a.label, b.label)),
+        _ => None,
+    };
+    if let Some(note) = sequential {
+        return Pair {
+            a: a.label.clone(),
+            b: b.label.clone(),
+            risk: "sequential",
+            direct: Vec::new(),
+            radius: Vec::new(),
+            files: Vec::new(),
+            note: Some(format!(
+                "{note}; overlap would be the earlier diff itself, skipped"
+            )),
+        };
+    }
     let direct: Vec<String> = a.touched.intersection(&b.touched).cloned().collect();
     let radius: Vec<String> = a
         .touched
@@ -109,37 +161,51 @@ fn pair(a: &PrMap, b: &PrMap) -> Pair {
         direct,
         radius,
         files,
+        note: None,
     }
 }
 
 /// Parse, map, pair, rank — shared by the CLI verb and the MCP tool.
-pub fn compute(repo: &Path, args: &[String]) -> Result<(Vec<PrMap>, Vec<Pair>)> {
+/// `relations` empty means the calls/uses default.
+pub fn compute(
+    repo: &Path,
+    args: &[String],
+    relations: &[String],
+) -> Result<(Vec<PrMap>, Vec<Pair>)> {
     let store = crate::lookup::open_store(repo)?;
-    compute_with_store(repo, &store, args)
+    compute_with_store(repo, &store, args, relations)
 }
 
 pub(crate) fn compute_current(repo: &Path, args: &[String]) -> Result<(Vec<PrMap>, Vec<Pair>)> {
     let store = crate::lookup::open_current(repo)?;
-    compute_with_store(repo, &store, args)
+    compute_with_store(repo, &store, args, &[])
 }
 
 fn compute_with_store(
     repo: &Path,
     store: &sinter_store::Store,
     args: &[String],
+    relations: &[String],
 ) -> Result<(Vec<PrMap>, Vec<Pair>)> {
     if args.len() < 2 {
         bail!("need at least two rev-ranges (e.g. `sinter overlap main...pr-1 main...pr-2`)");
     }
+    let filter = match crate::lookup::relation_set(relations)? {
+        Some(relations) => sinter_store::EdgeFilter {
+            relations: Some(relations),
+            ..sinter_store::EdgeFilter::default()
+        },
+        None => default_filter(),
+    };
     let mut maps = Vec::new();
     for arg in args {
         let (label, range) = parse_arg(arg);
-        maps.push(map_one(repo, store, label, range)?);
+        maps.push(map_one(repo, store, &filter, label, range)?);
     }
     let mut pairs = Vec::new();
     for i in 0..maps.len() {
         for j in i + 1..maps.len() {
-            pairs.push(pair(&maps[i], &maps[j]));
+            pairs.push(pair(repo, &maps[i], &maps[j]));
         }
     }
     // Riskiest first; stable label order inside each tier.
@@ -147,14 +213,15 @@ fn compute_with_store(
         "high" => 0,
         "medium" => 1,
         "low" => 2,
-        _ => 3,
+        "clean" => 3,
+        _ => 4,
     };
     pairs.sort_by_key(|p| rank(p.risk));
     Ok((maps, pairs))
 }
 
-pub fn run(repo: &Path, args: &[String], json: bool) -> Result<()> {
-    let (maps, pairs) = compute(repo, args)?;
+pub fn run(repo: &Path, args: &[String], relations: &[String], json: bool) -> Result<()> {
+    let (maps, pairs) = compute(repo, args, relations)?;
 
     if json {
         crate::agent_protocol::write_json(&to_json(&maps, &pairs))?;
@@ -173,6 +240,10 @@ pub fn run(repo: &Path, args: &[String], json: bool) -> Result<()> {
     for p in &pairs {
         if p.risk == "clean" {
             println!("{} × {}: clean", p.a, p.b);
+            continue;
+        }
+        if let Some(note) = &p.note {
+            println!("{} × {}: {}  ({note})", p.a, p.b, p.risk);
             continue;
         }
         println!(
