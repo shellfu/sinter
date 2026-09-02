@@ -16,10 +16,18 @@ pub fn test_command(language: &str, package: &str, file: &str, name: &str) -> St
             name => format!("cargo test --manifest-path {package}/Cargo.toml -- {name}"),
         },
         "rust" => format!("cargo test -p {package} {file} -- {name}"),
-        "go" => format!(
-            "go test ./{} -run '^{name}$'",
-            package.trim_end_matches('/')
-        ),
+        "go" => {
+            let dir = package.trim_end_matches('/');
+            let pkg = if dir.is_empty() || dir == "." {
+                ".".to_string()
+            } else {
+                format!("./{dir}")
+            };
+            match name {
+                "" => format!("go test {pkg}"),
+                name => format!("go test {pkg} -run '^{name}$'"),
+            }
+        }
         "python" => format!("pytest {file}::{name}"),
         "vitest" => format!("npx vitest run {file} -t '{name}'"),
         "npm" => format!("npm test -- {file}"),
