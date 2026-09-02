@@ -264,6 +264,68 @@ fn file_anchor(store: &Store, term: &str) -> Result<Result<Option<Anchor>, Vec<S
     })))
 }
 
+/// Task vocabulary that means "change how this thing behaves", as opposed
+/// to a question about where something is defined. Only then does the
+/// entry-point prior apply: it prefers where an edit lands, which is the
+/// wrong bias for a lookup.
+const FEATURE_WORDS: &[&str] = &[
+    "add",
+    "implement",
+    "support",
+    "wire",
+    "expose",
+    "register",
+    "cli",
+    "command",
+    "subcommand",
+    "flag",
+    "option",
+    "feature",
+    "handler",
+    "endpoint",
+];
+
+fn is_feature_task(task: &str) -> bool {
+    task.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|word| FEATURE_WORDS.contains(&word))
+}
+
+/// Entry-point seeds consulted, and how far an edit target may sit from
+/// one. One bounded BFS per `context` invocation.
+const ENTRY_SEEDS: usize = 8;
+const ENTRY_HOPS: usize = 3;
+/// A tie among ranked candidates goes to the entry point. Small on
+/// purpose: a candidate scoring more than this above an entry point still
+/// wins outright.
+const ENTRY_BIAS_PERMILLE: i64 = 100;
+
+/// Ids that are an entry point by name, or reachable from one within
+/// `ENTRY_HOPS`. One BFS from at most `ENTRY_SEEDS` seeds.
+fn entry_point_ids(store: &Store) -> Result<BTreeSet<String>> {
+    let filter = EdgeFilter::default();
+    let mut seeds: Vec<Node> = Vec::new();
+    for term in ["main", "run"] {
+        for node in store.search(term, FUZZY_CANDIDATES)? {
+            if !matches!(node.kind, SymbolKind::File | SymbolKind::Section)
+                && is_entry_point(&node.name)
+                && !is_test_file(&node.file)
+            {
+                seeds.push(node);
+            }
+        }
+    }
+    seeds.truncate(ENTRY_SEEDS);
+    let mut reached = BTreeSet::new();
+    for seed in &seeds {
+        reached.insert(seed.id.as_str().to_owned());
+        for step in store.dependencies(&seed.id, &filter, ENTRY_HOPS)? {
+            reached.insert(step.node.id.as_str().to_owned());
+        }
+    }
+    Ok(reached)
+}
+
 /// `main`, `run*`, `*Command`: where a task usually starts.
 fn is_entry_point(name: &str) -> bool {
     let lower = name.to_lowercase();
@@ -662,7 +724,24 @@ pub(crate) fn response(repo: &Path, store: &Store, task: &str) -> Result<Value> 
         unresolved: unresolved_intents,
         ambiguous_files,
     } = anchors_of(store, task)?;
-    let hits = ranked_hits(&ask, crate::ask::query::wants_docs(task));
+    let mut hits = ranked_hits(&ask, crate::ask::query::wants_docs(task));
+    // A feature or CLI change is edited at an entry point, so an entry
+    // point outranks an equally-scored candidate that is not one.
+    if is_feature_task(task) {
+        let entries = entry_point_ids(store)?;
+        let biased = |hit: &Value| {
+            let score = hit["score"].as_i64().unwrap_or(0);
+            let entry = is_entry_point(hit["name"].as_str().unwrap_or(""))
+                || entries.contains(hit["snapshot_id"].as_str().unwrap_or(""));
+            if entry {
+                score * (1000 + ENTRY_BIAS_PERMILLE) / 1000
+            } else {
+                score
+            }
+        };
+        hits.sort_by_key(|hit| std::cmp::Reverse(biased(hit)));
+    }
+    let hits = hits;
     let top = hits.first().and_then(|h| h["score"].as_i64()).unwrap_or(0);
 
     let filter = EdgeFilter::default();
@@ -1056,8 +1135,8 @@ fn print_packet(p: &Value) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Shape, identifier_candidates, is_entry_point, is_test_file, language_of, lexical_query,
-        one_line,
+        Shape, identifier_candidates, is_entry_point, is_feature_task, is_test_file, language_of,
+        lexical_query, one_line,
     };
 
     #[test]
@@ -1068,6 +1147,8 @@ mod tests {
         assert!(is_test_file("packages/cli/src/index.test.ts"));
         assert!(is_test_file("tests/surface.rs"));
         assert!(!is_test_file("src/testing_helpers.rs"));
+        assert!(is_feature_task("add a --json flag to the doctor command"));
+        assert!(!is_feature_task("where is the trie node stored"));
         assert!(is_entry_point("supervisorCommand"));
         assert!(is_entry_point("runCLI"));
         assert!(!is_entry_point("NewThreadField"));
