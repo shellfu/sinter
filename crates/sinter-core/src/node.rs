@@ -104,6 +104,8 @@ impl CorpusScope {
                     | "golden"
                     | "testdata"
                     | "test-data"
+                    | "expected"
+                    | "worked"
                     | "snapshot"
                     | "snapshots"
                     | "__snapshots__"
@@ -463,6 +465,9 @@ mod tests {
                 CorpusScope::Fixture,
             ),
             ("benches/ask.rs", CorpusScope::Test),
+            ("tools/skillgen/expected/card.md", CorpusScope::Fixture),
+            ("worked/mixed-corpus/raw/cluster.py", CorpusScope::Fixture),
+            ("samples/demo.py", CorpusScope::Example),
             ("e2e/smoke.ts", CorpusScope::Test),
             ("crates/sinter-cli/tests/cli.rs", CorpusScope::Test),
             ("crates/eval/src/lib.rs", CorpusScope::Production),

@@ -256,33 +256,36 @@ pub fn run(repo: &Path, json: bool, scopes: &ScopeSelection) -> Result<()> {
     }
     let health = &view["health"];
     println!();
-    println!("Graph health");
-    let waiting = health["graph"]["missing_compiler_index"]
-        .as_u64()
-        .unwrap_or(0);
-    println!(
-        "  {} · compiler index {}{} · actionable unresolved {} · partial-syntax files {} · unindexed files {}",
-        health["status"].as_str().unwrap_or("partial"),
-        health["compiler_index"]["state"]
-            .as_str()
-            .unwrap_or("unknown"),
-        if waiting > 0 {
-            format!(" · {waiting} refs waiting on `sinter scip`")
-        } else {
-            String::new()
-        },
-        health["graph"]["actionable_unresolved"]
-            .as_u64()
-            .unwrap_or(0),
-        health["graph"]["syntax_error_files"].as_u64().unwrap_or(0),
-        health["graph"]["unindexed_files"].as_u64().unwrap_or(0),
-    );
-    println!("  interpretation: structural inventory, not runtime entry-point or ownership proof");
+    println!("{}", health_line(health));
     println!();
     println!(
         "Next: sinter ask \"<question>\" · sinter show <symbol> · sinter affected <symbol> · sinter doctor"
     );
     Ok(())
+}
+
+/// `health: partial — 41 partial-syntax files, 22 user gaps, scip missing`:
+/// what keeps the graph from complete, nothing else.
+fn health_line(health: &serde_json::Value) -> String {
+    let n = |field: &str| health["graph"][field].as_u64().unwrap_or(0);
+    let mut parts = vec![
+        format!("{} partial-syntax files", n("syntax_error_files")),
+        format!("{} user gaps", n("actionable_unresolved")),
+        format!(
+            "scip {}",
+            health["compiler_index"]["state"]
+                .as_str()
+                .unwrap_or("unknown")
+        ),
+    ];
+    if n("unindexed_files") > 0 {
+        parts.push(format!("{} unindexed files", n("unindexed_files")));
+    }
+    format!(
+        "health: {} — {}",
+        health["status"].as_str().unwrap_or("partial"),
+        parts.join(", ")
+    )
 }
 
 /// Canonical repository-orientation payload shared by CLI JSON and MCP.
@@ -388,6 +391,19 @@ mod tests {
             signature: String::new(),
             doc: None,
         }
+    }
+
+    #[test]
+    fn health_line_names_only_what_blocks_completeness() {
+        let health = serde_json::json!({
+            "status": "partial",
+            "compiler_index": {"state": "missing"},
+            "graph": {"syntax_error_files": 41, "actionable_unresolved": 22, "unindexed_files": 0},
+        });
+        assert_eq!(
+            health_line(&health),
+            "health: partial — 41 partial-syntax files, 22 user gaps, scip missing"
+        );
     }
 
     #[test]

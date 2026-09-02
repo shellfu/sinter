@@ -18,6 +18,35 @@ fn onboarding_root(repo: &Path) -> Result<PathBuf> {
 /// can discover this repository's graph without consulting any ancestor.
 fn establish_graph_root(repo: &Path) -> Result<()> {
     std::fs::create_dir_all(repo.join(".sinter"))?;
+    gitignore_derived_state(repo)?;
+    Ok(())
+}
+
+/// `.sinter/` is derived state and must not show up as untracked. Appends
+/// one line to the root `.gitignore` (creating it) when the directory is
+/// inside a git worktree and no existing line already covers it. Idempotent.
+fn gitignore_derived_state(repo: &Path) -> Result<()> {
+    if !repo.ancestors().any(|dir| dir.join(".git").exists()) {
+        return Ok(());
+    }
+    let path = repo.join(".gitignore");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let covered = existing.lines().any(|line| {
+        matches!(
+            line.trim().trim_end_matches('/'),
+            ".sinter" | "/.sinter" | "**/.sinter"
+        )
+    });
+    if covered {
+        return Ok(());
+    }
+    let mut text = existing;
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(".sinter/\n");
+    std::fs::write(&path, text)?;
+    println!("added .sinter/ to {}", path.display());
     Ok(())
 }
 
@@ -141,13 +170,7 @@ fn plan(repo: &Path, cursor: bool, global: bool, scip: bool) {
         println!("    ~/.claude/settings.json      enforcement hooks, every repo");
     } else {
         println!("\n  your machine");
-        if install::default_dir().is_some_and(|dir| dir.join("SKILL.md").exists()) {
-            println!("    ~/.claude/skills/sinter/     existing skill card refreshed");
-        } else {
-            println!(
-                "    untouched — pass --global to install the skill card and machine-wide hooks"
-            );
-        }
+        println!("    untouched — pass --global to install the skill card and machine-wide hooks");
     }
 
     println!("\n  compiler indexers (SCIP)");
@@ -240,13 +263,11 @@ pub fn run(
     install_project_integration(&repo, cursor)?;
     // --global reaches past the repo: the skill card and the enforcement
     // hooks that every repo on this machine then inherits.
+    // Without it nothing outside the repo is touched, even a stale
+    // machine-wide card: doctor names that and `sinter install` fixes it.
     if global {
         install::run(None)?;
         install::enforce(None, false)?;
-    } else if install::default_dir().is_some_and(|dir| dir.join("SKILL.md").exists()) {
-        // A machine-wide card already exists, so it is already ours to
-        // keep current; leaving it stale makes doctor flag it right away.
-        install::run(None)?;
     }
 
     // Agent integration writes indexable files into the repo (AGENTS.md is
@@ -262,7 +283,7 @@ pub fn run(
     }
 
     println!("\n== doctor ==");
-    doctor::run(&repo, false, false)
+    doctor::run(&repo, false, false, false)
 }
 
 /// Install the committable repository integration. Full onboarding makes the
@@ -290,6 +311,10 @@ mod tests {
         ensure(repo).unwrap();
 
         assert!(repo.join(".sinter/graph.redb").exists());
+        assert_eq!(
+            std::fs::read_to_string(repo.join(".gitignore")).unwrap(),
+            ".sinter/\n"
+        );
         for absent in [
             "AGENTS.md",
             "CLAUDE.md",
@@ -339,6 +364,30 @@ mod tests {
 
         assert!(nested.join(".sinter/graph.redb").exists());
         assert!(!repo.join(".sinter").exists());
+    }
+
+    #[test]
+    fn gitignore_entry_is_appended_once_and_only_inside_git_worktrees() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        gitignore_derived_state(repo).unwrap();
+        assert!(!repo.join(".gitignore").exists(), "no .git, no .gitignore");
+
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join(".gitignore"), "target").unwrap();
+        gitignore_derived_state(repo).unwrap();
+        gitignore_derived_state(repo).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repo.join(".gitignore")).unwrap(),
+            "target\n.sinter/\n"
+        );
+
+        std::fs::write(repo.join(".gitignore"), "/.sinter\n").unwrap();
+        gitignore_derived_state(repo).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repo.join(".gitignore")).unwrap(),
+            "/.sinter\n"
+        );
     }
 
     #[test]
