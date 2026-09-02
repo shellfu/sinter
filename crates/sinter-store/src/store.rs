@@ -86,10 +86,11 @@ pub(crate) const PENDING: TableDefinition<&str, &[u8]> = TableDefinition::new("p
 // v14: query changes (TS constructor calls, default exports, star re-exports; Go
 // cross-package implements; Python self-calls) and a new unresolved reason
 // change extracted facts; derived graphs re-extract rather than serve stale rows.
-// v15: edges carry every call site (extra_sites, sites_total) instead of one
+// v16: edges carry every call site (extra_sites, sites_total) instead of one
 // representative, and unresolved records carry an appended resolver-gap
-// observation; postcard is positional, so old rows re-derive, not decode.
-const SCHEMA_VERSION: u32 = 15;
+// observation. Both landed as v15 on separate branches with different row
+// layouts, so v16 invalidates any graph written by either.
+const SCHEMA_VERSION: u32 = 16;
 
 /// Per-file freshness record: content hash plus the stat identity it was
 /// hashed at. On Unix the identity combines modification and change time,
