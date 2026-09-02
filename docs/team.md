@@ -81,4 +81,8 @@ freshness. Most teams want the lockfile key plus the per-merge
 
 `graph.redb`. It is derived, machine-local, and rebuilds in seconds from
 source + index; sharing it buys nothing and risks schema-version and
-platform mismatches. Keep `.sinter/` gitignored; ship only `index.scip`.
+platform mismatches. Keep `.sinter/` gitignored (`sinter init` and
+`sinter ensure` append the line when it is missing); ship only `index.scip`.
+Files edited after the index was built get no SCIP evidence until `sinter
+scip` runs again — they fall back to import/scope resolution instead of
+being rebound by position.
