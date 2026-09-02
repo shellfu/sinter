@@ -323,3 +323,68 @@ fn unanchored_occurrence_in_scope_becomes_edge() {
     assert_eq!(edge.evidence, Evidence::Scip);
     assert_eq!(edge.site, Some(Span { start: 25, end: 31 }));
 }
+
+/// A document the caller declines to read (edited since indexing) withholds
+/// its symbols everywhere: references to them neither bind by stale
+/// position nor fall through to a synthesized dependency node.
+#[test]
+fn unread_definition_document_withholds_its_symbols() {
+    let b_src = "fn caller() { target(); }\n";
+    let nodes = vec![
+        node(
+            "a.rs#renamed@0",
+            "a.rs",
+            "renamed",
+            Span { start: 0, end: 15 },
+        ),
+        node(
+            "b.rs#caller@0",
+            "b.rs",
+            "caller",
+            Span { start: 0, end: 25 },
+        ),
+    ];
+    let references = vec![Reference {
+        file: "b.rs".to_string(),
+        name: "target".to_string(),
+        path: None,
+        relation: Relation::Calls,
+        span: Span { start: 14, end: 20 },
+        enclosing: Some(NodeId::new("b.rs#caller@0")),
+        alias: None,
+    }];
+    let symbol = "rust-analyzer cargo fixture 0.1.0 a/target().";
+    let index = Index {
+        documents: vec![
+            Document {
+                relative_path: "a.rs".to_string(),
+                occurrences: vec![Occurrence {
+                    range: vec![0, 3, 9],
+                    symbol: symbol.to_string(),
+                    symbol_roles: scip::types::SymbolRole::Definition as i32,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            Document {
+                relative_path: "b.rs".to_string(),
+                occurrences: vec![Occurrence {
+                    range: vec![0, 14, 20],
+                    symbol: symbol.to_string(),
+                    symbol_roles: 0,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    let resolution = resolve_with_index(&index, &nodes, &references, &BTreeSet::new(), |path| {
+        (path == "b.rs").then(|| b_src.to_string())
+    });
+
+    assert!(resolution.bindings.is_empty());
+    assert!(resolution.external.is_empty());
+    assert!(resolution.external_nodes.is_empty());
+}

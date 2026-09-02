@@ -124,6 +124,11 @@ pub fn resolve_with_index(
     mut read_source: impl FnMut(&str) -> Option<String>,
 ) -> ScipResolution {
     let mut line_starts: HashMap<String, Vec<u64>> = HashMap::new();
+    // Symbols defined in documents the caller declined to read (edited
+    // since indexing, unreadable): their occurrences elsewhere must not
+    // bind — nor synthesize a dep node for what is really an in-corpus
+    // definition the index can no longer locate.
+    let mut withheld: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for document in &index.documents {
         if let Some(source) = read_source(&document.relative_path) {
             let mut starts = vec![0u64];
@@ -133,6 +138,16 @@ pub fn resolve_with_index(
                 }
             }
             line_starts.insert(document.relative_path.clone(), starts);
+        } else {
+            withheld.extend(
+                document
+                    .occurrences
+                    .iter()
+                    .filter(|occ| {
+                        occ.symbol_roles & scip::types::SymbolRole::Definition as i32 != 0
+                    })
+                    .map(|occ| occ.symbol.as_str()),
+            );
         }
     }
     let to_byte = |file: &str, line: i32, col: i32| -> Option<u64> {
@@ -226,6 +241,7 @@ pub fn resolve_with_index(
         for occ in &document.occurrences {
             if occ.symbol_roles & scip::types::SymbolRole::Definition as i32 != 0
                 || occ.symbol.starts_with("local ")
+                || withheld.contains(occ.symbol.as_str())
             {
                 continue;
             }
