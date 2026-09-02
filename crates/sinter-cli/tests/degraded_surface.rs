@@ -99,7 +99,7 @@ fn affected_radius_with_only_external_refs_is_not_partial() {
     assert!(!out.contains("unresolved within this radius"), "{out}");
     assert!(
         out.contains(
-            "coverage: complete for indexed sources (1 external/unsupported refs excluded)"
+            "unresolved in radius: 0 actionable (1 external/unsupported refs excluded)"
         ),
         "{out}"
     );

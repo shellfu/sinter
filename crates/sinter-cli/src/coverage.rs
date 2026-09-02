@@ -807,7 +807,7 @@ pub fn radius_note(radius: RadiusUnresolved) -> Option<String> {
         String::new()
     };
     Some(format!(
-        "  coverage: complete for indexed sources ({} external/unsupported refs excluded{sql}{index})",
+        "  unresolved in radius: 0 actionable ({} external/unsupported refs excluded{sql}{index})",
         radius.references - radius.missing_compiler_index
     ))
 }
