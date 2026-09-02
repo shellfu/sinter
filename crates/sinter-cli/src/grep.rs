@@ -67,18 +67,24 @@ fn files_of(
     filter: &EdgeFilter,
     max_depth: usize,
 ) -> Result<Vec<String>> {
-    let reached = match within {
+    let (node, reached) = match within {
         Within::File(path) => return Ok(vec![path.clone()]),
         Within::Affected(symbol) => {
             let node = unique_symbol_in(store, symbol, filter.scopes.as_ref())?;
-            store.dependents(&node.id, filter, max_depth)?
+            let reached = store.dependents(&node.id, filter, max_depth)?;
+            (node, reached)
         }
         Within::Deps(symbol) => {
             let node = unique_symbol_in(store, symbol, filter.scopes.as_ref())?;
-            store.dependencies(&node.id, filter, max_depth)?
+            let reached = store.dependencies(&node.id, filter, max_depth)?;
+            (node, reached)
         }
     };
-    Ok(reached.into_iter().map(|r| r.node.file).collect())
+    // The seed's own file is in its radius: a bound that excludes the
+    // definition misses the definition's own references.
+    Ok(std::iter::once(node.file)
+        .chain(reached.into_iter().map(|r| r.node.file))
+        .collect())
 }
 
 // ---------------------------------------------------------------------

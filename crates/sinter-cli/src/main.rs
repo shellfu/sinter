@@ -22,6 +22,7 @@ mod overlap;
 mod pathcmd;
 mod pipeline;
 mod progress;
+mod prune;
 mod query;
 mod render;
 mod repository_tools;
@@ -380,6 +381,17 @@ enum Command {
         /// Fail if the repository/workspace graph changed since this token
         #[arg(long)]
         if_snapshot: Option<String>,
+        /// Full repository-wide `coverage` block in --json (default: a
+        /// summary of completeness, conclusive, snapshot, compiler index)
+        #[arg(long)]
+        coverage: bool,
+        /// Show test-scope dependents as rows (default: counted only)
+        #[arg(long)]
+        include_tests: bool,
+        /// Keep traversing past hubs (symbols with fan-in > 100, or a seed
+        /// with > 50 direct callers); default stops at the hub and names it
+        #[arg(long)]
+        through_hubs: bool,
         #[command(flatten)]
         filter: FilterArgs,
         #[command(flatten)]
@@ -395,8 +407,8 @@ enum Command {
         /// Traverse across the workspace (path to manifest)
         #[arg(long)]
         workspace: Option<PathBuf>,
-        /// Maximum traversal depth
-        #[arg(long, default_value_t = 10)]
+        /// Maximum traversal depth (1 = direct dependencies only)
+        #[arg(long, default_value_t = 1)]
         max_depth: usize,
         /// Maximum dependencies to print
         #[arg(long, default_value_t = 200)]
@@ -413,6 +425,13 @@ enum Command {
         /// Fail if the repository/workspace graph changed since this token
         #[arg(long)]
         if_snapshot: Option<String>,
+        /// Full repository-wide `coverage` block in --json (default: a
+        /// summary of completeness, conclusive, snapshot, compiler index)
+        #[arg(long)]
+        coverage: bool,
+        /// Show test-scope dependencies as rows (default: counted only)
+        #[arg(long)]
+        include_tests: bool,
         #[command(flatten)]
         filter: FilterArgs,
         #[command(flatten)]
@@ -466,6 +485,14 @@ enum Command {
         /// Fail if the repository/workspace graph changed since this token
         #[arg(long)]
         if_snapshot: Option<String>,
+        /// Full repository-wide `coverage` block in --json (default: a
+        /// summary of completeness, conclusive, snapshot, compiler index)
+        #[arg(long)]
+        coverage: bool,
+        /// Up to this many node-disjoint routes (each avoids the interior
+        /// symbols of the routes before it)
+        #[arg(short = 'k', long = "paths", default_value_t = 1)]
+        paths: usize,
         #[command(flatten)]
         filter: FilterArgs,
         #[command(flatten)]
@@ -1178,6 +1205,9 @@ fn cli_main() -> ExitCode {
             scope,
             json,
             if_snapshot,
+            coverage,
+            include_tests,
+            through_hubs,
             filter,
             relations,
         } => {
@@ -1199,6 +1229,9 @@ fn cli_main() -> ExitCode {
                         limit,
                         json,
                         if_snapshot.as_deref(),
+                        coverage,
+                        include_tests,
+                        through_hubs,
                     ),
                 });
             return if json {
@@ -1216,6 +1249,8 @@ fn cli_main() -> ExitCode {
             scope,
             json,
             if_snapshot,
+            coverage,
+            include_tests,
             filter,
             relations,
         } => {
@@ -1237,6 +1272,8 @@ fn cli_main() -> ExitCode {
                         limit,
                         json,
                         if_snapshot.as_deref(),
+                        coverage,
+                        include_tests,
                     ),
                 });
             return if json {
@@ -1277,6 +1314,8 @@ fn cli_main() -> ExitCode {
             scope,
             json,
             if_snapshot,
+            coverage,
+            paths,
             filter,
             relations,
         } => {
@@ -1285,7 +1324,16 @@ fn cli_main() -> ExitCode {
                     Some(manifest) => {
                         pathcmd::run_workspace(&manifest, &from, &to, &f, if_snapshot.as_deref())
                     }
-                    None => pathcmd::run(&repo, &from, &to, &f, json, if_snapshot.as_deref()),
+                    None => pathcmd::run(
+                        &repo,
+                        &from,
+                        &to,
+                        &f,
+                        json,
+                        if_snapshot.as_deref(),
+                        coverage,
+                        paths,
+                    ),
                 });
             return if json {
                 grep_exit_json("path", result)

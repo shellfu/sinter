@@ -207,6 +207,7 @@ fn print_tree(
 /// depending on the seed symbols, cross-file, unioned and deduplicated.
 /// Ok(true) when any dependent (or external reference site) was found
 /// (grep-style exit codes).
+#[allow(clippy::too_many_arguments)] // mirrors the clap subcommand one-to-one
 pub fn run(
     repo: &Path,
     symbols: &[String],
@@ -215,6 +216,9 @@ pub fn run(
     limit: usize,
     json: bool,
     if_snapshot: Option<&str>,
+    full_coverage: bool,
+    include_tests: bool,
+    through_hubs: bool,
 ) -> Result<bool> {
     let Some(first) = symbols.first() else {
         anyhow::bail!("affected: no symbol given");
@@ -266,7 +270,7 @@ pub fn run(
                     "refs": s.refs,
                 })).collect::<Vec<_>>(),
             });
-            out["coverage"] = crate::coverage::traversal_json(
+            out["coverage"] = crate::coverage::coverage_json(
                 &root,
                 &store,
                 filter,
@@ -275,6 +279,7 @@ pub fn run(
                     ..Default::default()
                 },
                 true,
+                full_coverage,
             )?;
             crate::agent_protocol::write_json(&out)?;
             return Ok(true);
@@ -310,22 +315,54 @@ pub fn run(
             eprintln!("warning: seed `{symbol}` not resolved: {error}");
         }
     }
-    let mut per_seed = Vec::with_capacity(seeds.len());
-    let mut unresolved = 0usize;
-    for (symbol, node) in &seeds {
-        unresolved += store.unresolved_named(&node.name)?;
-        per_seed.push((
-            symbol.clone(),
-            store.dependents(&node.id, filter, max_depth)?,
-        ));
-    }
-    let mut rows = union(per_seed);
     let scopes = store.scope_index()?;
     let scope_of = |node: &Node| scopes.scope_of(node);
-    let total = rows.len();
     // File `use` lines are dependents too, but they are not callers: count
     // them separately so "N direct" means N symbols that actually use it.
     let is_import = |r: &Reached| r.via.relation == sinter_core::Relation::Imports;
+    let is_test = |node: &Node| crate::prune::is_test_scope(scope_of(node));
+    let rules = crate::prune::Rules {
+        keep_tests: include_tests,
+        drop_file_rows: filter.relations.is_some(),
+        hub_fan_in: (!through_hubs).then_some(crate::prune::HUB_FAN_IN),
+        is_test: &is_test,
+    };
+    let mut per_seed = Vec::with_capacity(seeds.len());
+    let mut unresolved = 0usize;
+    let mut tests = 0usize;
+    let mut hubs: Vec<(String, usize)> = Vec::new();
+    for (symbol, node) in &seeds {
+        unresolved += store.unresolved_named(&node.name)?;
+        // ponytail: the store still walks to max_depth before pruning; a
+        // depth-aware traversal would stop at the hub instead.
+        let mut reached = store.dependents(&node.id, filter, max_depth)?;
+        // A seed with more direct callers than fit a screen is itself the
+        // hub: its transitive radius is the whole program.
+        let direct = reached
+            .iter()
+            .filter(|r| r.depth == 1 && !is_import(r))
+            .count();
+        if !through_hubs && direct > HUB_DIRECT_THRESHOLD && reached.iter().any(|r| r.depth > 1) {
+            reached.retain(|r| r.depth == 1);
+            hubs.push((qualified_of(node.id.as_str()).to_string(), direct));
+        }
+        let pruned = crate::prune::prune(reached, |r| &r.via.dst, &rules);
+        tests += pruned.tests;
+        hubs.extend(pruned.hubs);
+        per_seed.push((symbol.clone(), pruned.rows));
+    }
+    let mut rows = union(per_seed);
+    let total = rows.len();
+    let tests_hidden = if include_tests { 0 } else { tests };
+    // Hidden test rows are not the filter's doing: only a truly empty
+    // traversal asks whether a flag emptied it.
+    let mut filter_excluded = false;
+    if total == 0 && tests_hidden == 0 {
+        for (_, node) in &seeds {
+            filter_excluded |=
+                crate::prune::filter_excluded(&store, &node.id, filter, max_depth, false)?;
+        }
+    }
     let callers: Vec<&Row> = rows
         .iter()
         .filter(|row| row.reached.depth == 1 && !is_import(&row.reached))
@@ -452,8 +489,27 @@ pub fn run(
         if total == 0 {
             out["verify_with"] = serde_json::json!(verify_command(&seeds));
         }
-        out["coverage"] =
-            crate::coverage::traversal_json(&root, &store, filter, evidence, total > 0)?;
+        if filter_excluded {
+            out["reason"] = serde_json::json!("filter_excluded");
+        }
+        if tests_hidden > 0 {
+            out["tests_hidden"] = serde_json::json!(tests_hidden);
+        }
+        if !hubs.is_empty() {
+            out["stopped_at_hubs"] = serde_json::json!(
+                hubs.iter()
+                    .map(|(symbol, fan_in)| serde_json::json!({"symbol": symbol, "fan_in": fan_in}))
+                    .collect::<Vec<_>>()
+            );
+        }
+        out["coverage"] = crate::coverage::coverage_json(
+            &root,
+            &store,
+            filter,
+            evidence,
+            total > 0,
+            full_coverage,
+        )?;
         crate::coverage::attach_radius(&mut out["coverage"], radius);
         if implementation_gap
             && let Some(limitations) = out["coverage"]["limitations"].as_array_mut()
@@ -464,8 +520,18 @@ pub fn run(
         return Ok(total > 0);
     }
     let label = seed_label(&seeds);
+    let hidden = if tests_hidden > 0 {
+        format!(", tests: {tests_hidden} (--include-tests)")
+    } else {
+        String::new()
+    };
     if total == 0 {
-        println!("not proven: 0 dependents observed for {label}");
+        println!("not proven: 0 dependents observed for {label}{hidden}");
+        if filter_excluded {
+            println!(
+                "  reason: filter excluded them (--max-depth 0 / --certain / --evidence / --relations); drop the flag to see them"
+            );
+        }
         println!("  verify: {}", verify_command(&seeds));
     } else {
         let imports = if importing_files > 0 {
@@ -474,7 +540,7 @@ pub fn run(
             String::new()
         };
         println!(
-            "{} dependents of {label}: {direct} direct in {direct_files} file(s){imports}, {} transitive",
+            "{} dependents of {label}: {direct} direct in {direct_files} file(s){imports}, {} transitive{hidden}",
             total,
             total - direct - importing_files,
         );
@@ -494,6 +560,9 @@ pub fn run(
                 total,
             );
         }
+    }
+    for (symbol, fan_in) in &hubs {
+        println!("  stopped at hub {symbol} (fan-in {fan_in}); --through-hubs to continue");
     }
     if unresolved > 0 {
         let names = seeds

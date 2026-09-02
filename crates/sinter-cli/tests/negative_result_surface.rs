@@ -82,19 +82,18 @@ fn an_empty_deps_names_the_command_that_settles_it() {
 }
 
 #[test]
-fn grep_over_an_empty_bound_still_reports_coverage() {
+fn grep_over_a_dependent_free_symbol_still_searches_its_own_file() {
     let dir = fixture();
     let repo = dir.path();
 
-    // The bounding traversal is empty, so the text scan sees zero files:
-    // "0 matches" here is a coverage answer, not a search answer.
+    // The bounding traversal is empty, but the seed's definition file is
+    // part of its radius: the search covers it and finds the definition.
     let (found, out) = sinter(
         repo,
         &["grep", "orphan_wipe", "--within", "affected(orphan_wipe)"],
     );
-    assert!(!found, "{out}");
-    assert!(out.contains("bound 0 files"), "{out}");
-    assert!(out.contains("coverage:"), "{out}");
+    assert!(found, "{out}");
+    assert!(out.contains("bound 1 file"), "{out}");
 
     let (_, out) = sinter(
         repo,
@@ -107,10 +106,8 @@ fn grep_over_an_empty_bound_still_reports_coverage() {
         ],
     );
     let value: serde_json::Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
-    assert_eq!(value["status"], "not_proven");
-    assert_eq!(value["files_in_bound"], 0);
-    assert_eq!(value["coverage"]["status"], "not_proven");
-    assert_eq!(value["coverage"]["conclusive"], false);
+    assert_eq!(value["status"], "found");
+    assert_eq!(value["files_in_bound"], 1);
 
     // A non-empty bound is a real search: it keeps its search-shaped answer
     // and does not grow a coverage envelope it did not earn.
