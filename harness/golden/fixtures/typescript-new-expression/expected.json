@@ -1,0 +1,25 @@
+{
+  "nodes": [
+    ["file", "http-exception.ts", "http-exception.ts"],
+    ["class", "HTTPException", "http-exception.ts", "Raised when a request must be rejected."],
+    ["file", "body-limit.ts", "body-limit.ts"],
+    ["function", "bodyLimit", "body-limit.ts", "Rejects oversized bodies."]
+  ],
+  "contains": [
+    ["http-exception.ts", "HTTPException"],
+    ["body-limit.ts", "bodyLimit"]
+  ],
+  "references": [
+    ["imports", "./http-exception/HTTPException"],
+    ["imports", "./http-exception", "body-limit.ts", "", "", "errors"],
+    ["calls", "HTTPException", "body-limit.ts", "bodyLimit", ""],
+    ["calls", "HTTPException", "body-limit.ts", "bodyLimit", "errors.HTTPException"]
+  ],
+  "resolved": [
+    ["import", "imports", "body-limit.ts", "HTTPException"],
+    ["import", "imports", "body-limit.ts", "http-exception.ts"],
+    ["import", "calls", "bodyLimit", "HTTPException"],
+    ["import", "calls", "bodyLimit", "HTTPException"]
+  ],
+  "unresolved_count": 0
+}

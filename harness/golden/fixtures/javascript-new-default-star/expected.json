@@ -1,0 +1,26 @@
+{
+  "nodes": [
+    ["file", "lib/widget.js", "lib/widget.js"],
+    ["class", "Widget", "lib/widget.js", "A drawable widget."],
+    ["file", "lib/index.js", "lib/index.js"],
+    ["file", "main.js", "main.js"],
+    ["function", "make", "main.js", "Instantiates a widget."],
+    ["variable", "default", "main.js", "Module surface."]
+  ],
+  "contains": [
+    ["lib/widget.js", "Widget"],
+    ["main.js", "make"],
+    ["main.js", "default"]
+  ],
+  "references": [
+    ["imports", "./widget/*", "lib/index.js", "", "", "*"],
+    ["imports", "./lib/Widget"],
+    ["calls", "Widget", "main.js", "make"]
+  ],
+  "resolved": [
+    ["import", "imports", "lib/index.js", "lib/widget.js"],
+    ["import", "imports", "main.js", "Widget"],
+    ["import", "calls", "make", "Widget"]
+  ],
+  "unresolved_count": 0
+}

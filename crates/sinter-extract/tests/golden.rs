@@ -306,6 +306,26 @@ fn golden_typescript_barrel_reexport() {
 }
 
 #[test]
+fn golden_typescript_export_star() {
+    check("typescript-export-star");
+}
+
+#[test]
+fn golden_typescript_anonymous_default_export() {
+    check("typescript-anonymous-default-export");
+}
+
+#[test]
+fn golden_typescript_new_expression() {
+    check("typescript-new-expression");
+}
+
+#[test]
+fn golden_javascript_new_default_star() {
+    check("javascript-new-default-star");
+}
+
+#[test]
 fn golden_typescript_method_collision() {
     check("typescript-method-collision");
 }

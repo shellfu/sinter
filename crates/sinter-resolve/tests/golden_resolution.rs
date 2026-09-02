@@ -331,6 +331,26 @@ fn resolution_typescript_barrel_reexport() {
 }
 
 #[test]
+fn resolution_typescript_export_star() {
+    check("typescript-export-star");
+}
+
+#[test]
+fn resolution_typescript_anonymous_default_export() {
+    check("typescript-anonymous-default-export");
+}
+
+#[test]
+fn resolution_typescript_new_expression() {
+    check("typescript-new-expression");
+}
+
+#[test]
+fn resolution_javascript_new_default_star() {
+    check("javascript-new-default-star");
+}
+
+#[test]
 fn resolution_typescript_method_collision() {
     check("typescript-method-collision");
 }

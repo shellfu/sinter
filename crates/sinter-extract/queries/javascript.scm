@@ -52,6 +52,17 @@
   (export_clause (export_specifier name: (identifier) @import.name))
   source: (string) @import.module)
 
+; `export * from './x'` forwards every top-level name of x;
+; `export * as ns from './x'` forwards x under a namespace alias
+(export_statement "*" @import.star source: (string) @import.module)
+(export_statement (namespace_export (identifier) @import.alias) source: (string) @import)
+
+; anonymous default exports are addressable as `default`; the exported
+; value's shape picks the kind (engine prefers the non-variable kind)
+(export_statement "default" @name value: (_)) @def.variable
+(export_statement "default" @name value: [(function_expression) (arrow_function)]) @def.function
+(export_statement "default" @name value: (class)) @def.class
+
 ; CommonJS: `const lib = require("./lib")` aliases the module;
 ; `const { f } = require("./lib")` binds the item like a named import.
 (variable_declarator
@@ -69,6 +80,9 @@
 
 (call_expression function: (identifier) @ref.call)
 (call_expression function: (member_expression property: (property_identifier) @ref.call) @refpath)
+; `new Foo()` calls Foo (instantiation is a call, as in Java/C#)
+(new_expression constructor: (identifier) @ref.call)
+(new_expression constructor: (member_expression property: (property_identifier) @ref.call) @refpath)
 
 ; JSX components: <Foo/> uses Foo; lowercase tags are host elements, not refs
 (jsx_opening_element name: (identifier) @ref.use (#match? @ref.use "^[A-Z]"))

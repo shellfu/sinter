@@ -1,0 +1,25 @@
+{
+  "nodes": [
+    ["file", "render.ts", "render.ts"],
+    ["function", "render", "render.ts", "Renders a node."],
+    ["file", "api.ts", "api.ts"],
+    ["variable", "default", "api.ts", "Public API surface."],
+    ["file", "handler.ts", "handler.ts"],
+    ["function", "default", "handler.ts", "Handles a request."],
+    ["file", "widget.ts", "widget.ts"],
+    ["class", "default", "widget.ts", "A nameless widget."]
+  ],
+  "contains": [
+    ["render.ts", "render"],
+    ["api.ts", "default"],
+    ["handler.ts", "default"],
+    ["widget.ts", "default"]
+  ],
+  "references": [
+    ["imports", "./render/render"]
+  ],
+  "resolved": [
+    ["import", "imports", "api.ts", "render"]
+  ],
+  "unresolved_count": 0
+}
