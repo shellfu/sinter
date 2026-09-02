@@ -1154,9 +1154,17 @@ mod tests {
                 .contains("`scope[0]` must be one of")
         );
         assert!(
-            reject(json!({"symbol": "x", "min_confidence": "certain"}))
-                .contains("unknown argument `min_confidence`")
+            reject(json!({"symbol": "x", "min_confidence": "sometimes"}))
+                .contains("`min_confidence` must be one of")
         );
+        // Evidence tiers stay on the MCP surface: an agent that cannot ask
+        // for compiler-grade-only edges cannot make a negative claim.
+        validate_arguments(
+            "affected",
+            &json!({"symbol": "x", "min_confidence": "certain", "evidence": ["scip"]}),
+            false,
+        )
+        .unwrap();
         assert!(
             reject(json!({"symbol": "x", "cursor": -5}))
                 .contains("`cursor` must be an integer >= 0")

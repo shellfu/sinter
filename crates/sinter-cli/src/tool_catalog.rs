@@ -143,6 +143,25 @@ fn enum_array(values: &[&str], description: &str) -> Value {
 
 /// Edge relations to follow. `evidence` and `min_confidence` stay CLI
 /// flags: `relations` is the filter that pays for its schema bytes.
+/// Evidence tiers a traversal may follow. Restoring this to the MCP
+/// surface costs bytes; an agent that cannot ask for compiler-grade-only
+/// answers cannot make a defensible negative claim.
+fn evidence() -> Value {
+    json!({
+        "type": "array",
+        "items": {"enum": ["structural", "scope", "import", "scip", "declared", "dynamic"]},
+        "description": "evidence tiers to follow",
+    })
+}
+
+fn min_confidence() -> Value {
+    json!({
+        "type": "string",
+        "enum": ["certain", "inferred"],
+        "description": "lowest edge confidence",
+    })
+}
+
 fn relations() -> Value {
     enum_array(&RELATIONS, "relations to follow")
 }
@@ -251,6 +270,8 @@ pub(crate) fn repository() -> Value {
                 "limit": {"type": "integer",
                     "description": "rows per relation; 0 = all (20)"},
                 "relations": relations(),
+                "evidence": evidence(),
+                "min_confidence": min_confidence(),
                 "scope": scope_filter(&DEFAULT_SCOPE),
                 "if_snapshot": snapshot_precondition(),
                 "body": boolean("add a source excerpt"),
@@ -280,6 +301,8 @@ pub(crate) fn repository() -> Value {
                 "limit": limit(),
                 "detail": boolean("full nodes, not rows"),
                 "relations": relations(),
+                "evidence": evidence(),
+                "min_confidence": min_confidence(),
                 "scope": scope_filter(&DEFAULT_SCOPE),
                 "if_snapshot": snapshot_precondition(),
             }},
@@ -295,6 +318,8 @@ pub(crate) fn repository() -> Value {
                 "include_tests": include_tests(),
                 "limit": limit(),
                 "relations": relations(),
+                "evidence": evidence(),
+                "min_confidence": min_confidence(),
                 "scope": scope_filter(&DEFAULT_SCOPE),
                 "if_snapshot": snapshot_precondition(),
             }},
@@ -307,8 +332,11 @@ pub(crate) fn repository() -> Value {
                 "within": {"type": "array", "items": {"type": "string"},
                     "description": "affected(SYM)|deps(SYM)|file(PATH)"},
                 "no_tests": boolean("skip test-scoped files"),
+                "max_depth": max_depth(),
                 "limit": limit(),
                 "relations": relations(),
+                "evidence": evidence(),
+                "min_confidence": min_confidence(),
                 "scope": scope_filter(&DEFAULT_SCOPE),
             }, "required": ["pattern"]},
         },
@@ -321,6 +349,8 @@ pub(crate) fn repository() -> Value {
                 "pairs": {"type": "array", "items": {"type": "array", "items": {"type": "string"}},
                     "description": "batch: [[from, to], ...]"},
                 "relations": relations(),
+                "evidence": evidence(),
+                "min_confidence": min_confidence(),
                 "scope": scope_filter(&DEFAULT_SCOPE),
                 "if_snapshot": snapshot_precondition(),
             }},
@@ -387,6 +417,8 @@ pub(crate) fn workspace() -> Value {
                 "limit": {"type": "integer",
                     "description": "rows per relation; 0 = all (20)"},
                 "relations": relations(),
+                "evidence": evidence(),
+                "min_confidence": min_confidence(),
                 "scope": scope_filter(&DEFAULT_SCOPE),
                 "if_snapshot": snapshot_precondition(),
             }, "required": ["symbol"]},
@@ -409,6 +441,8 @@ pub(crate) fn workspace() -> Value {
                 "limit": limit(),
                 "detail": boolean("full nodes, not rows"),
                 "relations": relations(),
+                "evidence": evidence(),
+                "min_confidence": min_confidence(),
                 "scope": scope_filter(&DEFAULT_SCOPE),
                 "if_snapshot": snapshot_precondition(),
             }, "required": ["symbol"]},
@@ -421,6 +455,8 @@ pub(crate) fn workspace() -> Value {
                 "max_depth": max_depth(),
                 "limit": limit(),
                 "relations": relations(),
+                "evidence": evidence(),
+                "min_confidence": min_confidence(),
                 "scope": scope_filter(&DEFAULT_SCOPE),
                 "if_snapshot": snapshot_precondition(),
             }, "required": ["symbol"]},
@@ -432,6 +468,8 @@ pub(crate) fn workspace() -> Value {
                 "from": string("source symbol (member:Symbol)"),
                 "to": string("target symbol (member:Symbol)"),
                 "relations": relations(),
+                "evidence": evidence(),
+                "min_confidence": min_confidence(),
                 "scope": scope_filter(&DEFAULT_SCOPE),
                 "if_snapshot": snapshot_precondition(),
             }, "required": ["from", "to"]},
@@ -496,7 +534,7 @@ mod tests {
     /// anything. Repository scope compact-serializes to 9_832 bytes here
     /// and measures 10_575 on the wire (`sum(len(json.dumps(tool)))`
     /// over a live `tools/list`, which pads every separator).
-    const BUDGET: usize = 10_000;
+    const BUDGET: usize = 12_000;
 
     #[test]
     fn catalog_stays_within_the_context_tax_budget() {
