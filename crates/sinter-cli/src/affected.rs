@@ -356,6 +356,35 @@ pub fn run(
             .map(|(_, node)| node.file.as_str())
             .chain(rows.iter().map(|row| row.reached.node.file.as_str())),
     )?;
+    // An interface/trait method seed with no implementation bound to it:
+    // its implementors, the dependents that break first, are not in the
+    // radius at all.
+    let mut implementation_gap = false;
+    for (_, node) in &seeds {
+        if node.kind != sinter_core::SymbolKind::Method {
+            continue;
+        }
+        let in_edges = store.in_edges(&node.id)?;
+        let owner = in_edges
+            .iter()
+            .find(|e| e.relation == sinter_core::Relation::Contains)
+            .and_then(|e| store.node(&e.src).transpose())
+            .transpose()?;
+        let abstract_owner = owner.is_some_and(|o| {
+            matches!(
+                o.kind,
+                sinter_core::SymbolKind::Interface | sinter_core::SymbolKind::Trait
+            )
+        });
+        if abstract_owner
+            && !in_edges
+                .iter()
+                .any(|e| e.relation == sinter_core::Relation::Implements)
+        {
+            implementation_gap = true;
+        }
+    }
+    const IMPLEMENTATION_GAP: &str = "implementations not traversed";
     if json {
         // Same shape as the MCP `affected` tool (terse entries).
         let entries: Vec<Value> = rows
@@ -426,6 +455,11 @@ pub fn run(
         out["coverage"] =
             crate::coverage::traversal_json(&root, &store, filter, evidence, total > 0)?;
         crate::coverage::attach_radius(&mut out["coverage"], radius);
+        if implementation_gap
+            && let Some(limitations) = out["coverage"]["limitations"].as_array_mut()
+        {
+            limitations.push(serde_json::json!(IMPLEMENTATION_GAP));
+        }
         crate::agent_protocol::write_json(&out)?;
         return Ok(total > 0);
     }
@@ -476,6 +510,9 @@ pub fn run(
         println!("{note}");
     }
     crate::coverage::print_footer(&root, &store, filter, evidence, total > 0, Some(&snapshot))?;
+    if implementation_gap {
+        println!("  gap: {IMPLEMENTATION_GAP}");
+    }
     Ok(total > 0)
 }
 
