@@ -292,6 +292,10 @@ fn evaluate_case(
                     "1".into(),
                     "--relations".into(),
                     "calls".into(),
+                    // The scorecard measures the graph, not the agent
+                    // defaults: test callers and hub subtrees count.
+                    "--include-tests".into(),
+                    "--through-hubs".into(),
                 ],
             )?;
             // An "external" answer (symbol not found as a definition) has

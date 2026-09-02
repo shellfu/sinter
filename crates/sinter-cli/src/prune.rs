@@ -53,9 +53,16 @@ pub fn prune(reached: Vec<Reached>, parent: fn(&Reached) -> &NodeId, rules: &Rul
         }
         let test = (rules.is_test)(&row.node);
         out.tests += usize::from(test);
-        if (test && !rules.keep_tests)
-            || (rules.drop_file_rows && row.node.kind == SymbolKind::File)
-        {
+        // A file row is import noise only when its edge is an import or a
+        // file-level `uses`; a file that *calls* the seed at top level (a TS
+        // test file, a script) is a caller and stays.
+        let noise_file_row = rules.drop_file_rows
+            && row.node.kind == SymbolKind::File
+            && matches!(
+                row.via.relation,
+                sinter_core::Relation::Imports | sinter_core::Relation::Uses
+            );
+        if (test && !rules.keep_tests) || noise_file_row {
             cut.insert(row.node.id.as_str().to_string());
             continue;
         }
@@ -199,8 +206,10 @@ mod tests {
 
     #[test]
     fn file_rows_leave_under_a_relations_filter() {
+        let mut import_row = dependent("a.rs", "seed", 1, SymbolKind::File);
+        import_row.via.relation = Relation::Imports;
         let rows = vec![
-            dependent("a.rs", "seed", 1, SymbolKind::File),
+            import_row,
             dependent("b.rs#imports_a", "a.rs", 2, SymbolKind::Function),
             dependent("a.rs#x", "seed", 1, SymbolKind::Function),
         ];
@@ -216,6 +225,23 @@ mod tests {
             },
         );
         assert_eq!(ids(&pruned), vec!["a.rs#x"]);
+    }
+
+    #[test]
+    fn a_file_that_calls_the_seed_is_a_caller_not_noise() {
+        let rows = vec![dependent("t.test.ts", "seed", 1, SymbolKind::File)];
+        let never = |_: &Node| false;
+        let pruned = prune(
+            rows,
+            parent,
+            &Rules {
+                keep_tests: true,
+                drop_file_rows: true,
+                hub_fan_in: None,
+                is_test: &never,
+            },
+        );
+        assert_eq!(ids(&pruned), vec!["t.test.ts"]);
     }
 
     #[test]
