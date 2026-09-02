@@ -138,6 +138,9 @@ struct RepositoryConfig {
 
 #[derive(Default, Deserialize)]
 struct ScopeConfig {
+    /// Shorthand: gitignore patterns whose files are fixtures.
+    #[serde(default)]
+    fixture: Vec<String>,
     #[serde(default, rename = "override")]
     overrides: Vec<ScopeOverride>,
 }
@@ -154,9 +157,13 @@ struct ScopeRule {
 }
 
 /// Conservative path rules plus ordered repository overrides from
-/// `.sinter.toml`:
+/// `.sinter.toml` (committed) and `.sinter/config.toml` (local, read
+/// second so it wins):
 ///
 /// ```toml
+/// [scope]
+/// fixture = ["worked/**", "tools/*/expected/**"]
+///
 /// [[scope.override]]
 /// pattern = "tools/golden-production/**"
 /// scope = "production"
@@ -167,32 +174,45 @@ pub struct ScopePolicy {
     rules: Vec<ScopeRule>,
 }
 
+/// Where scope policy may be declared, in precedence order.
+pub const CONFIG_FILES: &[&str] = &[".sinter.toml", ".sinter/config.toml"];
+
 impl ScopePolicy {
     pub fn load(repo: &Path) -> Result<Self> {
-        let path = repo.join(".sinter.toml");
-        if !path.exists() {
-            return Ok(Self { rules: Vec::new() });
-        }
-        let text =
-            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-        let config: RepositoryConfig =
-            toml::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
-        let mut rules = Vec::with_capacity(config.scope.overrides.len());
-        for entry in config.scope.overrides {
-            if entry.pattern.starts_with('!') {
-                bail!(
-                    "{}: scope override patterns cannot start with `!`; ordered overrides already provide precedence",
-                    path.display()
-                );
+        let mut rules = Vec::new();
+        for rel in CONFIG_FILES {
+            let path = repo.join(rel);
+            if !path.exists() {
+                continue;
             }
-            let mut builder = GitignoreBuilder::new(repo);
-            builder
-                .add_line(Some(path.clone()), &entry.pattern)
-                .with_context(|| format!("scope override pattern {:?}", entry.pattern))?;
-            rules.push(ScopeRule {
-                scope: entry.scope,
-                matcher: builder.build()?,
-            });
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("read {}", path.display()))?;
+            let config: RepositoryConfig =
+                toml::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
+            let fixtures = config
+                .scope
+                .fixture
+                .into_iter()
+                .map(|pattern| ScopeOverride {
+                    pattern,
+                    scope: CorpusScope::Fixture,
+                });
+            for entry in fixtures.chain(config.scope.overrides) {
+                if entry.pattern.starts_with('!') {
+                    bail!(
+                        "{}: scope patterns cannot start with `!`; ordered overrides already provide precedence",
+                        path.display()
+                    );
+                }
+                let mut builder = GitignoreBuilder::new(repo);
+                builder
+                    .add_line(Some(path.clone()), &entry.pattern)
+                    .with_context(|| format!("scope pattern {:?}", entry.pattern))?;
+                rules.push(ScopeRule {
+                    scope: entry.scope,
+                    matcher: builder.build()?,
+                });
+            }
         }
         Ok(Self { rules })
     }
@@ -253,5 +273,32 @@ scope = "fixture"
             policy.classify("harness/golden/vendor-case/check.rs"),
             CorpusScope::Fixture
         );
+    }
+
+    #[test]
+    fn fixture_shorthand_and_local_config_layer_over_the_committed_file() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::write(
+            repo.path().join(".sinter.toml"),
+            "[scope]\nfixture = [\"corpora/**\"]\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(repo.path().join(".sinter")).unwrap();
+        std::fs::write(
+            repo.path().join(".sinter/config.toml"),
+            "[scope]\nfixture = [\"tools/*/expected/**\"]\n\n[[scope.override]]\npattern = \"corpora/live/**\"\nscope = \"production\"\n",
+        )
+        .unwrap();
+        let policy = super::ScopePolicy::load(repo.path()).unwrap();
+        assert_eq!(policy.classify("corpora/a/x.py"), CorpusScope::Fixture);
+        assert_eq!(
+            policy.classify("tools/skillgen/expected/card.md"),
+            CorpusScope::Fixture
+        );
+        assert_eq!(
+            policy.classify("corpora/live/x.py"),
+            CorpusScope::Production
+        );
+        assert_eq!(policy.classify("src/lib.rs"), CorpusScope::Production);
     }
 }
