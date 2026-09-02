@@ -93,16 +93,18 @@ result). `totals` names the full size; a `cursor` past the end is `invalid_argum
 Repository `show`, `affected`, and `deps` accept `symbols: [...]`; `path` accepts
 `pairs: [[from, to], ...]`. Each returns `{status, results: [...]}` with per-entry
 `status` and inline errors. `impact` takes a git rev range (`HEAD`, `HEAD~1..HEAD`,
-`main...branch`); `overlap` takes two or more, optionally `label=range`.
+`main...branch`); `overlap` takes two or more, optionally `label=range`, and a
+`relations` filter for its radius tier (default calls,uses).
 
 ## Filters
-`evidence` (structural, scope, import, scip, declared, dynamic), `min_confidence`
-(`certain` = compiler-grade edges only), `relations` (calls, uses, imports, implements,
-extends, reads, writes, creates, alters, drops; any `relations` filter drops file-level
-import noise), `scope` (corpus roles: production, test, fixture, example, generated,
-vendor, docs; `all` must be used alone). A `not_proven` outcome with
-`reason: filter_excluded` means the filter emptied the result, not the graph.
-`if_snapshot`: pass a prior `snapshot` token to fail instead of answering from a changed graph.
+`relations` (calls, uses, imports, implements, extends, reads, writes, creates, alters,
+drops; any `relations` filter drops file-level import noise) and `scope` (corpus roles:
+production, test, fixture, example, generated, vendor, docs; `all` must be used alone).
+A `not_proven` outcome with `reason: filter_excluded` means the filter emptied the result,
+not the graph. `if_snapshot`: pass a prior `snapshot` token to fail instead of answering
+from a changed graph. The evidence-tier filters (`--evidence`, `--min-confidence`) and
+`grep --within` depth stay CLI flags; `coverage.evidence` still reports the tiers a
+result rests on.
 ";
 
 const RELATIONS: [&str; 10] = [
@@ -117,14 +119,6 @@ const RELATIONS: [&str; 10] = [
     "alters",
     "drops",
 ];
-const EVIDENCE: [&str; 6] = [
-    "structural",
-    "scope",
-    "import",
-    "scip",
-    "declared",
-    "dynamic",
-];
 const SCOPES: [&str; 8] = [
     "production",
     "test",
@@ -136,66 +130,60 @@ const SCOPES: [&str; 8] = [
     "all",
 ];
 
-fn traversal_filters() -> Value {
+/// Enum-valued array property. `items` carries the vocabulary and no
+/// redundant `"type": "string"`: the enum already names every legal value,
+/// and one duplicated word per filter is a dozen lines of standing tax.
+fn enum_array(values: &[&str], description: &str) -> Value {
     json!({
-        "evidence": {
-            "type": "array", "items": {"type": "string", "enum": EVIDENCE},
-            "description": "edge evidence kinds to keep (default: all)",
-        },
-        "min_confidence": {
-            "type": "string", "enum": ["certain", "inferred"],
-            "description": "certain = compiler-grade edges only",
-        },
-        "relations": {
-            "type": "array", "items": {"type": "string", "enum": RELATIONS},
-            "description": "edge relations to follow (default: all)",
-        },
+        "type": "array",
+        "items": {"enum": values},
+        "description": description,
     })
 }
 
+/// Edge relations to follow. `evidence` and `min_confidence` stay CLI
+/// flags: `relations` is the filter that pays for its schema bytes.
+fn relations() -> Value {
+    enum_array(&RELATIONS, "relations to follow")
+}
+
 fn snapshot_precondition() -> Value {
-    json!({"type": "string", "description": "fail if the graph snapshot changed"})
+    json!({"type": "string", "description": "fail if snapshot changed"})
 }
 
 fn symbol() -> Value {
-    json!({"type": "string", "description": "symbol_key, name, or name@file-suffix"})
+    json!({"type": "string", "description": "symbol_key, name, or name@file"})
 }
 
 fn symbols() -> Value {
     json!({
         "type": "array", "items": {"type": "string"},
-        "description": "batch: one result per symbol",
+        "description": "batch: one result each",
     })
 }
 
 fn scope_filter(default: &[&str]) -> Value {
-    json!({
-        "type": "array",
-        "items": {"type": "string", "enum": SCOPES},
-        "default": default,
-        "description": "corpus roles searched; [\"all\"] alone widens",
-    })
+    let mut value = enum_array(&SCOPES, "corpus roles; \"all\" alone");
+    if default == ASK_SCOPE {
+        // Only the odd one out is worth a `default` line; the rest is the
+        // CLI corpus the guide states once.
+        value["default"] = json!(default);
+    }
+    value
 }
 
-fn limit(default: usize) -> Value {
-    json!({
-        "type": "integer", "minimum": 0, "default": default,
-        "description": "max rows; 0 = unlimited",
-    })
+/// Per-tool defaults are listed once in the guide, not restated on
+/// every schema.
+fn limit() -> Value {
+    json!({"type": "integer", "description": "max rows; 0 = all"})
 }
 
 fn include_tests() -> Value {
-    json!({
-        "type": "boolean", "default": false,
-        "description": "list test-scope rows (default: counted only)",
-    })
+    json!({"type": "boolean", "description": "list test-scope rows"})
 }
 
 fn max_depth() -> Value {
-    json!({
-        "type": "integer", "minimum": 0, "default": 10,
-        "description": "traversal depth; 0 = seed only",
-    })
+    json!({"type": "integer", "minimum": 0, "description": "depth; 0 = seed (10)"})
 }
 
 fn string(description: &str) -> Value {
@@ -203,195 +191,202 @@ fn string(description: &str) -> Value {
 }
 
 fn boolean(description: &str) -> Value {
-    json!({"type": "boolean", "default": false, "description": description})
+    json!({"type": "boolean", "description": description})
 }
 
 /// The MCP default corpus: what the same CLI verb searches.
 const DEFAULT_SCOPE: [&str; 3] = ["production", "test", "docs"];
 const ASK_SCOPE: [&str; 2] = ["production", "docs"];
 
+/// Tools whose payload carries a `coverage` block. Everywhere else
+/// `include_coverage` would be a knob with nothing to turn, so the
+/// injected argument is taken back off the schema.
+const REPOSITORY_COVERAGE: [&str; 5] = ["affected", "deps", "path", "grep", "context"];
+const WORKSPACE_COVERAGE: [&str; 4] = ["affected", "deps", "path", "context"];
+
+/// Strip `include_coverage` from tools that never emit one.
+fn drop_unused_coverage_flag(list: &mut Value, emitters: &[&str]) {
+    for tool in list["tools"].as_array_mut().into_iter().flatten() {
+        if emitters.contains(&tool["name"].as_str().unwrap_or_default()) {
+            continue;
+        }
+        if let Some(props) = tool["inputSchema"]["properties"].as_object_mut() {
+            props.remove("include_coverage");
+        }
+    }
+}
+
 pub(crate) fn repository() -> Value {
-    let filters = traversal_filters();
     let mut list = json!({"tools": [
         {
             "name": "map",
-            "description": "Repo inventory: totals, modules, dependency hubs, doc entry points.",
+            "description": "Repo inventory: modules, hubs, doc entry points.",
             "inputSchema": {"type": "object", "properties": {
                 "scope": scope_filter(&DEFAULT_SCOPE),
             }},
         },
         {
             "name": "ask",
-            "description": "Concept search: ranked hits per topic with status/advice; abstain = refine.",
+            "description": "Concept search: ranked hits; abstain = refine.",
             "inputSchema": {"type": "object", "properties": {
-                "question": string("natural-language question or concept"),
-                "limit": limit(5),
+                "question": string("question or concept"),
+                "limit": limit(),
                 "scope": scope_filter(&ASK_SCOPE),
-                "explain": boolean("add ranking diagnostics per hit"),
+                "explain": boolean("add ranking detail"),
             }, "required": ["question"]},
         },
         {
             "name": "context",
-            "description": "Evidence packet for a task: symbols, deps, callers, tests, gaps, next steps.",
+            "description": "Task packet: symbols, callers, tests, gaps, next steps.",
             "inputSchema": {"type": "object", "properties": {
-                "task": string("task text; name real symbols and files"),
+                "task": string("task text; name symbols"),
             }, "required": ["task"]},
         },
         {
             "name": "show",
-            "description": "One symbol: signature, doc, file, in/out edges with site; optional body.",
+            "description": "One symbol: signature, doc, edges, optional body.",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": symbol(),
                 "symbols": symbols(),
-                "limit": {"type": "integer", "minimum": 0, "default": 20,
-                    "description": "rows per relation; 0 = unlimited"},
-                "relations": filters["relations"],
+                "limit": {"type": "integer",
+                    "description": "rows per relation; 0 = all (20)"},
+                "relations": relations(),
                 "scope": scope_filter(&DEFAULT_SCOPE),
                 "if_snapshot": snapshot_precondition(),
                 "body": boolean("add a source excerpt"),
-                "context_lines": {"type": "integer", "minimum": 0,
-                    "description": "lines around the body excerpt"},
+                "context_lines": {"type": "integer",
+                    "description": "lines around excerpt"},
             }},
         },
         {
             "name": "query",
-            "description": "Find symbols by exact, qualified, or fuzzy name: signature, file, span.",
+            "description": "Find symbols by exact, qualified, or fuzzy name.",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": symbol(),
-                "limit": limit(10),
+                "limit": limit(),
                 "scope": scope_filter(&DEFAULT_SCOPE),
                 "if_snapshot": snapshot_precondition(),
             }, "required": ["symbol"]},
         },
         {
             "name": "affected",
-            "description": "Transitive dependents of a symbol, by file; batch via symbols[].",
+            "description": "Transitive dependents of a symbol, by file.",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": symbol(),
                 "symbols": symbols(),
                 "max_depth": max_depth(),
                 "include_tests": include_tests(),
-                "through_hubs": {"type": "boolean", "default": false,
-                    "description": "keep traversing past hubs (fan-in > 100)"},
-                "limit": limit(50),
-                "detail": boolean("full node objects instead of terse rows"),
-                "evidence": filters["evidence"],
-                "min_confidence": filters["min_confidence"],
-                "relations": filters["relations"],
+                "through_hubs": boolean("keep going past hubs"),
+                "limit": limit(),
+                "detail": boolean("full nodes, not rows"),
+                "relations": relations(),
                 "scope": scope_filter(&DEFAULT_SCOPE),
                 "if_snapshot": snapshot_precondition(),
             }},
         },
         {
             "name": "deps",
-            "description": "What a symbol depends on (depth 1 default), by file; batch via symbols[].",
+            "description": "What a symbol depends on (depth 1), by file.",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": symbol(),
                 "symbols": symbols(),
-                "max_depth": {"type": "integer", "minimum": 0, "default": 1,
-                    "description": "traversal depth; 0 = seed only"},
+                "max_depth": {"type": "integer", "minimum": 0,
+                    "description": "depth; 0 = seed (1)"},
                 "include_tests": include_tests(),
-                "limit": limit(50),
-                "evidence": filters["evidence"],
-                "min_confidence": filters["min_confidence"],
-                "relations": filters["relations"],
+                "limit": limit(),
+                "relations": relations(),
                 "scope": scope_filter(&DEFAULT_SCOPE),
                 "if_snapshot": snapshot_precondition(),
             }},
         },
         {
             "name": "grep",
-            "description": "Regex over file text, whole corpus or bounded by within[]; rows f/l/t.",
+            "description": "Regex over file text, bounded by within[].",
             "inputSchema": {"type": "object", "properties": {
                 "pattern": string("regex over file text"),
                 "within": {"type": "array", "items": {"type": "string"},
-                    "description": "affected(SYM)|deps(SYM)|file(PATH); omit = whole corpus"},
-                "no_tests": {"type": "boolean", "default": false,
-                    "description": "leave test-scoped files out"},
-                "max_depth": max_depth(),
-                "limit": limit(100),
-                "evidence": filters["evidence"],
-                "min_confidence": filters["min_confidence"],
-                "relations": filters["relations"],
+                    "description": "affected(SYM)|deps(SYM)|file(PATH)"},
+                "no_tests": boolean("skip test-scoped files"),
+                "limit": limit(),
+                "relations": relations(),
                 "scope": scope_filter(&DEFAULT_SCOPE),
             }, "required": ["pattern"]},
         },
         {
             "name": "path",
-            "description": "Shortest dependency path A->B with evidence per step; not found != absence.",
+            "description": "Shortest dependency path A->B with evidence.",
             "inputSchema": {"type": "object", "properties": {
                 "from": string("source symbol"),
                 "to": string("target symbol"),
                 "pairs": {"type": "array", "items": {"type": "array", "items": {"type": "string"}},
-                    "description": "batch: [[from, to], ...], one result each"},
-                "evidence": filters["evidence"],
-                "min_confidence": filters["min_confidence"],
-                "relations": filters["relations"],
+                    "description": "batch: [[from, to], ...]"},
+                "relations": relations(),
                 "scope": scope_filter(&DEFAULT_SCOPE),
                 "if_snapshot": snapshot_precondition(),
             }},
         },
         {
             "name": "unresolved",
-            "description": "Unbound references (file:line, reason): check before trusting empty results.",
+            "description": "Unbound references: check before claiming absence.",
             "inputSchema": {"type": "object", "properties": {
-                "file": string("only references in this file"),
-                "name": string("only references to this name"),
-                "limit": limit(50),
+                "file": string("only refs in this file"),
+                "name": string("only refs to this name"),
+                "limit": limit(),
             }},
         },
         {
             "name": "impact",
-            "description": "Changed symbols, blast radius, tests for a git range; HEAD = working tree.",
+            "description": "Blast radius and tests for a git range.",
             "inputSchema": {"type": "object", "properties": {
-                "rev_range": string("git range: HEAD, HEAD~1..HEAD, main...branch"),
-                "limit": {"type": "integer", "minimum": 0, "default": 20,
-                    "description": "per collection; 0 = all"},
+                "rev_range": string("git range, e.g. HEAD~1..HEAD"),
+                "limit": {"type": "integer",
+                    "description": "per collection; 0 = all (20)"},
                 "expect": {"type": "array", "items": {"type": "string"},
                     "description": "symbols the diff should cover"},
             }, "required": ["rev_range"]},
         },
         {
             "name": "overlap",
-            "description": "Pairwise merge risk between in-flight change ranges (direct/radius/file).",
+            "description": "Pairwise merge risk between change ranges.",
             "inputSchema": {"type": "object", "properties": {
                 "ranges": {"type": "array", "items": {"type": "string"}, "minItems": 2,
-                    "description": "two or more git ranges, optionally label=range"},
+                    "description": "git ranges; label=range"},
+                "relations": enum_array(&RELATIONS, "radius relations (default calls,uses)"),
             }, "required": ["ranges"]},
         },
     ]});
     crate::agent_protocol::complete_tool_schemas(&mut list);
+    drop_unused_coverage_flag(&mut list, &REPOSITORY_COVERAGE);
     list
 }
 
 pub(crate) fn workspace() -> Value {
-    let filters = traversal_filters();
     let mut list = json!({"tools": [
         {
             "name": "context",
-            "description": "Task packet across members: symbols, callers, tests, gaps, searched universe.",
+            "description": "Task packet across members: callers, tests, gaps.",
             "inputSchema": {"type": "object", "properties": {
-                "task": string("task text; name real symbols and files"),
+                "task": string("task text; name symbols"),
             }, "required": ["task"]},
         },
         {
             "name": "ask",
-            "description": "Concept search across all members: ranked hits per topic with status/advice.",
+            "description": "Concept search across every member.",
             "inputSchema": {"type": "object", "properties": {
-                "question": string("natural-language question or concept"),
-                "limit": limit(5),
+                "question": string("question or concept"),
+                "limit": limit(),
                 "scope": scope_filter(&ASK_SCOPE),
-                "explain": boolean("add ranking diagnostics per hit"),
+                "explain": boolean("add ranking detail"),
             }, "required": ["question"]},
         },
         {
             "name": "show",
-            "description": "One symbol: signature, doc, member edges, boundary links to other members.",
+            "description": "One symbol: signature, doc, cross-member edges.",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": symbol(),
-                "limit": {"type": "integer", "minimum": 0, "default": 20,
-                    "description": "rows per relation; 0 = unlimited"},
-                "relations": filters["relations"],
+                "limit": {"type": "integer",
+                    "description": "rows per relation; 0 = all (20)"},
+                "relations": relations(),
                 "scope": scope_filter(&DEFAULT_SCOPE),
                 "if_snapshot": snapshot_precondition(),
             }, "required": ["symbol"]},
@@ -407,68 +402,63 @@ pub(crate) fn workspace() -> Value {
         },
         {
             "name": "affected",
-            "description": "Transitive dependents across all members, by file.",
+            "description": "Transitive dependents across members, by file.",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": symbol(),
                 "max_depth": max_depth(),
-                "limit": limit(50),
-                "detail": boolean("full node objects instead of terse rows"),
-                "evidence": filters["evidence"],
-                "min_confidence": filters["min_confidence"],
-                "relations": filters["relations"],
+                "limit": limit(),
+                "detail": boolean("full nodes, not rows"),
+                "relations": relations(),
                 "scope": scope_filter(&DEFAULT_SCOPE),
                 "if_snapshot": snapshot_precondition(),
             }, "required": ["symbol"]},
         },
         {
             "name": "deps",
-            "description": "What a symbol transitively depends on across members, by file.",
+            "description": "What a symbol depends on across members.",
             "inputSchema": {"type": "object", "properties": {
                 "symbol": symbol(),
                 "max_depth": max_depth(),
-                "limit": limit(50),
-                "evidence": filters["evidence"],
-                "min_confidence": filters["min_confidence"],
-                "relations": filters["relations"],
+                "limit": limit(),
+                "relations": relations(),
                 "scope": scope_filter(&DEFAULT_SCOPE),
                 "if_snapshot": snapshot_precondition(),
             }, "required": ["symbol"]},
         },
         {
             "name": "path",
-            "description": "Shortest dependency path A->B across member boundaries.",
+            "description": "Shortest dependency path A->B across members.",
             "inputSchema": {"type": "object", "properties": {
                 "from": string("source symbol (member:Symbol)"),
                 "to": string("target symbol (member:Symbol)"),
-                "evidence": filters["evidence"],
-                "min_confidence": filters["min_confidence"],
-                "relations": filters["relations"],
+                "relations": relations(),
                 "scope": scope_filter(&DEFAULT_SCOPE),
                 "if_snapshot": snapshot_precondition(),
             }, "required": ["from", "to"]},
         },
         {
             "name": "unresolved",
-            "description": "Unbound references across members, tagged member:path.",
+            "description": "Unbound references across members.",
             "inputSchema": {"type": "object", "properties": {
-                "member": string("only this workspace member"),
-                "file": string("only references in this file"),
-                "name": string("only references to this name"),
-                "limit": limit(50),
+                "member": string("only this member"),
+                "file": string("only refs in this file"),
+                "name": string("only refs to this name"),
+                "limit": limit(),
             }},
         },
         {
             "name": "impact",
-            "description": "Changed symbols, blast radius, tests for a git range in one member, and beyond.",
+            "description": "Blast radius and tests for a member's range.",
             "inputSchema": {"type": "object", "properties": {
-                "member": string("workspace member the range belongs to"),
-                "rev_range": string("git range: HEAD, HEAD~1..HEAD, main...branch"),
-                "limit": {"type": "integer", "minimum": 0, "default": 20,
-                    "description": "per collection; 0 = all"},
+                "member": string("member owning the range"),
+                "rev_range": string("git range, e.g. HEAD~1..HEAD"),
+                "limit": {"type": "integer",
+                    "description": "per collection; 0 = all (20)"},
             }, "required": ["member", "rev_range"]},
         },
     ]});
     crate::agent_protocol::complete_tool_schemas(&mut list);
+    drop_unused_coverage_flag(&mut list, &WORKSPACE_COVERAGE);
     list
 }
 
@@ -501,8 +491,12 @@ mod tests {
             .collect()
     }
 
-    /// Bytes of one scope's `tools/list` catalog, schemas included.
-    const BUDGET: usize = 15_500;
+    /// Bytes of one scope's `tools/list` catalog, schemas included. This
+    /// is the standing context tax: every session pays it before asking
+    /// anything. Repository scope compact-serializes to 9_832 bytes here
+    /// and measures 10_575 on the wire (`sum(len(json.dumps(tool)))`
+    /// over a live `tools/list`, which pads every separator).
+    const BUDGET: usize = 10_000;
 
     #[test]
     fn catalog_stays_within_the_context_tax_budget() {
@@ -514,14 +508,14 @@ mod tests {
             assert!(size <= BUDGET, "catalog is {size} bytes");
             for tool in catalog["tools"].as_array().unwrap() {
                 let description = tool["description"].as_str().unwrap();
-                assert!(description.len() <= 80, "{}: {description}", tool["name"]);
+                assert!(description.len() <= 60, "{}: {description}", tool["name"]);
                 assert!(!description.contains("e.g."), "{}", tool["name"]);
                 assert!(tool.get("outputSchema").is_none(), "{}", tool["name"]);
                 for (key, prop) in tool["inputSchema"]["properties"].as_object().unwrap() {
                     let d = prop["description"]
                         .as_str()
                         .unwrap_or_else(|| panic!("{}.{key} has no description", tool["name"]));
-                    assert!(d.len() <= 60, "{}.{key}: {d}", tool["name"]);
+                    assert!(d.len() <= 40, "{}.{key}: {d}", tool["name"]);
                     assert!(prop.get("examples").is_none(), "{}.{key}", tool["name"]);
                     if matches!(key.as_str(), "relations" | "evidence" | "scope") {
                         assert!(prop["items"]["enum"].is_array(), "{}.{key}", tool["name"]);
@@ -542,13 +536,19 @@ mod tests {
         assert!(repository_names.contains(&"map"));
         assert!(workspace_names.contains(&"deps"));
         assert!(!workspace_names.contains(&"map"));
-        for tool in repository["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .chain(workspace["tools"].as_array().unwrap())
-        {
-            assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+        // `include_coverage` is injected for every tool and taken back off
+        // the ones whose payload never carries a coverage block.
+        for (catalog, emitters) in [
+            (&repository, &super::REPOSITORY_COVERAGE[..]),
+            (&workspace, &super::WORKSPACE_COVERAGE[..]),
+        ] {
+            for tool in catalog["tools"].as_array().unwrap() {
+                let name = tool["name"].as_str().unwrap();
+                let advertised = tool["inputSchema"]["properties"]
+                    .get("include_coverage")
+                    .is_some();
+                assert_eq!(advertised, emitters.contains(&name), "{name}");
+            }
         }
         for catalog in [&repository, &workspace] {
             let ask = catalog["tools"]
@@ -561,23 +561,27 @@ mod tests {
                 ask["inputSchema"]["properties"]["explain"]["type"],
                 "boolean"
             );
-            assert_eq!(
-                ask["inputSchema"]["properties"]["explain"]["default"],
-                false
-            );
             let impact = catalog["tools"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .find(|tool| tool["name"] == "impact")
                 .unwrap();
-            assert_eq!(impact["inputSchema"]["properties"]["limit"]["minimum"], 0);
-            assert_eq!(impact["inputSchema"]["properties"]["limit"]["default"], 20);
+            assert_eq!(
+                impact["inputSchema"]["properties"]["limit"]["type"],
+                "integer"
+            );
         }
         assert!(super::input_schema("map", true).is_none());
+        // A client that reads only the schema still learns the vocabulary.
         assert_eq!(
-            super::input_schema("affected", false).unwrap()["properties"]["scope"]["default"],
-            serde_json::json!(["production", "test", "docs"])
+            super::input_schema("affected", false).unwrap()["properties"]["scope"]["items"]["enum"],
+            serde_json::json!(super::SCOPES)
+        );
+        // `overlap` filters its radius tier like the CLI verb does.
+        assert_eq!(
+            super::input_schema("overlap", false).unwrap()["properties"]["relations"]["items"]["enum"],
+            serde_json::json!(super::RELATIONS)
         );
     }
 }
