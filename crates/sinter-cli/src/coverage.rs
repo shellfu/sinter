@@ -9,6 +9,7 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sinter_core::{Confidence, Evidence, Relation, UnresolvedReason, UnresolvedReference};
+use sinter_resolve::qualified_of;
 use sinter_store::{EdgeFilter, Store};
 
 /// Evidence represented by one traversal answer. `possible` means inferred
@@ -128,6 +129,9 @@ pub enum UnresolvedCategory {
     /// Evidence anchored the reference inside the corpus and the target was
     /// still not found: a real gap worth a look.
     ActionableAnchoredMiss,
+    /// The resolver cannot bind this shape yet (a self-recursive call
+    /// inside its own definition); a sinter gap, not a repository gap.
+    ResolverGap,
 }
 
 impl UnresolvedCategory {
@@ -139,10 +143,12 @@ impl UnresolvedCategory {
             Self::AmbiguousInternalTarget => "ambiguous_internal_target",
             Self::UnsupportedSyntax => "unsupported_syntax",
             Self::ActionableAnchoredMiss => "actionable_anchored_miss",
+            Self::ResolverGap => "resolver_gap",
         }
     }
 
-    /// Categories a maintainer of this repository can act on.
+    /// Categories a maintainer of this repository can act on (user gaps).
+    /// `ResolverGap` is deliberately absent: nothing in the repo fixes it.
     pub const fn is_actionable(self) -> bool {
         matches!(
             self,
@@ -200,6 +206,16 @@ impl Classifier {
             .unwrap_or(0);
         if item.reason == UnresolvedReason::CompilerUnresolved || defined == 0 {
             return UnresolvedCategory::LikelyExternal;
+        }
+        // ponytail: self-recursion only; aliased imports and barrel
+        // re-exports need import-path evidence the reference lacks.
+        let enclosing_name = reference
+            .enclosing
+            .as_ref()
+            .map(|id| qualified_of(id.as_str()))
+            .and_then(|q| q.rsplit([':', '.']).next());
+        if enclosing_name == Some(reference.name.as_str()) {
+            return UnresolvedCategory::ResolverGap;
         }
         let has_receiver = reference.path.as_deref().is_some_and(|path| {
             path.trim_end_matches(reference.name.as_str())

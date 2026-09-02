@@ -7,24 +7,41 @@ use crate::coverage::{Classifier, category_counts};
 use crate::lookup::open_store;
 use crate::render::line_of;
 
+/// Rows per page, whatever `--limit` asks: a reader wants the shape of
+/// the gaps, not the gaps; `next_cursor` continues.
+pub const MAX_ROWS: usize = 50;
+
 /// JSON shape shared by `sinter unresolved --json` and the MCP `unresolved`
-/// tool: `total`, `by_category`, `actionable`, `unresolved` (capped at
-/// `limit`, actionable categories first), `truncated` when capped.
+/// tool: `total`, `by_category`, `actionable` (user gaps), `resolver_gap`,
+/// `unresolved` (one page from `cursor`, capped at `MAX_ROWS`, actionable
+/// categories first), `next_cursor` when more remain.
 pub fn to_json(
     repo: &Path,
     classifier: &Classifier,
     refs: &[sinter_core::UnresolvedReference],
     limit: usize,
 ) -> serde_json::Value {
+    to_json_page(repo, classifier, refs, 0, limit)
+}
+
+fn to_json_page(
+    repo: &Path,
+    classifier: &Classifier,
+    refs: &[sinter_core::UnresolvedReference],
+    cursor: usize,
+    limit: usize,
+) -> serde_json::Value {
     let total = refs.len();
     let by_category = category_counts(classifier, refs);
-    let actionable = by_category
-        .iter()
-        .filter(|(category, _)| category_is_actionable(category))
-        .map(|(_, count)| count)
-        .sum::<usize>();
+    let actionable = user_gaps(&by_category);
+    let resolver_gap = by_category
+        .get(crate::coverage::UnresolvedCategory::ResolverGap.as_str())
+        .copied()
+        .unwrap_or(0);
+    let limit = limit.min(MAX_ROWS);
     let entries: Vec<serde_json::Value> = ordered(classifier, refs)
         .into_iter()
+        .skip(cursor)
         .take(limit)
         .map(|(u, category)| {
             let r = &u.reference;
@@ -44,20 +61,22 @@ pub fn to_json(
         "total": total,
         "by_category": by_category,
         "actionable": actionable,
+        "resolver_gap": resolver_gap,
         "unresolved": entries,
     });
-    if total > limit {
-        out["truncated"] = serde_json::json!(total - limit);
+    let end = cursor + limit;
+    if total > end {
+        out["truncated"] = serde_json::json!(total - end);
+        out["next_cursor"] = serde_json::json!(end);
     }
     out
 }
 
-/// Rows worth a reader's time by default: the actionable categories plus
-/// refs a compiler index would settle. External names and unsupported
-/// syntax are counted, never listed, unless `--all`.
+/// Rows worth a reader's time by default: user gaps only. External
+/// names, resolver gaps, unsupported syntax, and refs waiting on a
+/// compiler index are counted, never listed, unless `--all`.
 fn shown_by_default(category: crate::coverage::UnresolvedCategory) -> bool {
     category.is_actionable()
-        || category == crate::coverage::UnresolvedCategory::MissingCompilerIndex
 }
 
 /// `to_json` over the default rows only; `total` and `by_category` still
@@ -66,6 +85,7 @@ pub fn to_json_default(
     repo: &Path,
     classifier: &Classifier,
     refs: &[sinter_core::UnresolvedReference],
+    cursor: usize,
     limit: usize,
 ) -> serde_json::Value {
     let shown: Vec<_> = refs
@@ -73,7 +93,7 @@ pub fn to_json_default(
         .filter(|u| shown_by_default(classifier.classify(u)))
         .cloned()
         .collect();
-    let mut out = to_json(repo, classifier, &shown, limit);
+    let mut out = to_json_page(repo, classifier, &shown, cursor, limit);
     out["total"] = serde_json::json!(refs.len());
     out["by_category"] = serde_json::json!(category_counts(classifier, refs));
     out["shown"] = serde_json::json!("default");
@@ -85,6 +105,16 @@ fn category_is_actionable(category: &str) -> bool {
         category,
         "missing_receiver_type" | "ambiguous_internal_target" | "actionable_anchored_miss"
     )
+}
+
+/// Count of user gaps: unresolved references a maintainer of this repo
+/// can act on. Resolver gaps are sinter's to fix and never counted here.
+fn user_gaps(by_category: &std::collections::BTreeMap<&'static str, usize>) -> usize {
+    by_category
+        .iter()
+        .filter(|(category, _)| category_is_actionable(category))
+        .map(|(_, count)| count)
+        .sum()
 }
 
 /// Records with their category, actionable ones first, original order
@@ -108,6 +138,7 @@ pub fn run(
     repo: &Path,
     file: Option<&str>,
     name: Option<&str>,
+    cursor: usize,
     limit: usize,
     all: bool,
     json: bool,
@@ -121,20 +152,22 @@ pub fn run(
     let classifier = Classifier::new(&repo, &store, &refs)?;
     if json {
         let out = if all {
-            to_json(&repo, &classifier, &refs, limit)
+            to_json_page(&repo, &classifier, &refs, cursor, limit)
         } else {
-            to_json_default(&repo, &classifier, &refs, limit)
+            to_json_default(&repo, &classifier, &refs, cursor, limit)
         };
         crate::agent_protocol::write_json(&out)?;
         return Ok(total > 0);
     }
     let by_category = category_counts(&classifier, &refs);
-    let actionable = by_category
-        .iter()
-        .filter(|(category, _)| category_is_actionable(category))
-        .map(|(_, count)| count)
-        .sum::<usize>();
-    println!("{total} unresolved reference(s), {actionable} actionable");
+    let actionable = user_gaps(&by_category);
+    let resolver = by_category
+        .get(crate::coverage::UnresolvedCategory::ResolverGap.as_str())
+        .copied()
+        .unwrap_or(0);
+    println!(
+        "{total} unresolved reference(s), {actionable} user gap(s), {resolver} resolver gap(s)"
+    );
     for (category, count) in &by_category {
         println!(
             "  {count:>6}  {category}{}",
@@ -151,7 +184,8 @@ pub fn run(
         .filter(|(_, category)| all || shown_by_default(*category))
         .collect();
     let shown = rows.len();
-    for (u, category) in rows.into_iter().take(limit) {
+    let limit = limit.min(MAX_ROWS);
+    for (u, category) in rows.into_iter().skip(cursor).take(limit) {
         let r = &u.reference;
         let location =
             crate::render::location(&repo, &r.file, line_of(&repo, &r.file, r.span.start));
@@ -177,16 +211,16 @@ pub fn run(
             u.reason.as_str(),
         );
     }
-    if shown > limit {
+    let end = cursor + limit;
+    if shown > end {
         println!(
-            "{} more below cutoff · `sinter unresolved --limit {}` to widen",
-            shown - limit,
-            shown,
+            "{} more · `sinter unresolved --cursor {end}` for the next page",
+            shown - end,
         );
     }
     if !all && total > shown {
         println!(
-            "{} external / unsupported-syntax row(s) hidden · `sinter unresolved --all` to list",
+            "{} non-user-gap row(s) hidden · `sinter unresolved --all` to list",
             total - shown
         );
     }

@@ -23,6 +23,10 @@ struct Report {
     fixed: usize,
     /// Findings after `integration()` are notes, not problems.
     integration: bool,
+    /// Text mode buffers integration rows: when every one is `ok` the
+    /// section collapses to a single rollup line at `summary()`.
+    integration_rows: Vec<String>,
+    integration_flagged: bool,
     /// `--json`: findings are collected per section and emitted once by
     /// `summary()` instead of being printed as they arrive.
     json: Option<HashMap<&'static str, Vec<serde_json::Value>>>,
@@ -37,6 +41,8 @@ impl Report {
             fix,
             fixed: 0,
             integration: false,
+            integration_rows: Vec::new(),
+            integration_flagged: false,
             json: json.then(HashMap::new),
         }
     }
@@ -52,6 +58,14 @@ impl Report {
                 finding["fix"] = fix.into();
             }
             sections.entry(section).or_default().push(finding);
+        } else if self.integration {
+            if status != "ok" {
+                self.integration_flagged = true;
+            }
+            self.integration_rows.push(format!("  {status:<5} {msg}"));
+            if let Some(fix) = fix {
+                self.integration_rows.push(format!("        -> {fix}"));
+            }
         } else {
             println!("  {status:<5} {msg}");
             if let Some(fix) = fix {
@@ -71,8 +85,24 @@ impl Report {
     }
     fn section(&mut self, name: &str) {
         self.integration = name == "integration";
-        if self.json.is_none() {
+        if self.json.is_none() && !self.integration {
             println!("{name}");
+        }
+    }
+    /// Text mode: an all-ok integration section is one line; anything
+    /// flagged prints every row so the note sits in context.
+    fn flush_integration(&mut self) {
+        if self.json.is_some() || self.integration_rows.is_empty() {
+            return;
+        }
+        if self.integration_flagged {
+            println!("integration");
+            for row in self.integration_rows.drain(..) {
+                println!("{row}");
+            }
+        } else {
+            println!("integration: all {} checks ok", self.integration_rows.len());
+            self.integration_rows.clear();
         }
     }
     fn warn(&mut self, msg: &str, fix: &str) {
@@ -103,6 +133,7 @@ impl Report {
         }
     }
     fn summary(&mut self) {
+        self.flush_integration();
         if let Some(mut sections) = self.json.take() {
             let out = serde_json::json!({
                 "version": env!("CARGO_PKG_VERSION"),
@@ -173,7 +204,7 @@ pub fn run_workspace(manifest: &Path, fix: bool, json: bool) -> Result<bool> {
     Ok(r.problems == 0)
 }
 
-pub fn run(repo: &Path, fix: bool, json: bool) -> Result<bool> {
+pub fn run(repo: &Path, fix: bool, json: bool, verbose: bool) -> Result<bool> {
     let mut r = Report::new(fix, json);
 
     if !json {
@@ -188,7 +219,7 @@ pub fn run(repo: &Path, fix: bool, json: bool) -> Result<bool> {
     let repo = pipeline::discover_root(repo);
     let repo = repo.canonicalize()?;
 
-    graph_checks(&mut r, &repo)?;
+    graph_checks(&mut r, &repo, verbose)?;
 
     r.section("integration");
     // Release check: one HEAD request, TTY-only, 24h-cached, opt-out via
@@ -400,7 +431,7 @@ pub fn run(repo: &Path, fix: bool, json: bool) -> Result<bool> {
     // the binary they were started with. An older one rewrites the graph
     // in its own format on every self-sync, so two versions ping-pong full
     // rebuilds and hold the store lock for the duration.
-    let stale = stale_servers();
+    let stale = stale_servers(&repo);
     if !stale.is_empty() {
         let pids: Vec<String> = stale.iter().map(|(pid, _, _)| pid.to_string()).collect();
         let detail: Vec<String> = stale
@@ -423,11 +454,14 @@ pub fn run(repo: &Path, fix: bool, json: bool) -> Result<bool> {
     Ok(r.problems == 0)
 }
 
-/// Running `sinter serve` processes whose binary version differs from this
-/// one: (pid, version, working directory). Linux only (reads /proc); other
-/// platforms report nothing.
+/// Running `sinter serve` processes for this repository (cwd or `--repo`
+/// inside it) whose binary version differs from this one: (pid, version,
+/// working directory). Servers of other repositories never touch this
+/// graph, so they are not this doctor's business. Linux only (reads
+/// /proc); other platforms report nothing.
 #[cfg(target_os = "linux")]
-fn stale_servers() -> Vec<(u32, String, String)> {
+fn stale_servers(repo: &Path) -> Vec<(u32, String, String)> {
+    use std::os::unix::ffi::OsStrExt;
     let mut out = Vec::new();
     let Ok(dir) = std::fs::read_dir("/proc") else {
         return out;
@@ -450,6 +484,17 @@ fn stale_servers() -> Vec<(u32, String, String)> {
         if !is_serve {
             continue;
         }
+        let cwd = std::fs::read_link(entry.path().join("cwd")).unwrap_or_default();
+        // A relative `--repo .` is relative to the server's cwd, not ours.
+        let served_here = cwd.starts_with(repo)
+            || args.iter().skip(2).any(|arg| {
+                cwd.join(OsStr::from_bytes(arg))
+                    .canonicalize()
+                    .is_ok_and(|p| p.starts_with(repo))
+            });
+        if !served_here {
+            continue;
+        }
         let version = std::process::Command::new(entry.path().join("exe"))
             .arg("--version")
             .output()
@@ -459,16 +504,13 @@ fn stale_servers() -> Vec<(u32, String, String)> {
         if version == format!("sinter {}", env!("CARGO_PKG_VERSION")) {
             continue;
         }
-        let cwd = std::fs::read_link(entry.path().join("cwd"))
-            .map(|p| p.display().to_string())
-            .unwrap_or_default();
-        out.push((pid, version, cwd));
+        out.push((pid, version, cwd.display().to_string()));
     }
     out
 }
 
 #[cfg(not(target_os = "linux"))]
-fn stale_servers() -> Vec<(u32, String, String)> {
+fn stale_servers(_repo: &Path) -> Vec<(u32, String, String)> {
     Vec::new()
 }
 
@@ -485,7 +527,7 @@ fn rebuild(repo: &Path) -> Result<()> {
 
 /// Graph-section findings. Returns early when there is no readable graph
 /// so the integration section still runs and the summary stays whole.
-fn graph_checks(r: &mut Report, repo: &Path) -> Result<()> {
+fn graph_checks(r: &mut Report, repo: &Path, verbose: bool) -> Result<()> {
     let db = pipeline::db_path(repo);
     if !db.exists() {
         r.fixable(
@@ -588,7 +630,7 @@ fn graph_checks(r: &mut Report, repo: &Path) -> Result<()> {
         }
     }
     let coverage = crate::coverage::repository_coverage(repo, &store)?;
-    completeness_warnings(r, &coverage);
+    completeness_warnings(r, &coverage, verbose);
     let gap = schema_consistency(r, repo, &store, &coverage)?;
     let total_sql = stored.keys().filter(|f| f.ends_with(".sql")).count();
     sql_parse_gap(r, repo, &coverage, total_sql, gap);
@@ -1070,7 +1112,7 @@ fn sql_parse_gap(
 /// Gaps `map` already reports as `partial`, surfaced here so `0 problems`
 /// never reads as "complete". Same `repository_coverage` document, one
 /// line per gap.
-fn completeness_warnings(r: &mut Report, coverage: &serde_json::Value) {
+fn completeness_warnings(r: &mut Report, coverage: &serde_json::Value, verbose: bool) {
     let graph = &coverage["graph"];
     let count = |field: &str| graph[field].as_u64().unwrap_or(0);
     // .sql files have their own line (`sql_parse_gap`): one grammar gap, one row.
@@ -1085,12 +1127,17 @@ fn completeness_warnings(r: &mut Report, coverage: &serde_json::Value) {
         })
         .unwrap_or_default();
     if !partial.is_empty() {
-        let first: Vec<&str> = partial.iter().copied().take(3).collect();
-        let more = if partial.len() > 3 { ", ..." } else { "" };
+        // Tree-sitter recovers past an error but the extractor cannot
+        // see what it skipped, so no count of missing symbols exists;
+        // only the shape of the loss does.
         r.completeness(&format!(
-            "{} file(s) indexed from partial syntax trees ({}{more})",
+            "{} file(s) indexed from partial syntax trees; statements after the first syntax error are absent{}",
             partial.len(),
-            first.join(", ")
+            if verbose {
+                format!(": {}", partial.join(", "))
+            } else {
+                " (`sinter doctor --verbose` lists them)".to_string()
+            }
         ));
     }
     let scip_state = coverage["compiler_index"]["state"]
@@ -1381,22 +1428,28 @@ mod tests {
     fn completeness_warnings_count_but_never_fail() {
         let mut r = Report::new(false, true);
         r.section("graph");
-        completeness_warnings(
-            &mut r,
-            &serde_json::json!({
-                "compiler_index": {"state": "missing"},
-                "graph": {
-                    "syntax_error_files": ["a.rs", "b.rs", "c.rs", "d.rs"],
-                    "missing_compiler_index": 7,
-                    "actionable_unresolved": 2,
-                },
-            }),
-        );
+        let coverage = serde_json::json!({
+            "compiler_index": {"state": "missing"},
+            "graph": {
+                "syntax_error_files": ["a.rs", "b.rs", "c.rs", "d.rs"],
+                "missing_compiler_index": 7,
+                "actionable_unresolved": 2,
+            },
+        });
+        completeness_warnings(&mut r, &coverage, false);
         assert_eq!((r.problems, r.warnings, r.notes), (0, 3, 0));
         let graph = &r.json.as_ref().unwrap()["graph"];
         assert!(graph.iter().all(|f| f["status"] == "warn"));
         let msg = graph[0]["message"].as_str().unwrap();
-        assert!(msg.starts_with("4 file(s)") && msg.contains("c.rs, ...") && !msg.contains("d.rs"));
+        assert!(msg.starts_with("4 file(s)") && msg.contains("--verbose") && !msg.contains("d.rs"));
+
+        let mut r = Report::new(false, true);
+        completeness_warnings(&mut r, &coverage, true);
+        let msg = r.json.as_ref().unwrap()["graph"][0]["message"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(msg.contains("a.rs, b.rs, c.rs, d.rs"), "{msg}");
 
         let mut r = Report::new(false, true);
         completeness_warnings(
@@ -1405,8 +1458,23 @@ mod tests {
                 "compiler_index": {"state": "fresh"},
                 "graph": {"syntax_error_files": [], "missing_compiler_index": 0, "actionable_unresolved": 0},
             }),
+            false,
         );
         assert_eq!(r.warnings, 0);
+    }
+
+    #[test]
+    fn all_ok_integration_collapses_to_one_line_and_notes_expand_it() {
+        let mut r = Report::new(false, false);
+        r.section("integration");
+        r.ok("a");
+        r.ok("b");
+        assert_eq!(r.integration_rows.len(), 2);
+        assert!(!r.integration_flagged);
+        r.warn("c", "fix c");
+        assert!(r.integration_flagged);
+        assert_eq!(r.integration_rows.len(), 4);
+        assert_eq!(r.notes, 1);
     }
 
     #[test]

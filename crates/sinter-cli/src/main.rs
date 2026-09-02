@@ -183,6 +183,9 @@ enum Command {
         /// Emit findings as JSON: {version, graph: [...], integration: [...], summary}
         #[arg(long)]
         json: bool,
+        /// List every partial-syntax file instead of a count
+        #[arg(long, short = 'v')]
+        verbose: bool,
     },
     /// Install the assistant integration card (embedded, drift-proof)
     Install {
@@ -425,10 +428,13 @@ enum Command {
         /// Only references whose name ends at this name
         #[arg(long)]
         name: Option<String>,
-        /// Maximum references to print
-        #[arg(long, default_value_t = 200)]
+        /// Rows per page (hard cap 50; the footer names the next `--cursor`)
+        #[arg(long, default_value_t = 50)]
         limit: usize,
-        /// Also list likely-external and unsupported-syntax references
+        /// Skip this many rows (paging)
+        #[arg(long, default_value_t = 0)]
+        cursor: usize,
+        /// Also list external, resolver-gap, and unsupported-syntax references
         #[arg(long)]
         all: bool,
         /// Structured output
@@ -886,10 +892,11 @@ fn cli_main() -> ExitCode {
             workspace,
             fix,
             json,
+            verbose,
         } => {
             let result = match workspace {
                 Some(manifest) => doctor::run_workspace(&manifest, fix, json),
-                None => doctor::run(repo.path(), fix, json),
+                None => doctor::run(repo.path(), fix, json, verbose),
             };
             return match result {
                 Ok(true) => ExitCode::SUCCESS,
@@ -1235,10 +1242,19 @@ fn cli_main() -> ExitCode {
             file,
             name,
             limit,
+            cursor,
             all,
             json,
         } => {
-            let result = unresolved::run(&repo, file.as_deref(), name.as_deref(), limit, all, json);
+            let result = unresolved::run(
+                &repo,
+                file.as_deref(),
+                name.as_deref(),
+                cursor,
+                limit,
+                all,
+                json,
+            );
             return if json {
                 grep_exit_json("unresolved", result)
             } else {

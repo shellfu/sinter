@@ -20,6 +20,8 @@ pub struct BuildReport {
     pub removed: usize,
     pub reresolved_files: usize,
     pub syntax_error_files: Vec<String>,
+    /// Symbols extracted from those files before/around the errors.
+    pub syntax_error_symbols: usize,
     pub failures: Vec<(String, String)>,
     pub scip_disagreements: Vec<ScipDisagreement>,
     pub stats: sinter_resolve::ResolutionStats,
@@ -490,6 +492,7 @@ pub fn build_with(
             removed: 0,
             reresolved_files: 0,
             syntax_error_files: Vec::new(),
+            syntax_error_symbols: 0,
             failures: Vec::new(),
             scip_disagreements: Vec::new(),
             stats: sinter_resolve::ResolutionStats::default(),
@@ -527,6 +530,7 @@ pub fn build_with(
     let mut changed_facts: Vec<FileFacts> = Vec::new();
     let mut failures: Vec<(String, String)> = Vec::new();
     let mut syntax_error_files = Vec::new();
+    let mut syntax_error_symbols = 0usize;
     for (spec, files) in &by_lang {
         let results: Vec<(String, Result<FileFacts, String>)> = files
             .par_iter()
@@ -550,6 +554,7 @@ pub fn build_with(
                 Ok(facts) => {
                     if facts.has_syntax_errors {
                         syntax_error_files.push(rel.clone());
+                        syntax_error_symbols += facts.nodes.len();
                     }
                     changed_facts.push(facts);
                 }
@@ -935,6 +940,7 @@ pub fn build_with(
         removed: removed.len(),
         reresolved_files: affected.len(),
         syntax_error_files,
+        syntax_error_symbols,
         failures,
         scip_disagreements,
         stats,
@@ -1053,8 +1059,13 @@ pub fn print_report(report: &BuildReport) {
         "  totals: {} nodes, {} edges, {} unresolved refs",
         report.total_nodes, report.total_edges, report.total_unresolved,
     );
-    for file in &report.syntax_error_files {
-        eprintln!("  SYNTAX {file}");
+    // One line, not one per file: the list belongs to `doctor --verbose`.
+    if !report.syntax_error_files.is_empty() {
+        eprintln!(
+            "  {} parsed partially ({} in them; statements after the first syntax error are absent; `sinter doctor --verbose` lists files)",
+            crate::render::count(report.syntax_error_files.len(), "file"),
+            crate::render::count(report.syntax_error_symbols, "symbol"),
+        );
     }
     const DEFAULT_DIFF_LIMIT: usize = 10;
     let diff_limit = if std::env::var_os("SINTER_SCIP_DIFF").is_some() {

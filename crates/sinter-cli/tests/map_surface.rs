@@ -104,13 +104,10 @@ fn map_shows_modules_hubs_and_docs() {
     assert!(docs_section.contains("Design"), "{out}");
     assert!(!docs_section.contains("Details"), "{out}");
 
-    // Map states the graph's trust boundary instead of looking exhaustive.
-    assert!(out.contains("Graph health"), "{out}");
-    assert!(out.contains("structural inventory"), "{out}");
-    assert!(
-        out.contains("not runtime entry-point or ownership proof"),
-        "{out}"
-    );
+    // Map states what keeps the graph from complete, in one line.
+    assert!(out.contains("health: "), "{out}");
+    assert!(out.contains("user gaps"), "{out}");
+    assert!(out.contains("partial-syntax files"), "{out}");
 
     // Next-step hints, like every other orientation verb.
     assert!(out.contains("Next: sinter ask"), "{out}");
