@@ -182,14 +182,17 @@ $ sinter ask "where is the trigram search"
 ```
 
 `ask` is a calibrated lexical navigator, so treat its hits as places to inspect
-rather than generated answers. Every hit shows its match provenance. Agent JSON
-groups results by topic under one strict result budget and reports
-`ranking_margin`, query-term coverage, the named holdout calibration,
-`verify_required`, and topic-level advice. Weak singletons, low term coverage,
-and undersampled ranking-margin buckets abstain. In `sinter.agent.v1`,
-`confidence.ranking_bucket` names the bucket explicitly while
-`confidence.level` remains as a compatibility alias. CLI JSON and MCP
-`structuredContent.data` use the same payload.
+rather than generated answers. Every hit shows its match provenance and the
+text card carries one confidence line (`confidence: high — verify top hit`).
+Agent JSON groups results by topic under one strict result budget and keeps
+each hit lean: rank, name, kind, file, line, signature, doc, matched terms,
+channels, and a one-word confidence. `--explain` (text or JSON) adds the
+ranking margin, query-term coverage, the named holdout calibration, and
+per-hit scores. Query terms expand through a small synonym table (cap, limit,
+budget; size, bytes; caller, dependent) at reduced weight, so a literal match
+always outranks a synonym. Weak singletons, low term coverage, and undersampled
+ranking-margin buckets abstain. CLI JSON and MCP `structuredContent.data` use
+the same payload.
 
 Every `affected`, `deps`, and `path` response is deliberately bounded. Positive
 and negative answers include a `coverage` object with the graph snapshot,
@@ -231,7 +234,7 @@ the issue.
 | `sinter watch [repo]` | Keep the graph fresh from filesystem events |
 | `sinter hooks install` | Git hooks that refresh after commit/checkout/merge |
 | `sinter ask "<question>"` | Calibrated lexical starting points for a vague question, with verify/abstain guidance |
-| `sinter show <symbol>` | One-screen orientation card for a symbol or file (`--body [--context-lines N]` adds a bounded source excerpt) |
+| `sinter show <symbol>` | One-screen orientation card for a symbol or file (`--body [--context-lines N]` adds a bounded source excerpt; a cut excerpt says how many lines remain, and a tie-broken name leads with `resolved: Name@file`) |
 | `sinter query <symbol>` | Exact + fuzzy symbol search |
 | `sinter affected <symbol>...` | Reverse blast radius, evidence-filterable; multiple seeds are unioned and deduplicated, each row naming the seeds that reached it |
 | `sinter deps <symbol>` | Forward blast radius: everything a symbol transitively depends on |
@@ -239,7 +242,7 @@ the issue.
 | `sinter path <from> <to>` | Shortest dependency path with per-step evidence; an unproven answer reports `closest_frontier`, `excluded_edges`, and `suggested_retries` |
 | `sinter grep <regex> --within <traversal>` | Text search bounded by a graph traversal: `affected(SYM)`, `deps(SYM)`, `file(PATH)`, repeatable and unioned |
 | `sinter context "<task>"` | Evidence packet for a coding task: edit candidates, deps/dependents, relevant tests, gaps, next commands (`--workspace <manifest>` federates member packets) |
-| `sinter assert no-callers <symbol>` | Check for production callers by default; exits 0 only for `holds_for_indexed_snapshot`, with `--scope`, `--workspace`, `--certain`, and `--json` controls |
+| `sinter assert no-callers <symbol>` | Check for production callers by default; exits 0 only for `holds_for_indexed_snapshot`, with `--scope`, `--workspace`, `--certain`, and `--json` controls; `--verbose` keeps the repository-wide `coverage.graph` block in JSON |
 | `sinter assert no-dependents <symbol>` | Same contract over every non-containment relation (uses, reads, writes, implements, …) for constants, types, and traits; `no-callers` counts `calls` edges only |
 | `sinter cite <symbol>` | Emit a repository-root-relative Markdown `file#Lline` citation carrying a stable symbol key |
 | `sinter verify-doc <file.md>` | Re-resolve managed citations; bare `path:line` references return `not_proven` even when the location exists |
@@ -249,8 +252,8 @@ the issue.
 | [`sinter workspace <manifest>`](docs/workspaces.md) | Build all members of a cross-repo workspace + refresh boundary links |
 | [`sinter init --workspace`](docs/workspaces.md) | Write a starter workspace manifest (never overwrites) |
 | `sinter install [targets]` | Write agent cards (claude, cursor, agents/AGENTS.md, enforce (`--strict` available), all); `--mcp` registers the server for Claude Code, Cursor, and Codex |
-| `sinter scip [repo]` | Run every matching compiler indexer, merge into `.sinter/index.scip`, rebuild; no-op when fresh (`--force` reindexes); `scip check` is the CI freshness guard |
-| `sinter doctor [repo]` | Diagnose installation + graph (including an MCP handshake and lock-held reporting); every finding names its fix; `--fix` applies the safe ones |
+| `sinter scip [repo]` | Run every matching compiler indexer, merge into `.sinter/index.scip`, rebuild; no-op when fresh (`--force` reindexes); `scip check` is the CI freshness guard. Indexer output lands in `.sinter/scip-<lang>-<n>.log`, one summary line per indexer on the terminal |
+| `sinter doctor [repo]` | Diagnose installation + graph: MCP handshake, `sinter serve` processes running a different version (Linux), one row for the SQL grammar gap, schema lints; every finding names its fix; `--fix` applies the safe ones and shows rebuild progress |
 | `sinter update` | Self-update to the latest release, checksum-verified (`--dry-run` reports only) |
 | `sinter completion <shell>` | Shell completions |
 | `sinter version` | Version, graph schema, language packs |
@@ -259,6 +262,14 @@ MCP registrations use the portable `sinter` command and start non-required so
 a missing binary cannot prevent the client from starting. `sinter doctor`
 checks that the command resolves to an executable on `PATH` and performs an MCP
 handshake.
+
+Reads open the graph with a shared lock; a rebuild holds it exclusively. A
+query that arrives during a rebuild queues for up to two minutes and prints
+one `waiting for another sinter process` notice after a second, so parallel
+agents see a delay rather than a `Database already open` error. Leaked MCP
+servers from finished sessions keep their original binary; when versions
+differ each one rewrites the graph in its own format, so `sinter doctor` lists
+them with their pids.
 
 `affected`, `deps`, and `path` accept `--evidence scip,import,scope,dynamic`
 and `--certain` to restrict traversal to stronger evidence tiers, and
