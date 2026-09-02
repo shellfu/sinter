@@ -23,6 +23,7 @@
     ["scope", "uses", "speaker.go", "Speaker", "speaker.go", "speaker.go"],
     ["scope", "calls", "Announce", "Speaker::Speak", "speaker.go", "speaker.go"],
     ["dynamic", "calls", "Speaker::Speak", "Dog::Speak", "speaker.go", "dog.go"],
+    ["dynamic", "implements", "Dog::Speak", "Speaker::Speak", "dog.go", "speaker.go"],
     ["dynamic", "implements", "Dog", "Speaker", "dog.go", "speaker.go"]
   ],
   "unresolved_count": 0
