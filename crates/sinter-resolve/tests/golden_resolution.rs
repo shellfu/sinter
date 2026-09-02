@@ -121,7 +121,7 @@ fn check_inner(fixture: &str) {
     let roots: Vec<sinter_extract::ModuleRoot> = walk_manifests(&root);
     let index =
         sinter_resolve::Index::build(&nodes, &all_imports, &locals, &fields, &embeds, &roots);
-    let (bindings, stats, _) = resolve(&index, &references);
+    let (bindings, stats, _, _) = resolve(&index, &references);
     let dynamic = dynamic_edges(&index, &nodes, &trait_impls);
 
     // Every resolved binding carries its call site — the span of the

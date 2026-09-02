@@ -263,3 +263,42 @@ fn negative_traversals_lead_with_not_proven_and_keep_observed_counts() {
     );
     assert_eq!(value["coverage"]["status"], "not_proven", "{out}");
 }
+
+/// A path whose module is in the corpus but has no such member — what a
+/// rename leaves at untouched call sites — is a real gap, never "external".
+#[test]
+fn dangling_qualified_path_is_actionable() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(
+        repo.join("src/lib.rs"),
+        "mod util;\n\npub fn entry() -> u32 {\n    crate::util::gone()\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("src/util.rs"),
+        "pub fn present() -> u32 {\n    41\n}\n",
+    )
+    .unwrap();
+    let (ok, out) = sinter(repo, &["build"]);
+    assert!(ok, "{out}");
+
+    let (ok, out) = sinter(repo, &["unresolved"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("1 actionable"), "{out}");
+    assert!(
+        out.contains("crate::util::gone")
+            && out.contains("actionable_anchored_miss · missing_internal_target"),
+        "{out}"
+    );
+
+    let (ok, out) = sinter(repo, &["unresolved", "--name", "gone", "--json"]);
+    assert!(ok, "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+    assert_eq!(v["actionable"], 1, "{out}");
+    let row = &v["unresolved"][0];
+    assert_eq!(row["name"], "gone", "{out}");
+    assert_eq!(row["category"], "actionable_anchored_miss", "{out}");
+    assert_eq!(row["reason"], "missing_internal_target", "{out}");
+}

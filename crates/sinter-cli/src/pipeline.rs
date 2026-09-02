@@ -660,10 +660,11 @@ pub fn build_with(
             &embeds,
             &module_roots,
         );
-        let (bindings, resolved_stats, internal_indices) =
+        let (bindings, resolved_stats, internal_indices, dangling_indices) =
             sinter_resolve::resolve(&resolve_index, &refs);
         stats = resolved_stats;
         let internal_set: HashSet<usize> = internal_indices.into_iter().collect();
+        let dangling_set: HashSet<usize> = dangling_indices.into_iter().collect();
         let mut resolved_idx: HashSet<usize> = HashSet::new();
         let mut internal_dst: HashMap<usize, sinter_core::NodeId> = HashMap::new();
         let mut edges = Vec::new();
@@ -681,9 +682,17 @@ pub fn build_with(
         let mut dep_derived: HashMap<String, Vec<sinter_core::Node>> = HashMap::new();
         if let Some(scip_path) = scip_index_path(&repo) {
             let index = sinter_resolve::load_index(&scip_path)?;
+            // A file edited since the index was built has moved: its
+            // occurrence positions no longer name what the compiler saw,
+            // so its evidence is withheld (the file already counts in the
+            // stale-index notice) and import/scope evidence stands.
+            let index_nanos = scip_mtime.map_or(0, |(_, nanos)| nanos);
             let resolution =
                 sinter_resolve::resolve_with_index(&index, &nodes, &refs, &affected, |rel| {
-                    read_repo_source(&repo, rel)
+                    read_repo_source(&repo, rel).filter(|_| {
+                        std::fs::metadata(repo.join(rel))
+                            .is_ok_and(|meta| modified_nanos(&meta) <= index_nanos)
+                    })
                 });
             for binding in resolution.bindings {
                 if resolved_idx.insert(binding.reference) {
@@ -845,7 +854,9 @@ pub fn build_with(
             .filter(|(i, _)| !resolved_idx.contains(i))
             .map(|(i, r)| UnresolvedReference {
                 reference: r.clone(),
-                reason: if compiler_indexed {
+                reason: if dangling_set.contains(&i) {
+                    UnresolvedReason::MissingInternalTarget
+                } else if compiler_indexed {
                     UnresolvedReason::CompilerUnresolved
                 } else if internal_set.contains(&i) {
                     UnresolvedReason::SyntaxAnchoredMiss

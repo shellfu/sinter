@@ -50,7 +50,7 @@ fn index_and_resolve_200k_nodes_with_absolute_budgets() {
     let index_elapsed = started.elapsed();
 
     let started = Instant::now();
-    let (bindings, stats, _) = resolve(&index, &references);
+    let (bindings, stats, _, _) = resolve(&index, &references);
     let resolve_elapsed = started.elapsed();
 
     assert_eq!(bindings.len(), REFERENCE_COUNT);
