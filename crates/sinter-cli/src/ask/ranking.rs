@@ -45,6 +45,12 @@ const PT_ACTION_TOKEN: i64 = 70;
 /// token costs as much as a matched one earns, so `ExactArgs` beats
 /// `ExactValidArgs` and `render_template` beats `render_template_string`.
 const PT_NAME_PRECISION: i64 = 40;
+
+/// A hit whose *name* carries query terms is what the question is about;
+/// one that only matched in prose or body text is a mention of it. Full
+/// name coverage multiplies the score by 1 + this permille, scaled down
+/// by the share of query terms the name covers.
+const NAME_PRIOR_PERMILLE: i64 = 500;
 /// Per adjacent query pair that appears in the same order in the name.
 const PT_PHRASE_NAME: i64 = 20;
 /// Per adjacent query pair that appears verbatim in the doc comment.
@@ -116,6 +122,8 @@ pub(super) struct ScoreBreakdown {
     penalty_denominator: i64,
     hub_bonus: i64,
     family_bonus: i64,
+    /// Query terms matched literally in this hit's own name.
+    name_terms: usize,
     /// Per-term IDF weight, permille, in query-term order.
     idf_permille: Vec<i64>,
     /// The rarest query term is absent from every field of this hit.
@@ -570,14 +578,25 @@ pub(super) fn score_candidates(
         for (index, term) in terms.iter().enumerate() {
             let hit = evidence[index];
             literal_any |= hit.any() && !hit.synonym_only;
-            name_literal |= (hit.name_exact || hit.name_close) && !hit.synonym_only;
+            if (hit.name_exact || hit.name_close) && !hit.synonym_only {
+                name_literal = true;
+                breakdown.name_terms += 1;
+            }
             let w = if hit.synonym_only {
                 weigh(idf[index], SYNONYM_PERMILLE)
             } else {
                 idf[index]
             };
+            // A name that matched only through a synonym is not the
+            // literal name the question used; it credits at most as much
+            // as a close match.
+            let exact_points = if hit.synonym_only {
+                PT_NAME_CLOSE
+            } else {
+                PT_EXACT_NAME
+            };
             if hit.name_exact {
-                breakdown.name += weigh(PT_EXACT_NAME, w);
+                breakdown.name += weigh(exact_points, w);
                 channels.push("name");
             } else if hit.name_close {
                 breakdown.name += weigh(PT_NAME_CLOSE, w);
@@ -890,6 +909,13 @@ fn combine(breakdown: &mut ScoreBreakdown) -> i64 {
     if breakdown.rarest_miss {
         score = score * RAREST_MISS_PERMILLE / 1000;
     }
+    if breakdown.name_terms > 0 {
+        let terms = breakdown.coverage_denominator.max(1) as i64;
+        let share = NAME_PRIOR_PERMILLE
+            * breakdown.name_terms.min(breakdown.coverage_denominator) as i64
+            / terms;
+        score = score * (1000 + share) / 1000;
+    }
     score += breakdown.hub_bonus;
     breakdown.final_score = score;
     score
@@ -1115,6 +1141,28 @@ mod tests {
         // Without the rarest-miss penalty the harness still wins.
         harness.rarest_miss = false;
         assert!(combine(&mut engine) < combine(&mut harness));
+    }
+
+    #[test]
+    fn a_name_match_outranks_an_equal_doc_only_match() {
+        // Same evidence, same coverage: `supervisorCommand` matched in its
+        // name, `runSupervisorCommand`'s rival matched only in prose.
+        let mut named = full_coverage(200);
+        named.coverage_numerator = 2;
+        named.coverage_denominator = 2;
+        named.name_terms = 2;
+        let mut doc_only = full_coverage(200);
+        doc_only.coverage_numerator = 2;
+        doc_only.coverage_denominator = 2;
+        let named_score = combine(&mut named);
+        assert!(named_score > combine(&mut doc_only));
+        // The prior scales with how much of the query the name covers.
+        let mut half = full_coverage(200);
+        half.coverage_numerator = 2;
+        half.coverage_denominator = 2;
+        half.name_terms = 1;
+        assert!(combine(&mut half) < named_score);
+        assert!(combine(&mut half) > combine(&mut doc_only));
     }
 
     #[test]
