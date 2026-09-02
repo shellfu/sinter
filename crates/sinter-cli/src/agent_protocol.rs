@@ -105,26 +105,20 @@ fn insert_warnings(value: &mut Value, warnings: Vec<String>) {
     }
 }
 
-/// Pull `budget_bytes`/`cursor` out of MCP arguments (so tool dispatch never
-/// sees them) and apply the MCP default.
-pub fn take_budget(args: &mut Value) -> Result<Budget> {
-    let object = args.as_object_mut();
-    let int = |object: &mut Option<&mut Map<String, Value>>, key: &str| -> Result<Option<u64>> {
-        match object.as_mut().and_then(|o| o.remove(key)) {
-            None => Ok(None),
-            Some(v) => v
-                .as_u64()
-                .map(Some)
-                .ok_or_else(|| anyhow::anyhow!("`{key}` must be a non-negative integer")),
-        }
-    };
-    let mut object = object;
-    let bytes = int(&mut object, "budget_bytes")?.unwrap_or(MCP_DEFAULT_BUDGET_BYTES as u64);
-    let cursor = int(&mut object, "cursor")?.unwrap_or(0);
-    Ok(Budget {
+/// Pull `budget_bytes` out of validated MCP arguments and apply the MCP
+/// default. `cursor` stays in the arguments: tools page from it (see
+/// `graph_tool::limit`) so a page is cut from the whole result, not from
+/// the first `limit` rows.
+pub fn take_budget(args: &mut Value) -> Budget {
+    let bytes = args
+        .as_object_mut()
+        .and_then(|object| object.remove("budget_bytes"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(MCP_DEFAULT_BUDGET_BYTES as u64);
+    Budget {
         bytes: (bytes > 0).then_some(bytes as usize),
-        cursor: cursor as usize,
-    })
+        cursor: args.get("cursor").and_then(Value::as_u64).unwrap_or(0) as usize,
+    }
 }
 
 /// Compact CLI JSON. Human-oriented rendering remains the non-JSON path.
@@ -160,10 +154,28 @@ const LEGEND: [(&str, &str); 11] = [
 /// summarize when structured content is present). Bounded to `budget`,
 /// measured on the whole tool result. `coverage.compiler_index` is slimmed
 /// here: per-project indexer detail stays on CLI `--json` and `doctor`.
-pub fn mcp_success(operation: &str, payload: &Value, budget: Budget) -> Result<Value> {
+/// `args` are the validated tool arguments: `include_coverage` and the
+/// traversal filters shape the envelope (`outcome.reason`).
+pub fn mcp_success(
+    operation: &str,
+    payload: &Value,
+    budget: Budget,
+    args: &Value,
+) -> Result<Value> {
     // Drained once here, not inside `envelope`: `fit` rebuilds the envelope
     // on every sizing pass.
     let warnings = take_warnings();
+    let mut data = payload.clone();
+    slim_compiler_index(&mut data);
+    // The verdict reads the full payload (coverage included) before the
+    // MCP trim removes what an agent did not ask for.
+    let verdict = outcome(operation, &data, args, &warnings);
+    slim_for_mcp(
+        &mut data,
+        args.get("include_coverage")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    );
     let envelope = |data: &Value| -> Result<Value> {
         let mut data = data.clone();
         if (budget.cursor == 0 || data.get("truncated").is_some_and(|t| t != false))
@@ -172,7 +184,7 @@ pub fn mcp_success(operation: &str, payload: &Value, budget: Budget) -> Result<V
             data["legend"] = json!(legend);
         }
         let summary = summary(operation, &data, &warnings);
-        let mut structured = success(operation, data);
+        let mut structured = success(operation, data, verdict.clone());
         insert_warnings(&mut structured, warnings.clone());
         // Mirrored under `outcome`: a client that reads only the verdict
         // must still see that the answer rests on a tie-break or a
@@ -184,12 +196,78 @@ pub fn mcp_success(operation: &str, payload: &Value, budget: Budget) -> Result<V
             "isError": false,
         }))
     };
-    let mut data = payload.clone();
-    slim_compiler_index(&mut data);
     fit(&mut data, budget, |data| {
         Ok(serde_json::to_string(&envelope(data)?)?.len())
     })?;
     envelope(&data)
+}
+
+/// Fields of the `symbol` echo an agent can act on. Doc, signature, span
+/// and snapshot id are what `show` is for; the echo only confirms which
+/// node answered and how to address it again.
+const SYMBOL_ECHO: [&str; 6] = ["symbol_key", "qualified", "kind", "file", "line", "member"];
+
+/// MCP-only byte trim applied to the CLI payload: the `symbol` echo keeps
+/// its addressing fields, a `site` that repeats the row's own file becomes
+/// `l`, and the coverage block is dropped unless asked for (or its
+/// `filters` when they are the defaults). Batched `results` get the same
+/// treatment per entry.
+fn slim_for_mcp(data: &mut Value, include_coverage: bool) {
+    let Some(map) = data.as_object_mut() else {
+        return;
+    };
+    if let Some(echo) = map.get_mut("symbol").and_then(Value::as_object_mut) {
+        echo.retain(|key, _| SYMBOL_ECHO.contains(&key.as_str()));
+    }
+    if !include_coverage {
+        map.remove("coverage");
+    } else if let Some(coverage) = map.get_mut("coverage").and_then(Value::as_object_mut)
+        && coverage.get("filters").is_some_and(default_filters)
+    {
+        coverage.remove("filters");
+    }
+    for value in map.values_mut() {
+        let Some(rows) = value.as_array_mut() else {
+            continue;
+        };
+        for row in rows.iter_mut().filter_map(Value::as_object_mut) {
+            if row.get("symbol").is_some_and(Value::is_object) || row.contains_key("error") {
+                // A batched entry is one answer: trim it like the root.
+                let mut entry = Value::Object(std::mem::take(row));
+                slim_for_mcp(&mut entry, include_coverage);
+                if let Value::Object(entry) = entry {
+                    *row = entry;
+                }
+                continue;
+            }
+            let (Some(file), Some(site)) = (
+                row.get("f").and_then(Value::as_str),
+                row.get("site").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            if site == file {
+                row.remove("site");
+            } else if let Some(line) = site
+                .strip_prefix(file)
+                .and_then(|rest| rest.strip_prefix(':'))
+                .and_then(|line| line.parse::<u64>().ok())
+            {
+                row.remove("site");
+                row.insert("l".to_string(), json!(line));
+            }
+        }
+    }
+}
+
+/// True when a `coverage.filters` block describes an unfiltered traversal
+/// at the MCP default scope: nothing an agent did not already know.
+fn default_filters(filters: &Value) -> bool {
+    filters["relations"]["mode"] == "all_dependencies"
+        && filters["evidence"]["mode"] == "all_available"
+        && filters["min_confidence"] == "any"
+        && filters["scope"]["values"]
+            == json!(crate::corpus::ScopeSelection::agent_default().labels())
 }
 
 /// Legend for the first terse row reachable from `data`, `None` when the
@@ -254,7 +332,12 @@ pub fn mcp_failure(subject: Option<&str>, structured: Value) -> Value {
         }
     } else {
         let shown = names.len().min(5);
-        text.push_str(&format!("; close names: {}", names[..shown].join(", ")));
+        let label = if structured["error"]["code"] == "no_match" {
+            "close names"
+        } else {
+            "candidates"
+        };
+        text.push_str(&format!("; {label}: {}", names[..shown].join(", ")));
         if names.len() > shown {
             text.push_str(&format!(" (+{} more)", names.len() - shown));
         }
@@ -367,9 +450,7 @@ pub(crate) fn slim_compiler_index(value: &mut Value) {
 /// envelope overhead is accounted for by iterating on the inner target.
 fn fit(data: &mut Value, budget: Budget, measure: impl Fn(&Value) -> Result<usize>) -> Result<()> {
     let Some(limit) = budget.bytes else {
-        if budget.cursor > 0 {
-            trim(data, budget.cursor, usize::MAX, usize::MAX, payload_len);
-        }
+        trim(data, budget.cursor, usize::MAX, usize::MAX, payload_len)?;
         return Ok(());
     };
     let original = data.clone();
@@ -382,7 +463,7 @@ fn fit(data: &mut Value, budget: Budget, measure: impl Fn(&Value) -> Result<usiz
             .copied()
             .find(|&c| !over(&text_capped(data, c)))
             .unwrap_or(TEXT_CEILINGS[2]);
-        let changed = trim(data, budget.cursor, ceiling, target, payload_len);
+        let changed = trim(data, budget.cursor, ceiling, target, payload_len)?;
         // Stamped only when the budget changed something, so an untouched
         // payload stays byte-identical between CLI and MCP.
         if changed {
@@ -399,7 +480,11 @@ fn fit(data: &mut Value, budget: Budget, measure: impl Fn(&Value) -> Result<usiz
             target / 2
         };
         if target < 32 {
-            bail!("budget of {limit} bytes is too small for a {actual}-byte minimal response");
+            // Nothing left to cut: the minimal response is the answer,
+            // flagged rather than refused, so a caller with a tight budget
+            // still learns the verdict and how to page for the rest.
+            data["budget_truncated"] = json!(true);
+            return Ok(());
         }
     }
 }
@@ -446,7 +531,9 @@ fn cap_text(value: &mut Value, ceiling: usize) -> bool {
 }
 
 /// JSON pointers of the lists a cursor pages through: every top-level array
-/// of objects, plus `ask`'s per-topic hits.
+/// of objects, `ask`'s per-topic hits, and the lists inside each batched
+/// `results` entry (a batch pages its rows, never its answers; `query`'s
+/// flat `results` pages as one list).
 fn list_pointers(data: &Value) -> Vec<String> {
     let Some(map) = data.as_object() else {
         return Vec::new();
@@ -459,6 +546,25 @@ fn list_pointers(data: &Value) -> Vec<String> {
                     out.push(format!("/topics/{i}/hits"));
                 }
             }
+        } else if key == "results" {
+            let nested: Vec<String> = v
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .flat_map(|(i, entry)| {
+                    list_pointers(entry)
+                        .into_iter()
+                        .map(move |inner| format!("/results/{i}{inner}"))
+                })
+                .collect();
+            if nested.is_empty() {
+                if v.as_array().is_some_and(|a| a.iter().any(Value::is_object)) {
+                    out.push("/results".to_string());
+                }
+            } else {
+                out.extend(nested);
+            }
         } else if v.as_array().is_some_and(|a| a.iter().any(Value::is_object)) {
             out.push(format!("/{key}"));
         }
@@ -466,30 +572,60 @@ fn list_pointers(data: &Value) -> Vec<String> {
     out
 }
 
+/// Rows the tool itself left out: an integer `truncated` (affected, deps,
+/// grep, ask) or a non-empty per-group object (show, impact).
+fn tool_truncated(data: &Value) -> bool {
+    match data.get("truncated") {
+        Some(Value::Number(n)) => n.as_u64().unwrap_or(0) > 0,
+        Some(Value::Object(groups)) => !groups.is_empty(),
+        _ => false,
+    }
+}
+
 /// Apply the cursor, cap text, collapse diagnostics if still over, then drop
 /// trailing entries (largest lists first) until `len(data) <= target`.
-/// Records `truncated`, `totals`, `next_cursor` when anything was omitted.
+/// Records `truncated`, `totals`, `next_cursor` when anything was omitted;
+/// `next_cursor` is present whenever rows remain beyond this page, whether
+/// the byte budget or the tool's own `limit` cut them.
 fn trim(
     data: &mut Value,
     cursor: usize,
     ceiling: usize,
     target: usize,
     len: fn(&Value) -> usize,
-) -> bool {
+) -> Result<bool> {
     let pointers = list_pointers(data);
+    let list_len = |data: &Value, p: &str| {
+        data.pointer(p)
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len)
+    };
+    // A verb with one list and a `total` reports the whole result's size;
+    // otherwise the list as delivered is the best count available.
+    let known_total = (pointers.len() == 1)
+        .then(|| data.get("total").and_then(Value::as_u64))
+        .flatten()
+        .map(|total| total as usize);
     let totals: Map<String, Value> = pointers
         .iter()
         .map(|p| {
             (
                 p.trim_start_matches('/').to_string(),
-                json!(
-                    data.pointer(p)
-                        .and_then(Value::as_array)
-                        .map_or(0, Vec::len)
-                ),
+                json!(known_total.unwrap_or_else(|| list_len(data, p))),
             )
         })
         .collect();
+    if cursor > 0 {
+        let longest = pointers
+            .iter()
+            .map(|p| list_len(data, p))
+            .max()
+            .unwrap_or(0);
+        let end = known_total.unwrap_or(longest);
+        if cursor >= end {
+            bail!("`cursor` must be below {end} (rows available); got {cursor}");
+        }
+    }
     for p in &pointers {
         if let Some(list) = data.pointer_mut(p).and_then(Value::as_array_mut) {
             list.drain(..cursor.min(list.len()));
@@ -501,11 +637,7 @@ fn trim(
     }
     let mut dropped = 0usize;
     while len(data) > target {
-        let longest = pointers.iter().max_by_key(|p| {
-            data.pointer(p)
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len)
-        });
+        let longest = pointers.iter().max_by_key(|p| list_len(data, p));
         let Some(list) = longest
             .and_then(|p| data.pointer_mut(p))
             .and_then(Value::as_array_mut)
@@ -517,37 +649,42 @@ fn trim(
         }
         dropped += 1;
     }
-    if dropped == 0 && cursor == 0 {
-        return changed;
-    }
     let kept = pointers
         .iter()
-        .map(|p| {
-            data.pointer(p)
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len)
-        })
+        .map(|p| list_len(data, p))
         .max()
         .unwrap_or(0);
+    let remaining = dropped > 0
+        || tool_truncated(data)
+        || totals
+            .values()
+            .filter_map(Value::as_u64)
+            .any(|total| total as usize > cursor + kept);
     // ponytail: one offset shared by every list in the payload; per-list
     // cursors if a multi-list verb (show) ever needs independent paging.
     let Some(map) = data.as_object_mut() else {
-        return changed;
+        return Ok(changed);
     };
     if dropped > 0 {
-        // `ask`/`impact` already carry an integer `truncated`; leave its
-        // type alone and flag the budget cut beside it.
-        match map.get("truncated") {
-            Some(Value::Number(_)) => map.insert("budget_truncated".into(), json!(true)),
-            _ => map.insert("truncated".into(), json!(true)),
-        };
+        // `ask`/`impact`/`show` already carry their own `truncated`; leave
+        // it alone and flag the budget cut beside it.
+        if map.contains_key("truncated") {
+            map.insert("budget_truncated".into(), json!(true));
+        } else {
+            map.insert("truncated".into(), json!(true));
+        }
+    }
+    if remaining {
         map.insert("next_cursor".into(), json!(cursor + kept));
     }
-    // A verb that already reports totals (impact) counted before its own
-    // `--limit` cut; the byte budget must not overwrite those with the
-    // post-cut list lengths.
+    if dropped == 0 && cursor == 0 {
+        // Untouched page: only the resume point is added, so a payload the
+        // budget never cut stays the CLI document plus `next_cursor`.
+        return Ok(changed);
+    }
+    // A tool that reports its own `totals` (show, impact) is authoritative.
     map.entry("totals").or_insert(Value::Object(totals));
-    true
+    Ok(true)
 }
 
 /// Reduce coverage/diagnostic envelopes to their status, here and inside
@@ -648,117 +785,100 @@ pub fn failure(operation: &str, error: &anyhow::Error) -> Value {
     failure
 }
 
-/// Reject keys outside the advertised closed input schema. This is kept
-/// beside the schema contract so transport declarations and runtime
-/// enforcement cannot drift independently.
-/// Every argument one tool accepts in one server scope, or `None` when the
-/// scope does not serve that tool.
-///
-/// This list and the tool's `inputSchema` in `tool_catalog` are one contract
-/// maintained in two places: an advertised argument that is rejected here
-/// leaves an agent no way to discover the truth except by failing.
-/// `catalog_and_validator_accept_the_same_arguments` holds them together.
-/// `budget_bytes` and `cursor` are injected into every schema by
-/// `complete_tool_schemas` and accepted below, so they appear in neither list.
-fn allowed_arguments(operation: &str, workspace: bool) -> Option<&'static [&'static str]> {
-    Some(match (workspace, operation) {
-        (_, "ask") => &["question", "limit", "scope", "explain"],
-        (_, "context") => &["task"],
-        (false, "show") => &[
-            "symbol",
-            "limit",
-            "relations",
-            "scope",
-            "if_snapshot",
-            "body",
-            "context_lines",
-        ],
-        (true, "show") => &["symbol", "limit", "relations", "scope", "if_snapshot"],
-        (false, "grep") => &[
-            "pattern",
-            "within",
-            "max_depth",
-            "limit",
-            "evidence",
-            "min_confidence",
-            "relations",
-            "scope",
-        ],
-        (false, "query") => &["symbol", "limit", "scope", "if_snapshot"],
-        (true, "query") => &["symbol", "scope", "if_snapshot"],
-        (false, "affected") => &[
-            "symbol",
-            "symbols",
-            "max_depth",
-            "limit",
-            "detail",
-            "evidence",
-            "min_confidence",
-            "relations",
-            "scope",
-            "if_snapshot",
-        ],
-        (true, "affected") => &[
-            "symbol",
-            "max_depth",
-            "limit",
-            "detail",
-            "evidence",
-            "min_confidence",
-            "relations",
-            "scope",
-            "if_snapshot",
-        ],
-        (_, "deps") => &[
-            "symbol",
-            "max_depth",
-            "limit",
-            "evidence",
-            "min_confidence",
-            "relations",
-            "scope",
-            "if_snapshot",
-        ],
-        (_, "path") => &[
-            "from",
-            "to",
-            "evidence",
-            "min_confidence",
-            "relations",
-            "scope",
-            "if_snapshot",
-        ],
-        (false, "unresolved") => &["file", "name", "limit"],
-        (true, "unresolved") => &["member", "file", "name", "limit"],
-        (false, "impact") => &["rev_range", "limit", "expect"],
-        (true, "impact") => &["member", "rev_range", "limit"],
-        (false, "overlap") => &["ranges"],
-        (false, "map") => &["scope"],
-        _ => return None,
-    })
+/// [`failure`] for MCP: lookup candidates become the `Name@file[:line]`
+/// selectors an agent pastes straight back as `symbol`. CLI `--json`
+/// keeps the full node objects (`snapshot_id` is a CLI relocation flow).
+pub fn mcp_failure_document(operation: &str, error: &anyhow::Error) -> Value {
+    let mut document = failure(operation, error);
+    if let Some(lookup) = error.downcast_ref::<crate::lookup::SymbolLookupError>() {
+        document["error"]["candidates"] =
+            json!(crate::lookup::candidate_selectors(lookup.candidates()));
+    }
+    document
 }
 
+/// Enforce the advertised `inputSchema` at runtime: closed key set,
+/// required keys, and the `type`/`minimum`/`enum`/`items` of every
+/// property. The schema in `tool_catalog` is the one contract; an argument
+/// that is advertised but silently ignored (or accepted with the wrong
+/// type) leaves an agent no way to learn the truth except by failing.
+/// `null` counts as absent, matching how tools read optional arguments.
 pub fn validate_arguments(operation: &str, args: &Value, workspace: bool) -> Result<()> {
     let Some(object) = args.as_object() else {
         bail!("arguments for `{operation}` must be a JSON object");
     };
-    let Some(allowed) = allowed_arguments(operation, workspace) else {
+    let Some(schema) = crate::tool_catalog::input_schema(operation, workspace) else {
         bail!("unknown tool `{operation}` for this server scope");
     };
-    if let Some(key) = object.keys().find(|key| {
-        !allowed.contains(&key.as_str()) && !matches!(key.as_str(), "budget_bytes" | "cursor")
-    }) {
-        bail!("unknown argument `{key}` for `{operation}`");
+    let properties = schema["properties"].as_object();
+    for (key, value) in object {
+        let Some(property) = properties.and_then(|p| p.get(key)) else {
+            bail!("unknown argument `{key}` for `{operation}`");
+        };
+        if !value.is_null() {
+            check_type(key, value, property)?;
+        }
+    }
+    for required in schema["required"].as_array().into_iter().flatten() {
+        let key = required.as_str().unwrap_or("");
+        if object.get(key).is_none_or(Value::is_null) {
+            bail!("missing required parameter `{key}` for `{operation}`");
+        }
     }
     Ok(())
 }
 
-/// Close every input schema and attach an operation-specific output schema.
+fn check_type(key: &str, value: &Value, schema: &Value) -> Result<()> {
+    let expected = schema["type"].as_str().unwrap_or("any");
+    let actual = match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(n) if n.is_i64() || n.is_u64() => "integer",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    };
+    if expected != "any" && expected != actual {
+        bail!(
+            "`{key}` must be {} {expected} (got {actual}: {value})",
+            article(expected)
+        );
+    }
+    if let Some(minimum) = schema["minimum"].as_i64()
+        && value.as_i64().is_some_and(|n| n < minimum)
+    {
+        bail!("`{key}` must be an integer >= {minimum} (got {value})");
+    }
+    if let Some(options) = schema["enum"].as_array()
+        && !options.contains(value)
+    {
+        let names: Vec<&str> = options.iter().filter_map(Value::as_str).collect();
+        bail!("`{key}` must be one of {} (got {value})", names.join(", "));
+    }
+    if let Some(items) = value.as_array()
+        && schema.get("items").is_some()
+    {
+        for (index, item) in items.iter().enumerate() {
+            check_type(&format!("{key}[{index}]"), item, &schema["items"])?;
+        }
+    }
+    Ok(())
+}
+
+fn article(noun: &str) -> &'static str {
+    if noun.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "an"
+    } else {
+        "a"
+    }
+}
+
+/// Close every input schema and inject the two envelope-level arguments.
+/// No `outputSchema`: clients validate against it, agents never read it,
+/// and `structuredContent` is documented by the guide resource.
 pub fn complete_tool_schemas(list: &mut Value) {
     for tool in list["tools"].as_array_mut().into_iter().flatten() {
-        let Some(name) = tool["name"].as_str().map(str::to_owned) else {
-            continue;
-        };
         if let Some(input) = tool.get_mut("inputSchema").and_then(Value::as_object_mut) {
             input.insert("additionalProperties".to_string(), Value::Bool(false));
             if let Some(props) = input.get_mut("properties").and_then(Value::as_object_mut) {
@@ -776,26 +896,80 @@ pub fn complete_tool_schemas(list: &mut Value) {
                         "description": "resume lists at prior next_cursor",
                     }),
                 );
+                props.insert(
+                    "include_coverage".to_string(),
+                    json!({
+                        "type": "boolean", "default": false,
+                        "description": "keep the coverage block (universe, gaps, index)",
+                    }),
+                );
             }
         }
-        tool["outputSchema"] = output_schema(&name);
         tool["annotations"] = json!({"readOnlyHint": true});
     }
 }
 
-fn success(operation: &str, data: Value) -> Value {
-    let partial = is_partial(&data);
-    let found = is_found(operation, &data);
-    let not_proven = is_not_proven(&data);
+fn success(operation: &str, data: Value, outcome: Value) -> Value {
     json!({
         "protocol": VERSION,
         "operation": operation,
-        "outcome": {
-            "status": if not_proven { "not_proven" } else if !found { "not_found" } else if partial { "partial" } else { "complete" },
-            "partial": partial,
-        },
+        "outcome": outcome,
         "data": data,
     })
+}
+
+/// The one verdict an agent reads: `status` folds the payload's own
+/// `status`/`outcome`/`decision` fields plus coverage into
+/// `complete|partial|not_found|not_proven`, and `reason` names why an
+/// answer is less than complete when the payload can tell.
+fn outcome(operation: &str, data: &Value, args: &Value, warnings: &[String]) -> Value {
+    let partial = is_partial(data);
+    let found = is_found(operation, data);
+    let not_proven = is_not_proven(data);
+    let abstain = data.get("outcome") == Some(&json!("abstain"))
+        || data.get("decision") == Some(&json!("abstain"));
+    let truncated = tool_truncated(data);
+    let status = if not_proven {
+        "not_proven"
+    } else if !found {
+        "not_found"
+    } else if partial || abstain || truncated {
+        "partial"
+    } else {
+        "complete"
+    };
+    let filtered = args.get("max_depth").and_then(Value::as_u64) == Some(0)
+        || ["min_confidence", "evidence", "relations", "scope"]
+            .iter()
+            .any(|key| args.get(*key).is_some_and(|v| !v.is_null()))
+        || data
+            .pointer("/miss/excluded_by_filter")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            > 0;
+    let no_scip = data.get("scip_evidence_available") == Some(&json!(false))
+        || data
+            .pointer("/coverage/compiler_index/state")
+            .and_then(Value::as_str)
+            == Some("missing");
+    let reason = if not_proven && filtered {
+        Some("filter_excluded")
+    } else if not_proven && no_scip {
+        Some("no_scip")
+    } else if abstain {
+        Some("abstain")
+    } else if warnings.iter().any(|w| w.contains(" ignored (")) {
+        Some("tie_break")
+    } else if truncated {
+        Some("limit_reached")
+    } else {
+        None
+    };
+    let mut outcome = json!({"status": status, "partial": status != "complete"});
+    if let Some(reason) = reason {
+        outcome["reason"] = json!(reason);
+    }
+    outcome
 }
 
 fn is_not_proven(data: &Value) -> bool {
@@ -817,6 +991,13 @@ fn is_not_proven(data: &Value) -> bool {
 }
 
 fn is_found(operation: &str, data: &Value) -> bool {
+    // A batch is found when any entry is: each entry carries its own
+    // `status`, so the caller can still tell the misses apart.
+    if let Some(results) = data.get("results").and_then(Value::as_array)
+        && results.iter().all(|r| r.get("status").is_some())
+    {
+        return results.iter().any(|r| r["status"] == "found");
+    }
     match operation {
         "ask" => data.get("returned").and_then(Value::as_u64).unwrap_or(0) > 0,
         "query" => data
@@ -863,14 +1044,6 @@ fn is_partial(data: &Value) -> bool {
             .is_some_and(|results| results.iter().any(|result| result.get("error").is_some()))
 }
 
-/// Envelope-only output schema: clients validate `structuredContent`
-/// against it, agents never read it, and per-operation data shapes cost
-/// ~9 KB of every tools/list. `data` is documented by the CLI `--json`
-/// contract and the guide resource.
-fn output_schema(_operation: &str) -> Value {
-    json!({"type": "object", "required": ["protocol", "operation", "outcome", "data"]})
-}
-
 #[cfg(test)]
 mod tests {
     use anyhow::anyhow;
@@ -878,26 +1051,26 @@ mod tests {
 
     use crate::lookup::SymbolLookupError;
 
+    use serde_json::Value;
+
     use super::{Budget, VERSION, complete_tool_schemas, failure, validate_arguments};
+
+    fn all_args() -> serde_json::Value {
+        json!({"include_coverage": true})
+    }
 
     fn mcp_success(
         operation: &str,
         payload: &serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
-        super::mcp_success(operation, payload, Budget::default())
+        super::mcp_success(operation, payload, Budget::default(), &json!({}))
     }
 
-    /// The catalog and the validator are one contract in two places. Every
-    /// advertised argument must validate, and nothing may validate that is
-    /// not advertised — an accepted argument no schema mentions is a knob an
-    /// agent can only find by accident, and is usually one nothing reads.
-    ///
-    /// `budget_bytes` and `cursor` are injected into every schema rather than
-    /// declared, so they are excluded from the comparison; both are asserted
-    /// separately below.
+    /// Every advertised argument validates in the type the schema names,
+    /// and a wrong type is a named rejection rather than a silent default.
     #[test]
-    fn catalog_and_validator_accept_the_same_arguments() {
-        let injected = ["budget_bytes", "cursor"];
+    fn arguments_are_checked_against_the_advertised_schema() {
+        let injected = ["budget_bytes", "cursor", "include_coverage"];
         for (workspace, catalog) in [
             (false, crate::tool_catalog::repository()),
             (true, crate::tool_catalog::workspace()),
@@ -905,42 +1078,44 @@ mod tests {
             let scope = if workspace { "workspace" } else { "repository" };
             for tool in catalog["tools"].as_array().unwrap() {
                 let name = tool["name"].as_str().unwrap();
-                let advertised: std::collections::BTreeSet<&str> =
-                    tool["inputSchema"]["properties"]
-                        .as_object()
-                        .unwrap()
-                        .keys()
-                        .map(String::as_str)
-                        .filter(|key| !injected.contains(key))
-                        .collect();
-                let accepted: std::collections::BTreeSet<&str> =
-                    super::allowed_arguments(name, workspace)
-                        .unwrap_or_else(|| {
-                            panic!("{scope} advertises `{name}`, validator rejects it")
-                        })
-                        .iter()
-                        .copied()
-                        .collect();
-                assert_eq!(
-                    advertised,
-                    accepted,
-                    "{scope} `{name}`: advertised-only {:?}, accepted-only {:?}",
-                    advertised.difference(&accepted).collect::<Vec<_>>(),
-                    accepted.difference(&advertised).collect::<Vec<_>>(),
-                );
-                // The set equality above is structural; this is the behaviour
-                // an agent actually hits when it sends what it was told to.
-                for key in &advertised {
-                    validate_arguments(name, &json!({*key: serde_json::Value::Null}), workspace)
-                        .unwrap_or_else(|error| {
-                            panic!("{scope} `{name}` advertises `{key}` but rejects it: {error}")
-                        });
-                }
+                let properties = tool["inputSchema"]["properties"].as_object().unwrap();
                 for key in injected {
-                    validate_arguments(name, &json!({key: serde_json::Value::Null}), workspace)
-                        .unwrap_or_else(|error| {
-                            panic!("{scope} `{name}` rejects `{key}`: {error}")
-                        });
+                    assert!(
+                        properties.contains_key(key),
+                        "{scope} `{name}` lacks `{key}`"
+                    );
+                }
+                let sample = |key: &str| match properties[key]["type"].as_str().unwrap() {
+                    "string" => properties[key]["enum"][0]
+                        .as_str()
+                        .map_or(json!("x"), Value::from),
+                    "integer" => json!(1),
+                    "boolean" => json!(true),
+                    "array" => json!([]),
+                    other => panic!("{scope} `{name}.{key}`: unexpected type {other}"),
+                };
+                let mut required = json!({});
+                for key in tool["inputSchema"]["required"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
+                    let key = key.as_str().unwrap();
+                    required[key] = sample(key);
+                }
+                for key in properties.keys() {
+                    let mut args = required.clone();
+                    args[key] = sample(key);
+                    validate_arguments(name, &args, workspace).unwrap_or_else(|error| {
+                        panic!("{scope} `{name}` advertises `{key}` but rejects it: {error}")
+                    });
+                    let mut wrong = required.clone();
+                    wrong[key] = json!({"not": "expected"});
+                    let error = validate_arguments(name, &wrong, workspace).unwrap_err();
+                    assert!(
+                        error.to_string().contains(&format!("`{key}` must be")),
+                        "{scope} `{name}.{key}`: {error}"
+                    );
                 }
                 assert!(
                     validate_arguments(name, &json!({"not_a_real_argument": 1}), workspace)
@@ -949,6 +1124,52 @@ mod tests {
                 );
             }
         }
+        let reject = |args: serde_json::Value| {
+            validate_arguments("affected", &args, false)
+                .unwrap_err()
+                .to_string()
+        };
+        assert!(
+            reject(json!({"symbol": "x", "max_depth": "two"}))
+                .contains("`max_depth` must be an integer")
+        );
+        assert!(
+            reject(json!({"symbol": "x", "max_depth": -1}))
+                .contains("`max_depth` must be an integer >= 0")
+        );
+        assert!(
+            reject(json!({"symbol": "x", "relations": "calls"}))
+                .contains("`relations` must be an array")
+        );
+        assert!(
+            reject(json!({"symbol": "x", "relations": ["phones"]}))
+                .contains("`relations[0]` must be one of")
+        );
+        assert!(
+            reject(json!({"symbol": "x", "scope": ["everything"]}))
+                .contains("`scope[0]` must be one of")
+        );
+        assert!(
+            reject(json!({"symbol": "x", "min_confidence": "sure"}))
+                .contains("`min_confidence` must be one of")
+        );
+        assert!(
+            reject(json!({"symbol": "x", "cursor": -5}))
+                .contains("`cursor` must be an integer >= 0")
+        );
+        validate_arguments(
+            "affected",
+            &json!({"symbol": "x", "max_depth": 0, "relations": ["calls"]}),
+            false,
+        )
+        .unwrap();
+        // Required keys are checked here, not by the tool.
+        assert!(
+            validate_arguments("query", &json!({}), false)
+                .unwrap_err()
+                .to_string()
+                .contains("missing required parameter `symbol`")
+        );
     }
 
     #[test]
@@ -961,12 +1182,22 @@ mod tests {
             json!(["2 other `Foo` ignored", "resolution degraded"])
         );
         super::warn("only once");
-        let first =
-            super::mcp_success("query", &json!({"results": []}), Budget::default()).unwrap();
+        let first = super::mcp_success(
+            "query",
+            &json!({"results": []}),
+            Budget::default(),
+            &json!({}),
+        )
+        .unwrap();
         assert_eq!(first["structuredContent"]["warnings"], json!(["only once"]));
         // Drained, so the next envelope of the same process is clean.
-        let second =
-            super::mcp_success("query", &json!({"results": []}), Budget::default()).unwrap();
+        let second = super::mcp_success(
+            "query",
+            &json!({"results": []}),
+            Budget::default(),
+            &json!({}),
+        )
+        .unwrap();
         assert!(second["structuredContent"].get("warnings").is_none());
     }
 
@@ -978,6 +1209,7 @@ mod tests {
             "show",
             &json!({"symbol": "to_json", "incoming": [{"s": "x", "f": "a.rs"}]}),
             Budget::default(),
+            &json!({}),
         )
         .unwrap();
         assert_eq!(
@@ -989,7 +1221,13 @@ mod tests {
         assert_eq!(outcome["status"], "complete");
         assert_eq!(outcome["warnings"].as_array().unwrap().len(), 1);
         assert_eq!(result["structuredContent"]["warnings"], outcome["warnings"]);
-        let clean = super::mcp_success("show", &json!({"symbol": "x"}), Budget::default()).unwrap();
+        let clean = super::mcp_success(
+            "show",
+            &json!({"symbol": "x"}),
+            Budget::default(),
+            &json!({}),
+        )
+        .unwrap();
         assert!(
             clean["structuredContent"]["outcome"]
                 .get("warnings")
@@ -1080,7 +1318,8 @@ mod tests {
                 ]
             }}
         });
-        let first = mcp_success("affected", &payload).unwrap();
+        let first =
+            super::mcp_success("affected", &payload, Budget::default(), &all_args()).unwrap();
         let data = &first["structuredContent"]["data"];
         assert_eq!(
             data["legend"],
@@ -1101,6 +1340,7 @@ mod tests {
                 bytes: None,
                 cursor: 1,
             },
+            &json!({}),
         )
         .unwrap();
         assert!(paged["structuredContent"]["data"].get("legend").is_none());
@@ -1182,6 +1422,7 @@ mod tests {
                 bytes: Some(600),
                 cursor: 0,
             },
+            &json!({}),
         )
         .unwrap();
         let data = &result["structuredContent"]["data"];
@@ -1239,6 +1480,111 @@ mod tests {
         assert_eq!(result["structuredContent"]["data"]["total"], 0);
     }
 
+    fn rows(n: usize) -> Vec<serde_json::Value> {
+        (0..n)
+            .map(|i| json!({"s": format!("dep{i}"), "k": "fn", "f": "a.rs", "site": "a.rs:7"}))
+            .collect()
+    }
+
+    #[test]
+    fn next_cursor_pages_over_the_whole_result_and_rejects_a_cursor_past_it() {
+        // The tool cut at its own limit: no budget cut, still a resume point.
+        let cut_by_tool = json!({"total": 60, "truncated": 10, "dependents": rows(50)});
+        let first = mcp_success("affected", &cut_by_tool).unwrap();
+        let data = &first["structuredContent"]["data"];
+        assert_eq!(data["next_cursor"], 50, "{data}");
+        assert!(
+            data.get("totals").is_none(),
+            "untouched page keeps the CLI shape: {data}"
+        );
+        assert_eq!(
+            first["structuredContent"]["outcome"]["reason"],
+            "limit_reached"
+        );
+        // Sites in the row's own file collapse to a line.
+        assert_eq!(data["dependents"][0]["l"], 7);
+        assert!(data["dependents"][0].get("site").is_none());
+
+        // Last page: the tool delivered rows 50..60, nothing remains.
+        let last = super::mcp_success(
+            "affected",
+            &json!({"total": 60, "dependents": rows(60)}),
+            Budget {
+                bytes: None,
+                cursor: 50,
+            },
+            &json!({}),
+        )
+        .unwrap();
+        let data = &last["structuredContent"]["data"];
+        assert_eq!(data["dependents"].as_array().unwrap().len(), 10);
+        assert!(data.get("next_cursor").is_none(), "{data}");
+        assert_eq!(data["totals"]["dependents"], 60);
+
+        let past = super::mcp_success(
+            "affected",
+            &json!({"total": 60, "dependents": rows(60)}),
+            Budget {
+                bytes: None,
+                cursor: 60,
+            },
+            &json!({}),
+        )
+        .unwrap_err();
+        assert!(
+            past.to_string().contains("`cursor` must be below 60"),
+            "{past}"
+        );
+    }
+
+    #[test]
+    fn a_budget_below_the_minimal_answer_flags_instead_of_failing() {
+        let result = super::mcp_success(
+            "affected",
+            &json!({"symbol": "x", "total": 60, "dependents": rows(60)}),
+            Budget {
+                bytes: Some(100),
+                cursor: 0,
+            },
+            &json!({}),
+        )
+        .unwrap();
+        let data = &result["structuredContent"]["data"];
+        assert_eq!(data["budget_truncated"], true, "{data}");
+        assert_eq!(data["total"], 60);
+        assert_eq!(data["next_cursor"], 0, "{data}");
+    }
+
+    #[test]
+    fn a_batch_pages_its_rows_and_never_drops_an_answer() {
+        let payload = json!({"status": "partial", "results": [
+            {"symbol": {"symbol_key": "k", "doc": "long"}, "status": "found", "total": 40,
+             "dependents": rows(40)},
+            {"symbol": "Zz", "status": "not_found", "error": {"code": "no_match", "candidates": []}},
+        ]});
+        let result = super::mcp_success(
+            "affected",
+            &payload,
+            Budget {
+                bytes: Some(1200),
+                cursor: 0,
+            },
+            &json!({}),
+        )
+        .unwrap();
+        let data = &result["structuredContent"]["data"];
+        let results = data["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2, "{data}");
+        assert_eq!(results[1]["error"]["code"], "no_match");
+        assert!(
+            results[0]["dependents"].as_array().unwrap().len() < 40,
+            "{data}"
+        );
+        assert!(results[0]["symbol"].get("doc").is_none(), "{data}");
+        assert_eq!(data["totals"]["results/0/dependents"], 40, "{data}");
+        assert!(data["next_cursor"].is_u64(), "{data}");
+    }
+
     #[test]
     fn budget_collapse_keeps_the_searched_universe_and_claim_qualifiers() {
         let mut data = json!({
@@ -1265,7 +1611,7 @@ mod tests {
     }
 
     #[test]
-    fn schemas_are_closed_and_have_versioned_outputs() {
+    fn schemas_are_closed_and_carry_no_output_schema() {
         let mut list = json!({"tools": [{
             "name": "query",
             "inputSchema": {"type": "object", "properties": {"symbol": {"type": "string"}}}
@@ -1273,8 +1619,11 @@ mod tests {
         complete_tool_schemas(&mut list);
         let tool = &list["tools"][0];
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
-        assert_eq!(tool["outputSchema"]["required"][0], "protocol");
-        assert_eq!(tool["outputSchema"]["required"][3], "data");
+        assert!(tool.get("outputSchema").is_none());
+        assert_eq!(
+            tool["inputSchema"]["properties"]["include_coverage"]["default"],
+            false
+        );
     }
 
     #[test]

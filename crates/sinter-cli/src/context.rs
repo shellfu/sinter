@@ -768,7 +768,9 @@ pub(crate) fn response(repo: &Path, store: &Store, task: &str) -> Result<Value> 
     // An anchor or a real candidate list is an answer whatever `ask`'s
     // calibration says about its own top hit.
     let ranked = grounded || hits.len() >= MIN_LEXICAL_HITS || (!abstain && !focus.is_empty());
-    let mut next_actions: Vec<String> = Vec::new();
+    // Each action is the MCP call (`tool`, `args`) plus its CLI rendering
+    // (`cli`); `tool_calls` / `cli_actions` keep one side each.
+    let mut next_actions: Vec<Value> = Vec::new();
     if !ranked {
         let terms = ask["topics"]
             .as_array()
@@ -780,17 +782,36 @@ pub(crate) fn response(repo: &Path, store: &Store, task: &str) -> Result<Value> 
             .take(GREP_TERMS)
             .collect::<Vec<_>>()
             .join("|");
-        next_actions.push(format!("sinter grep '{terms}'"));
-        next_actions.push("sinter map".to_string());
-        next_actions.push("sinter ask \"<one concrete term from the task>\"".to_string());
+        next_actions.push(json!({
+            "tool": "grep",
+            "args": {"pattern": terms},
+            "cli": format!("sinter grep '{terms}'"),
+        }));
+        next_actions.push(json!({"tool": "map", "args": {}, "cli": "sinter map"}));
+        next_actions.push(json!({
+            "tool": "ask",
+            "args": {"question": "<one concrete term from the task>"},
+            "cli": "sinter ask \"<one concrete term from the task>\"",
+        }));
     }
     for node in &focus {
         let handle = handle_of(node);
-        next_actions.push(format!("sinter show {handle}"));
-        next_actions.push(format!("sinter affected {handle} --max-depth 3"));
+        next_actions.push(json!({
+            "tool": "show",
+            "args": {"symbol": handle},
+            "cli": format!("sinter show {handle}"),
+        }));
+        next_actions.push(json!({
+            "tool": "affected",
+            "args": {"symbol": handle, "max_depth": 3},
+            "cli": format!("sinter affected {handle} --max-depth 3"),
+        }));
     }
-    next_actions
-        .push("sinter impact  # after editing: changed symbols, blast radius, tests".to_string());
+    next_actions.push(json!({
+        "tool": "impact",
+        "args": {"rev_range": "HEAD"},
+        "cli": "sinter impact  # after editing: changed symbols, blast radius, tests",
+    }));
 
     Ok(json!({
         "task": task,
@@ -828,10 +849,31 @@ pub(crate) fn response(repo: &Path, store: &Store, task: &str) -> Result<Value> 
     }))
 }
 
+/// Keep only the MCP half of every `next_actions` entry: `{tool, args}`
+/// objects a client sends straight back. CLI-only fallbacks are dropped.
+pub(crate) fn tool_calls(packet: &mut Value) {
+    if let Some(actions) = packet["next_actions"].as_array_mut() {
+        actions.retain(|action| action.get("tool").is_some());
+        for action in actions {
+            action.as_object_mut().map(|a| a.remove("cli"));
+        }
+    }
+}
+
+/// Keep only the CLI rendering of every `next_actions` entry.
+pub(crate) fn cli_actions(packet: &mut Value) {
+    if let Some(actions) = packet["next_actions"].as_array_mut() {
+        for action in actions {
+            *action = action["cli"].clone();
+        }
+    }
+}
+
 /// Ok(true) when the packet has a ranked edit target (grep-style exit codes).
 pub fn run(repo: &Path, task: &str, json: bool) -> Result<bool> {
     let store = open_store(repo)?;
-    let packet = response(repo, &store, task)?;
+    let mut packet = response(repo, &store, task)?;
+    cli_actions(&mut packet);
     let ranked = packet["outcome"] == "ranked";
     if json {
         crate::agent_protocol::write_json(&packet)?;

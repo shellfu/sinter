@@ -20,7 +20,11 @@ use crate::lookup::{
 
 pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
     if name == "impact" {
-        let limit = limit(args, crate::impact::DEFAULT_LIMIT);
+        // `impact` pages per collection itself and treats 0 as "all".
+        let limit = args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(crate::impact::DEFAULT_LIMIT as u64) as usize;
         let report = crate::impact::compute_current_with_expect(
             repo,
             &required_string(args, "rev_range")?,
@@ -79,39 +83,13 @@ pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
             };
             let selection = crate::corpus::ScopeSelection::from_json(
                 args,
-                crate::corpus::ScopeSelection::all(),
+                crate::corpus::ScopeSelection::agent_default(),
             )?;
             if !selection.is_all() {
                 filter.scopes = Some(selection.as_set());
             }
-            let node = unique_symbol_in(
-                store,
-                &required_string(args, "symbol")?,
-                filter.scopes.as_ref(),
-            )?;
-            let scopes = store.scope_index()?;
-            let limit = limit(args, crate::show::DEFAULT_LIMIT);
-            let mut out = crate::show::edges_json(repo, store, &node, &filter, limit)?;
-            out["symbol"] = scoped_node_json(&node, &scopes);
-            if args.get("body").and_then(Value::as_bool).unwrap_or(false) {
-                let lines = args
-                    .get("context_lines")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(crate::show::DEFAULT_BODY_LINES as u64)
-                    as usize;
-                // Same producer as CLI `--body`, so the excerpt is the same
-                // bytes; absent (unreadable file) it stays absent, not empty.
-                if let Some(body) = crate::show::excerpt_lines(
-                    repo,
-                    &node.file,
-                    node.span.start,
-                    node.span.end,
-                    lines,
-                ) {
-                    crate::show::excerpt_json(&mut out, &body);
-                }
-            }
-            Ok(out)
+            let one = |symbol: &str| show_one(repo, store, args, &filter, symbol);
+            batch_or_one(args, "symbols", "symbol", one)
         }
         "query" => {
             let limit = limit(args, 10);
@@ -134,7 +112,12 @@ pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
                 "results": nodes.iter().take(limit).map(|node| scoped_node_json(node, &scopes)).collect::<Vec<_>>(),
             }))
         }
-        "context" => crate::context::response(repo, store, &required_string(args, "task")?),
+        "context" => {
+            let mut packet =
+                crate::context::response(repo, store, &required_string(args, "task")?)?;
+            crate::context::tool_calls(&mut packet);
+            Ok(packet)
+        }
         "grep" => {
             let within = strings(args, "within");
             if within.is_empty() {
@@ -153,18 +136,46 @@ pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
             )
         }
         "affected" => affected(repo, store, args),
-        "deps" => dependencies(repo, store, args),
-        "path" => path(repo, store, args),
+        "deps" => {
+            let filter = traversal_filter(args)?;
+            let one = |symbol: &str| dependencies(repo, store, args, &filter, symbol);
+            batch_or_one(args, "symbols", "symbol", one)
+        }
+        "path" => {
+            let filter = traversal_filter(args)?;
+            if let Some(pairs) = args.get("pairs").and_then(Value::as_array) {
+                let one = |pair: &Value| {
+                    let ends: Vec<&str> = pair
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .collect();
+                    let [from, to] = ends[..] else {
+                        anyhow::bail!("`pairs` entries must be [from, to] string pairs");
+                    };
+                    path(repo, store, &filter, from, to)
+                };
+                Ok(batch(pairs, "pair", one))
+            } else {
+                path(
+                    repo,
+                    store,
+                    &filter,
+                    &required_string(args, "from")?,
+                    &required_string(args, "to")?,
+                )
+            }
+        }
         other => anyhow::bail!("unknown tool {other}"),
     }?;
     if let Some(snapshot) = snapshot {
-        // A batched `affected` response is a collection of independently
-        // actionable results, so each item carries the snapshot it was
-        // computed from. Query results are ordinary members of one semantic
-        // response: their shared snapshot belongs only at the response root,
-        // matching the CLI JSON contract without redundant per-node metadata.
-        if name == "affected"
-            && args.get("symbols").is_some()
+        // A batched response is a collection of independently actionable
+        // results, so each item carries the snapshot it was computed from.
+        // Query results are ordinary members of one semantic response:
+        // their shared snapshot belongs only at the response root, matching
+        // the CLI JSON contract without redundant per-node metadata.
+        if name != "query"
             && let Some(results) = result.get_mut("results").and_then(Value::as_array_mut)
         {
             for item in results {
@@ -174,6 +185,88 @@ pub(crate) fn call(repo: &Path, name: &str, args: &Value) -> Result<Value> {
         result["snapshot"] = json!(snapshot);
     }
     Ok(result)
+}
+
+/// One `show` card: edges after the filter, plus the optional excerpt.
+fn show_one(
+    repo: &Path,
+    store: &sinter_store::Store,
+    args: &Value,
+    filter: &sinter_store::EdgeFilter,
+    symbol: &str,
+) -> Result<Value> {
+    let node = unique_symbol_in(store, symbol, filter.scopes.as_ref())?;
+    let scopes = store.scope_index()?;
+    let limit = limit(args, crate::show::DEFAULT_LIMIT);
+    let mut out = crate::show::edges_json(repo, store, &node, filter, limit)?;
+    out["symbol"] = scoped_node_json(&node, &scopes);
+    if args.get("body").and_then(Value::as_bool).unwrap_or(false) {
+        let lines = args
+            .get("context_lines")
+            .and_then(Value::as_u64)
+            .unwrap_or(crate::show::DEFAULT_BODY_LINES as u64) as usize;
+        // Same producer as CLI `--body`, so the excerpt is the same
+        // bytes; absent (unreadable file) it stays absent, not empty.
+        if let Some(body) =
+            crate::show::excerpt_lines(repo, &node.file, node.span.start, node.span.end, lines)
+        {
+            crate::show::excerpt_json(&mut out, &body);
+        }
+    }
+    Ok(out)
+}
+
+/// Run `one` per entry of `args[list]` when the batch form was used,
+/// otherwise once for the single `args[single]` string.
+fn batch_or_one(
+    args: &Value,
+    list: &str,
+    single: &str,
+    one: impl Fn(&str) -> Result<Value>,
+) -> Result<Value> {
+    if let Some(items) = args.get(list).and_then(Value::as_array) {
+        return Ok(batch(items, single, |item| {
+            let Some(symbol) = item.as_str() else {
+                anyhow::bail!("`{list}` entries must be strings");
+            };
+            one(symbol)
+        }));
+    }
+    one(&required_string(args, single)?)
+}
+
+/// `{status, results}` over independently addressed inputs. A failed
+/// entry carries the same `{code, message, candidates}` error a single
+/// call would, plus the `status` the envelope would have given it, so a
+/// caller can act on each result without a second round trip.
+fn batch(items: &[Value], key: &str, one: impl Fn(&Value) -> Result<Value>) -> Value {
+    let results: Vec<Value> = items
+        .iter()
+        .map(|item| match one(item) {
+            Ok(mut result) => {
+                if result.get("status").is_none() {
+                    result["status"] = json!("found");
+                }
+                result
+            }
+            Err(error) => {
+                let document = crate::agent_protocol::mcp_failure_document("batch", &error);
+                json!({
+                    key: item,
+                    "status": document["outcome"]["status"],
+                    "error": document["error"],
+                })
+            }
+        })
+        .collect();
+    let status = if results.iter().any(|result| result.get("error").is_some()) {
+        "partial"
+    } else if results.iter().any(|result| result["status"] == "found") {
+        "found"
+    } else {
+        "not_proven"
+    };
+    json!({"status": status, "results": results})
 }
 
 /// A string-array argument, absent or malformed entries dropped.
@@ -195,29 +288,7 @@ fn affected(repo: &Path, store: &sinter_store::Store, args: &Value) -> Result<Va
     let depth = args.get("max_depth").and_then(Value::as_u64).unwrap_or(10) as usize;
     let (limit, detail) = affected_options(args);
     let one = |symbol: &str| affected_one(store, repo, symbol, &filter, depth, limit, detail);
-
-    if let Some(symbols) = args.get("symbols").and_then(Value::as_array) {
-        let results: Vec<Value> = symbols
-            .iter()
-            .map(|value| {
-                let Some(symbol) = value.as_str() else {
-                    return json!({"symbol": value, "error": "symbols entries must be strings"});
-                };
-                one(symbol).unwrap_or_else(
-                    |error| json!({"symbol": symbol, "error": format!("{error:#}")}),
-                )
-            })
-            .collect();
-        let status = if results.iter().any(|result| result.get("error").is_some()) {
-            "partial"
-        } else if results.iter().any(|result| result["status"] == "found") {
-            "found"
-        } else {
-            "not_proven"
-        };
-        return Ok(json!({"status": status, "results": results}));
-    }
-    one(&required_string(args, "symbol")?)
+    batch_or_one(args, "symbols", "symbol", one)
 }
 
 fn affected_one(
@@ -327,12 +398,17 @@ fn affected_one(
     Ok(out)
 }
 
-fn dependencies(repo: &Path, store: &sinter_store::Store, args: &Value) -> Result<Value> {
-    let filter = traversal_filter(args)?;
+fn dependencies(
+    repo: &Path,
+    store: &sinter_store::Store,
+    args: &Value,
+    filter: &sinter_store::EdgeFilter,
+    symbol: &str,
+) -> Result<Value> {
     let depth = args.get("max_depth").and_then(Value::as_u64).unwrap_or(10) as usize;
     let limit = limit(args, 50);
-    let node = unique_symbol(store, &required_string(args, "symbol")?)?;
-    let reached = store.dependencies(&node.id, &filter, depth)?;
+    let node = unique_symbol(store, symbol)?;
+    let reached = store.dependencies(&node.id, filter, depth)?;
     let scopes = store.scope_index()?;
     let unresolved = store
         .references_in(&node.file)?
@@ -378,15 +454,20 @@ fn dependencies(repo: &Path, store: &sinter_store::Store, args: &Value) -> Resul
         out["truncated"] = json!(reached.len() - limit);
     }
     out["coverage"] =
-        crate::coverage::traversal_json(repo, store, &filter, evidence, !reached.is_empty())?;
+        crate::coverage::traversal_json(repo, store, filter, evidence, !reached.is_empty())?;
     Ok(out)
 }
 
-fn path(repo: &Path, store: &sinter_store::Store, args: &Value) -> Result<Value> {
-    let filter = traversal_filter(args)?;
-    let from = unique_symbol(store, &required_string(args, "from")?)?;
-    let to = unique_symbol(store, &required_string(args, "to")?)?;
-    let path = store.shortest_path(&from.id, &to.id, &filter)?;
+fn path(
+    repo: &Path,
+    store: &sinter_store::Store,
+    filter: &sinter_store::EdgeFilter,
+    from: &str,
+    to: &str,
+) -> Result<Value> {
+    let from = unique_symbol(store, from)?;
+    let to = unique_symbol(store, to)?;
+    let path = store.shortest_path(&from.id, &to.id, filter)?;
     let scopes = store.scope_index()?;
     let scope_of_id = |id: &sinter_core::NodeId| {
         let file = id
@@ -397,7 +478,7 @@ fn path(repo: &Path, store: &sinter_store::Store, args: &Value) -> Result<Value>
     };
     let miss = path
         .is_none()
-        .then(|| crate::pathcmd::explain_miss(store, &from, &to, &filter))
+        .then(|| crate::pathcmd::explain_miss(store, &from, &to, filter))
         .transpose()?;
     let evidence = crate::coverage::TraversalEvidence::from_confidences(
         path.iter().flatten().map(|edge| edge.confidence),
@@ -425,7 +506,7 @@ fn path(repo: &Path, store: &sinter_store::Store, args: &Value) -> Result<Value>
         out["miss"] = crate::pathcmd::miss_json(repo, miss);
     }
     out["coverage"] =
-        crate::coverage::traversal_json(repo, store, &filter, evidence, path.is_some())?;
+        crate::coverage::traversal_json(repo, store, filter, evidence, path.is_some())?;
     Ok(out)
 }
 

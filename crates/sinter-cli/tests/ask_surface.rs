@@ -464,7 +464,7 @@ fn agent_protocol_matches_cli_and_mcp() {
 
     for tool in responses[0]["result"]["tools"].as_array().unwrap() {
         assert_eq!(tool["inputSchema"]["additionalProperties"], false, "{tool}");
-        assert!(tool["outputSchema"].is_object(), "{tool}");
+        assert!(tool.get("outputSchema").is_none(), "{tool}");
     }
     let ask_tool = responses[0]["result"]["tools"]
         .as_array()
@@ -495,13 +495,25 @@ fn agent_protocol_matches_cli_and_mcp() {
             .is_none()
     );
 
-    let ambiguity = &responses[2]["error"]["data"];
+    // Ambiguity is a tool outcome (`isError`), not a JSON-RPC error, and
+    // its candidates are the `Name@file` selectors an agent pastes back;
+    // the CLI keeps full node objects for the same error.
+    assert!(responses[2].get("error").is_none(), "{}", responses[2]);
+    assert_eq!(responses[2]["result"]["isError"], true);
+    let ambiguity = &responses[2]["result"]["structuredContent"];
     assert_eq!(ambiguity["protocol"], "sinter.agent.v1");
     assert_eq!(ambiguity["error"]["code"], "ambiguous_symbol");
-    assert_eq!(ambiguity["error"], ambiguous_cli["error"]);
     assert_eq!(
-        ambiguity["error"]["candidates"].as_array().unwrap().len(),
-        2
+        ambiguity["error"]["message"],
+        ambiguous_cli["error"]["message"]
+    );
+    let candidates = ambiguity["error"]["candidates"].as_array().unwrap();
+    assert_eq!(candidates.len(), 2);
+    assert!(
+        candidates
+            .iter()
+            .all(|c| c.as_str().is_some_and(|c| c.contains('@'))),
+        "{ambiguity}"
     );
 
     let query = &responses[3]["result"]["structuredContent"];
