@@ -14,6 +14,8 @@ use sinter_core::{
 use sinter_extract::{Extractor, LanguageSpec, ModuleRoot, manifest_root, spec_for_path};
 use sinter_store::{FileStamp, Store};
 
+use crate::build_lock;
+
 pub struct BuildReport {
     pub scanned: usize,
     pub changed: usize,
@@ -38,6 +40,36 @@ pub struct BuildReport {
     pub scip_stale: bool,
     /// FILE_SCOPE rows whose classification changed without the file changing.
     pub scope_rows_restamped: usize,
+    /// Another process holds the build lock, so this call did no work and
+    /// the graph reported here is whatever that build has published so
+    /// far — possibly a generation behind the working tree.
+    pub concurrent_build: bool,
+}
+
+/// The report for a call that yielded to another process's build: the
+/// graph as it stands, named as not-this-call's work. Readers serve it;
+/// `sinter build` says so out loud.
+fn concurrent_build_report(store: &Store, started: Instant) -> Result<BuildReport> {
+    Ok(BuildReport {
+        scanned: store.file_hashes()?.len(),
+        changed: 0,
+        removed: 0,
+        reresolved_files: 0,
+        syntax_error_files: Vec::new(),
+        syntax_error_symbols: 0,
+        failures: Vec::new(),
+        scip_disagreements: Vec::new(),
+        stats: sinter_resolve::ResolutionStats::default(),
+        dep_symbols: 0,
+        dep_packages: 0,
+        total_nodes: store.node_count()?,
+        total_edges: store.edge_count()?,
+        total_unresolved: store.unresolved_count()?,
+        elapsed: started.elapsed(),
+        scip_stale: false,
+        scope_rows_restamped: 0,
+        concurrent_build: true,
+    })
 }
 
 /// Build progress, reported as it happens. The graph is complete and
@@ -352,19 +384,66 @@ pub fn build_with(
     // first build or schema change. Keeps a clean build write-free and
     // pays a single Database::open per build.
     let db = db_path(&repo);
+    // Is there a graph this binary can serve? A first build has none; a
+    // schema bump has one it cannot read. Either way there is nothing to
+    // fall back on, which is what decides how long to wait below.
+    let servable = |db: &Path| {
+        db.exists() && Store::schema_of(db).ok().flatten() == Some(Store::CURRENT_SCHEMA)
+    };
+    let mut usable = servable(&db);
+
+    // One build at a time per repository. A caller with a usable graph
+    // waits only long enough for an in-flight swap to land, then answers
+    // from that graph — the alternative is an agent staring at nothing for
+    // the length of somebody else's rebuild. A caller with nothing to
+    // serve has no such choice and queues.
+    //
+    // 300ms is chosen against the two shapes of build: an incremental
+    // sync (one edited file) usually finishes inside it, so the waiter
+    // gets fresh data; a bulk rebuild never will, and every millisecond
+    // beyond this is latency added to an answer that was always going to
+    // come from the previous graph.
+    let wait = if usable {
+        std::time::Duration::from_millis(300)
+    } else {
+        std::time::Duration::from_secs(sinter_store::open_budget_secs())
+    };
+    let _build_lock = match build_lock::acquire(&out_dir, wait)? {
+        build_lock::Acquired::Held(lock) => lock,
+        build_lock::Acquired::Busy { .. } if usable => {
+            // Its swap may have landed while we waited, so open now: the
+            // counts must describe the graph a reader will actually see.
+            let store = Store::open_read_only(&db).or_else(|_| Store::open(&db))?;
+            return concurrent_build_report(&store, started);
+        }
+        build_lock::Acquired::Busy { pid, held } => bail!(
+            "another sinter process (pid {pid}) has been building this graph for {}s and there is no graph to serve yet",
+            held.as_secs()
+        ),
+    };
+
+    // Build lock held from here down: this process is the only writer.
+    // The wait may have been spent behind a build that published a graph;
+    // ask again before deciding to rebuild one from scratch.
+    if !usable {
+        usable = servable(&db);
+    }
     // Read-only first: redb's writable handle stamps the file header on
     // open and flushes allocator state on close, so merely opening one
     // rewrites the graph file even when the build turns out to be a no-op.
     // The handle upgrades to writable below, once there is real work.
-    let mut store = match db
-        .exists()
-        .then(|| Store::open_read_only(&db).or_else(|_| Store::open(&db)))
-        .transpose()?
-        .filter(|s| s.schema().ok().flatten() == Some(Store::CURRENT_SCHEMA))
-    {
-        Some(store) => store,
-        // Drops any mismatched handle first: create must reopen to wipe.
-        None => Store::create(&db)?,
+    //
+    // No usable graph means a rebuild from source, and that rebuild goes
+    // into a side file — never by wiping the live one. Readers keep the
+    // graph they have until the swap, instead of finding nothing at all.
+    let mut staged: Option<build_lock::SideFile> = None;
+    let mut store = if usable {
+        Store::open_read_only(&db).or_else(|_| Store::open(&db))?
+    } else {
+        let side = build_lock::SideFile::stage(&db, false)?;
+        let store = Store::create(side.path())?;
+        staged = Some(side);
+        store
     };
 
     // Current corpus: (file, hash) for every language-matched file in scope.
@@ -486,6 +565,12 @@ pub fn build_with(
             edges: total_edges,
             elapsed: started.elapsed(),
         });
+        // A corpus with nothing to index still staged a database (there
+        // was none to serve); swap the empty graph in rather than drop it.
+        if let Some(side) = staged.take() {
+            drop(store);
+            side.commit()?;
+        }
         return Ok(BuildReport {
             scanned: hashes.len(),
             changed: 0,
@@ -504,10 +589,24 @@ pub fn build_with(
             elapsed: started.elapsed(),
             scip_stale,
             scope_rows_restamped: 0,
+            concurrent_build: false,
         });
     }
-    // Real work ahead: take the writable handle (and its exclusive lock).
-    if store.is_read_only() {
+    // Real work ahead. A bulk pass (a first build, a schema rebuild, or a
+    // change touching much of the corpus) runs for tens of seconds and
+    // must not hold the live graph's exclusive lock for that long: copy
+    // the database aside, write there, and swap it in at the end. A small
+    // incremental pass writes in place — its lock is measured in
+    // milliseconds, and copying a multi-hundred-megabyte file to save
+    // that would cost far more than it saves.
+    let bulk = staged.is_some() || changed_files.len() * 2 >= hashes.len();
+    if staged.is_none() && bulk {
+        // Drop the shared lock before copying and reopening elsewhere.
+        drop(store);
+        let side = build_lock::SideFile::stage(&db, true)?;
+        store = Store::open(side.path())?;
+        staged = Some(side);
+    } else if store.is_read_only() {
         // Drop the shared lock before asking for the exclusive one.
         drop(store);
         store = Store::open(&db)?;
@@ -940,12 +1039,23 @@ pub fn build_with(
     // one-file-edit budget. Half the redb file was page slack on the
     // benchmark corpus before this. Iterative and synchronous: the phase
     // is named so a long one is visibly maintenance, not a stall.
+    let written = staged
+        .as_ref()
+        .map_or(db.clone(), |s| s.path().to_path_buf());
     if changed_names.len() * 2 >= hashes.len() && !changed_names.is_empty() {
-        let before = std::fs::metadata(&db).map(|m| m.len()).unwrap_or(0);
+        let before = std::fs::metadata(&written).map(|m| m.len()).unwrap_or(0);
         on(Phase::Compacting { before });
         store.compact()?;
-        let after = std::fs::metadata(&db).map(|m| m.len()).unwrap_or(0);
+        let after = std::fs::metadata(&written).map(|m| m.len()).unwrap_or(0);
         on(Phase::Compacted { before, after });
+    }
+
+    // Publish. Everything above wrote to a file no reader was holding;
+    // this rename is the only moment the live graph changes, and it costs
+    // no lock at all.
+    if let Some(side) = staged.take() {
+        drop(store);
+        side.commit()?;
     }
 
     Ok(BuildReport {
@@ -966,6 +1076,7 @@ pub fn build_with(
         elapsed: started.elapsed(),
         scip_stale,
         scope_rows_restamped,
+        concurrent_build: false,
     })
 }
 
@@ -1004,6 +1115,13 @@ pub fn print_summary(repo: &Path, report: &BuildReport) {
 }
 
 pub fn print_report(report: &BuildReport) {
+    if report.concurrent_build {
+        println!(
+            "sinter build: another sinter process is building this graph; served the graph it has published so far ({} symbols, {} edges)",
+            report.total_nodes, report.total_edges,
+        );
+        return;
+    }
     println!(
         "sinter build: {} scanned, {} changed, {} removed, {} files re-resolved, {} syntax-error files, {} failed, {:.1?}",
         report.scanned,

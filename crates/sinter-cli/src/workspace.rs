@@ -125,6 +125,13 @@ impl LinkStore {
         std::fs::create_dir_all(path.parent().unwrap())?;
         // Same contention policy as the repository store: parallel
         // workspace queries all open this file.
+        //
+        // Deliberately not behind the build-lock/side-file swap the
+        // repository graph uses (`build_lock`): the link table is derived
+        // from already-built member graphs in one short transaction —
+        // milliseconds, not the tens of seconds that made an in-place
+        // graph rebuild block every reader. A swap here would buy nothing
+        // and would have to copy a file this small anyway.
         let db = sinter_store::create_database(&path)?;
         let txn = db.begin_write()?;
         {

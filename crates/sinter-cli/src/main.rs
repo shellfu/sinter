@@ -2,6 +2,7 @@ mod affected;
 mod agent_protocol;
 mod ask;
 mod build;
+mod build_lock;
 mod citation;
 mod context;
 mod corpus;
