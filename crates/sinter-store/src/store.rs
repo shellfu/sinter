@@ -245,7 +245,7 @@ pub(crate) fn open_retrying<D>(
 /// the one named owner of open-retry behavior for auxiliary databases
 /// (workspace link store) that are not the repository [`Store`].
 pub fn create_database(path: &Path) -> Result<Database, StoreError> {
-    Ok(open_retrying(path, |p| Database::create(p))?)
+    open_retrying(path, |p| Database::create(p))
 }
 
 impl Store {
