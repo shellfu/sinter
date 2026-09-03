@@ -4,7 +4,7 @@
       {
         "hooks": [
           {
-            "command": "bash .claude/hooks/sinter-first.sh grep",
+            "command": "bash .claude/hooks/sinter-first.sh grep-strict",
             "type": "command"
           }
         ],
@@ -13,7 +13,7 @@
       {
         "hooks": [
           {
-            "command": "bash .claude/hooks/sinter-first.sh greptool",
+            "command": "bash .claude/hooks/sinter-first.sh greptool-strict",
             "type": "command"
           }
         ],
