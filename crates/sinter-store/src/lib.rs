@@ -8,6 +8,6 @@ mod update;
 
 pub use error::StoreError;
 pub use scope::ScopeIndex;
-pub use store::{FileStamp, Store, create_database, quiet_notices};
+pub use store::{FileStamp, Store, create_database, quiet_notices, set_open_budget_secs};
 pub use traverse::{EdgeFilter, Reached, direct_summary};
 pub use update::NameDelta;

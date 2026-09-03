@@ -28,4 +28,8 @@ pub enum StoreError {
     ReadOnly,
     #[error("compaction error: {0}")]
     Compaction(#[from] redb::CompactionError),
+    #[error(
+        "another sinter process is building this graph ({path}); it has held the lock for {waited_secs}s. Retry, or run `sinter build` once and let it finish"
+    )]
+    Busy { path: String, waited_secs: u64 },
 }

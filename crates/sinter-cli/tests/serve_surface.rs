@@ -941,3 +941,31 @@ fn the_handshake_answers_before_the_watcher_is_installed() {
         started.elapsed()
     );
 }
+
+/// A build in another process is a bounded, typed wait: the agent gets
+/// `busy` and retries, instead of a silent hang behind the lock.
+#[test]
+fn a_graph_held_by_another_process_is_a_typed_busy_result() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = build_repo(dir.path());
+    // Hold the graph the way a long rebuild does.
+    let holder = Command::new(env!("CARGO_BIN_EXE_sinter"))
+        .args(["serve", "--repo", repo.to_str().unwrap()])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn holder");
+    let responses = serve(&repo, &[call_tool(1, "map", serde_json::json!({}))]);
+    let mut holder = holder;
+    let _ = holder.kill();
+    // Either the holder had not opened the store yet (a normal answer) or
+    // the wait is reported as a retryable `busy`, never a bare failure.
+    let result = &responses[0]["result"];
+    if result["isError"] == serde_json::Value::Bool(true) {
+        assert_eq!(
+            result["structuredContent"]["error"]["code"], "busy",
+            "{result}"
+        );
+        assert_eq!(result["structuredContent"]["error"]["retryable"], true);
+    }
+}

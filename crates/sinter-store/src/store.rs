@@ -178,6 +178,15 @@ impl Db {
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static QUIET: AtomicBool = AtomicBool::new(false);
+static OPEN_BUDGET_SECS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(120);
+
+/// How long an open waits for another process's exclusive handle before
+/// giving up. A one-shot CLI can afford to queue behind a long rebuild; an
+/// interactive transport cannot, and an agent left hanging with no output
+/// is worse than a typed "busy, retry".
+pub fn set_open_budget_secs(secs: u64) {
+    OPEN_BUDGET_SECS.store(secs, Ordering::Relaxed);
+}
 
 /// Silence the lock-wait notice. Stdio transports (`sinter serve`) own
 /// stderr and must not narrate on it.
@@ -193,10 +202,10 @@ pub fn quiet_notices() {
 pub(crate) fn open_retrying<D>(
     path: &Path,
     open: fn(&Path) -> Result<D, redb::DatabaseError>,
-) -> Result<D, redb::DatabaseError> {
+) -> Result<D, StoreError> {
     // A full rebuild of a large repository holds the writable handle for
     // tens of seconds; queries queue behind it rather than failing.
-    let budget = std::time::Duration::from_secs(120);
+    let budget = std::time::Duration::from_secs(OPEN_BUDGET_SECS.load(Ordering::Relaxed));
     let notice_after = std::time::Duration::from_secs(1);
     let started = std::time::Instant::now();
     let mut delay = std::time::Duration::from_millis(10);
@@ -214,7 +223,14 @@ pub(crate) fn open_retrying<D>(
                 std::thread::sleep(delay);
                 delay = (delay * 2).min(std::time::Duration::from_millis(200));
             }
-            other => return other,
+            Err(redb::DatabaseError::DatabaseAlreadyOpen) => {
+                // Budget spent: name the wait instead of blocking longer.
+                return Err(StoreError::Busy {
+                    path: path.display().to_string(),
+                    waited_secs: started.elapsed().as_secs(),
+                });
+            }
+            other => return other.map_err(StoreError::from),
         }
     }
 }

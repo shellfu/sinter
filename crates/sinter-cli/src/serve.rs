@@ -33,6 +33,9 @@ fn serve(scope: Scope) -> Result<()> {
     // stdio transport.
     crate::agent_protocol::set_json_mode();
     sinter_store::quiet_notices();
+    // An interactive transport must answer, not hang: if another process
+    // holds the graph (a long rebuild), say so and let the agent retry.
+    sinter_store::set_open_budget_secs(15);
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
     // The repository-wide coverage half already sent in this session. One

@@ -742,6 +742,10 @@ pub fn failure(operation: &str, error: &anyhow::Error) -> Value {
         "invalid_arguments"
     } else if message.contains("unknown tool") {
         "unknown_operation"
+    } else if message.contains("another sinter process is building this graph") {
+        // Not the caller's mistake and not permanent: name it so an agent
+        // retries instead of reading a generic failure as a dead end.
+        "busy"
     } else {
         "execution_error"
     };
@@ -768,6 +772,7 @@ pub fn failure(operation: &str, error: &anyhow::Error) -> Value {
                 "no_match" => "not_found",
                 "relocated_handle" => "relocated",
                 "stale_snapshot" => "stale",
+                "busy" => "busy",
                 _ => "error",
             },
             "partial": false,
@@ -775,7 +780,7 @@ pub fn failure(operation: &str, error: &anyhow::Error) -> Value {
         "error": {
             "code": code,
             "message": message,
-            "retryable": code == "stale_snapshot",
+            "retryable": matches!(code, "stale_snapshot" | "busy"),
             "candidates": candidates,
         },
     });
