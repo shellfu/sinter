@@ -942,6 +942,52 @@ fn the_handshake_answers_before_the_watcher_is_installed() {
     );
 }
 
+/// A server whose agent session died must not outlive it. Its stdin write
+/// end is inherited by whatever the client forked, so EOF alone does not
+/// arrive — here `sleep` holds the pipe open on purpose. The server has to
+/// notice it was reparented and exit on its own, or it lives for days
+/// holding graph handles and answering with an old binary.
+#[cfg(unix)]
+#[test]
+fn an_orphaned_server_exits_on_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = build_repo(dir.path());
+    // A shell that starts the server, prints its pid, and dies — the shape
+    // of a finished agent session. stdin is a FIFO the server itself holds
+    // read/write, so it never sees EOF: only noticing the reparenting can
+    // end this process. The shell outlives the server's startup (`sleep
+    // 2`) so the server records a live session parent, as a real client is.
+    let script = format!(
+        // `;` not `&&`: only the last simple command may be backgrounded,
+        // or `$!` names a subshell that stays alive as the server's parent.
+        "mkfifo {fifo}; exec 3<>{fifo}; \
+         {sinter} serve --repo {repo} <&3 >/dev/null 2>&1 & echo $!; sleep 2",
+        fifo = dir.path().join("stdin").display(),
+        sinter = env!("CARGO_BIN_EXE_sinter"),
+        repo = repo.to_str().unwrap(),
+    );
+    let out = Command::new("sh")
+        .arg("-c")
+        .arg(&script)
+        .output()
+        .expect("spawn orphaning shell");
+    let pid: i32 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
+
+    let alive = || unsafe { libc::kill(pid, 0) } == 0;
+    assert!(alive(), "server never started");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while alive() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let exited = !alive();
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+    assert!(
+        exited,
+        "orphaned `sinter serve` {pid} was still running: {stat}"
+    );
+}
+
 /// A build in another process is a bounded, typed wait: the agent gets
 /// `busy` and retries, instead of a silent hang behind the lock.
 #[test]

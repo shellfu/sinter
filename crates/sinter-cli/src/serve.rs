@@ -28,10 +28,43 @@ pub fn run_workspace(manifest: &Path) -> Result<()> {
     serve(Scope::Workspace(manifest.canonicalize()?))
 }
 
+/// Exit when the agent session that started us is gone.
+///
+/// A stdio server should end at EOF, but the write end of its stdin is
+/// inherited by anything the client forked, so a dead client does not
+/// always close it. Orphaned servers then live for days, holding graph
+/// handles and answering with whatever binary version they were started
+/// with. Two cheap belts: the kernel signals us on parent death (Linux),
+/// and a 1s poll catches every reparenting the signal misses (parent
+/// thread exiting without the process, a subreaper adopting us).
+/// Non-unix targets keep the EOF behavior only.
+#[cfg(unix)]
+fn exit_when_orphaned() {
+    #[cfg(target_os = "linux")]
+    // SAFETY: prctl with PR_SET_PDEATHSIG takes a signal number by value.
+    unsafe {
+        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+    }
+    // SAFETY: getppid is always safe.
+    let parent = unsafe { libc::getppid() };
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            if unsafe { libc::getppid() } != parent {
+                std::process::exit(0);
+            }
+        }
+    });
+}
+
+#[cfg(not(unix))]
+fn exit_when_orphaned() {}
+
 fn serve(scope: Scope) -> Result<()> {
     // Diagnostics ride inside every envelope; stderr stays silent on a
     // stdio transport.
     crate::agent_protocol::set_json_mode();
+    exit_when_orphaned();
     sinter_store::quiet_notices();
     // An interactive transport must answer, not hang: if another process
     // holds the graph (a long rebuild), say so and let the agent retry.
@@ -43,7 +76,9 @@ fn serve(scope: Scope) -> Result<()> {
     // the largest fixed cost in a small answer.
     let mut coverage_ref: Option<String> = None;
     for line in stdin.lock().lines() {
-        let line = line?;
+        // A transport that cannot be read from is a finished session, not
+        // an error to report into a pipe nobody is holding: end the loop.
+        let Ok(line) = line else { break };
         if line.trim().is_empty() {
             continue;
         }
