@@ -1028,7 +1028,7 @@ pub fn workspace_json(
     let mut gaps = Vec::new();
     let mut partial = false;
     for (name, repo) in &workspace.members {
-        let store = Store::open(crate::pipeline::db_path(repo))?;
+        let store = Store::open_read_only(crate::pipeline::db_path(repo))?;
         let member = repository_coverage(repo, &store)?;
         partial |= member["completeness"] == "partial";
         if let Some(items) = member["limitations"].as_array() {

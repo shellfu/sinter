@@ -83,7 +83,7 @@ fn member_scopes(
         .members
         .iter()
         .map(|(member, repo)| {
-            let store = sinter_store::Store::open(crate::pipeline::db_path(repo))?;
+            let store = sinter_store::Store::open_read_only(crate::pipeline::db_path(repo))?;
             Ok((member.clone(), store.scope_index()?))
         })
         .collect()
@@ -147,7 +147,7 @@ fn show(workspace: &crate::workspace::Workspace, args: &Value) -> Result<Value> 
         .map(|link| link_json(&link.src_member, &link.src_id, link))
         .collect();
     let member_root = workspace.members[&member].clone();
-    let store = sinter_store::Store::open(crate::pipeline::db_path(&member_root))?;
+    let store = sinter_store::Store::open_read_only(crate::pipeline::db_path(&member_root))?;
     let scope = store.file_scope(&node.file)?;
     let filter = traversal_filter(args)?;
     let limit = limit(args, crate::show::DEFAULT_LIMIT);
@@ -256,7 +256,8 @@ fn query(workspace: &crate::workspace::Workspace, args: &Value) -> Result<Value>
         args,
         crate::corpus::ScopeSelection::agent_default(),
     )?;
-    let store = sinter_store::Store::open(crate::pipeline::db_path(&workspace.members[&member]))?;
+    let store =
+        sinter_store::Store::open_read_only(crate::pipeline::db_path(&workspace.members[&member]))?;
     let scope = store.file_scope(&node.file)?;
     if !selection.contains(scope) {
         anyhow::bail!(
@@ -276,7 +277,8 @@ fn affected(workspace: &crate::workspace::Workspace, args: &Value) -> Result<Val
         crate::workspace::find_symbol(workspace, &required_string(args, "symbol")?)?;
     let reached = crate::workspace::dependents(workspace, &member, &node.id, &filter, depth)?;
     let scopes = member_scopes(workspace)?;
-    let store = sinter_store::Store::open(crate::pipeline::db_path(&workspace.members[&member]))?;
+    let store =
+        sinter_store::Store::open_read_only(crate::pipeline::db_path(&workspace.members[&member]))?;
     let unresolved = store.unresolved_named(&node.name)?;
     let entries: Vec<Value> = reached
         .iter()
@@ -357,7 +359,8 @@ fn dependencies(workspace: &crate::workspace::Workspace, args: &Value) -> Result
         crate::workspace::find_symbol(workspace, &required_string(args, "symbol")?)?;
     let reached = crate::workspace::dependencies(workspace, &member, &node.id, &filter, depth)?;
     let scopes = member_scopes(workspace)?;
-    let store = sinter_store::Store::open(crate::pipeline::db_path(&workspace.members[&member]))?;
+    let store =
+        sinter_store::Store::open_read_only(crate::pipeline::db_path(&workspace.members[&member]))?;
     let unresolved = store
         .references_in(&node.file)?
         .iter()

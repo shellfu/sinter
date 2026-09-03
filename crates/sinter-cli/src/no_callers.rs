@@ -455,13 +455,13 @@ fn workspace_response(
         .members
         .iter()
         .map(|(member, repo)| {
-            let store = Store::open(crate::pipeline::db_path(repo))?;
+            let store = Store::open_read_only(crate::pipeline::db_path(repo))?;
             Ok((member.clone(), store.scope_index()?))
         })
         .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
     let scope_of = |member: &str, node: &Node| member_scopes[member].scope_of(node);
 
-    let owner_store = Store::open(crate::pipeline::db_path(&workspace.members[&member]))?;
+    let owner_store = Store::open_read_only(crate::pipeline::db_path(&workspace.members[&member]))?;
     let mut unresolved = unresolved_in_scopes(&owner_store, &node.name, &scopes)?;
     let owner_scope = owner_store.file_scope(&node.file)?;
     drop(owner_store);
@@ -469,7 +469,7 @@ fn workspace_response(
         if other_member == &member {
             continue;
         }
-        let store = Store::open(crate::pipeline::db_path(repo))?;
+        let store = Store::open_read_only(crate::pipeline::db_path(repo))?;
         unresolved += unresolved_in_scopes(&store, &node.name, &scopes)?;
     }
     let evidence = TraversalEvidence::from_confidences(
