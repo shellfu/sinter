@@ -207,7 +207,6 @@ pub fn default_dir() -> Option<PathBuf> {
 /// and are never edited here.
 pub fn mcp(repo: &Path) -> Result<()> {
     let repo = repo.canonicalize()?;
-    let command = mcp_command();
     for path in [repo.join(".mcp.json"), repo.join(".cursor/mcp.json")] {
         std::fs::create_dir_all(path.parent().unwrap())?;
         let mut root: Value = match std::fs::read_to_string(&path) {
@@ -219,10 +218,7 @@ pub fn mcp(repo: &Path) -> Result<()> {
             .ok_or_else(|| anyhow::anyhow!("{} top level is not an object", path.display()))?
             .entry("mcpServers")
             .or_insert(json!({}));
-        root["mcpServers"]["sinter"] = json!({
-            "command": command,
-            "args": ["serve", "--repo", "."],
-        });
+        root["mcpServers"]["sinter"] = mcp_entry();
         std::fs::write(
             &path,
             format!(
@@ -233,8 +229,17 @@ pub fn mcp(repo: &Path) -> Result<()> {
         )?;
         println!("registered sinter MCP server in {}", path.display());
     }
-    codex_mcp(&repo, command)?;
+    codex_mcp(&repo)?;
     Ok(())
+}
+
+/// The `mcpServers.sinter` entry this binary writes. Doctor compares an
+/// installed entry against it: a block that no longer matches was written
+/// by an older sinter or hand-edited, and the old `required = true` Codex
+/// default is exactly the drift that makes a slow server fatal to a
+/// session.
+pub fn mcp_entry() -> Value {
+    json!({"command": mcp_command(), "args": ["serve", "--repo", "."]})
 }
 
 /// Project-scoped MCP configuration is commonly shared across machines and
@@ -247,27 +252,45 @@ pub(crate) const CODEX_BEGIN: &str =
     "# BEGIN sinter (managed by `sinter install`; edits inside are overwritten)";
 pub(crate) const CODEX_END: &str = "# END sinter";
 
-/// Merge a managed sinter server block into `.codex/config.toml` (marker
-/// replacement, same convention as the AGENTS.md block — no TOML parser
-/// needed for an append-or-replace of our own block).
-fn codex_mcp(repo: &Path, command: &str) -> Result<()> {
-    let dir = repo.join(".codex");
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join("config.toml");
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+/// The managed `.codex/config.toml` block this binary writes, markers
+/// included. `required = false`: a broken PATH must not stop a Codex
+/// session from starting.
+pub fn codex_block() -> Result<String> {
     #[derive(serde::Serialize)]
-    struct Server<'a> {
-        command: &'a str,
+    struct Server {
+        command: &'static str,
         args: [&'static str; 3],
         required: bool,
     }
     let server = toml::to_string(&Server {
-        command,
+        command: mcp_command(),
         args: ["serve", "--repo", "."],
         required: false,
     })
     .context("serialize the Codex MCP registration")?;
-    let block = format!("{CODEX_BEGIN}\n[mcp_servers.sinter]\n{server}{CODEX_END}");
+    Ok(format!(
+        "{CODEX_BEGIN}\n[mcp_servers.sinter]\n{server}{CODEX_END}"
+    ))
+}
+
+/// The managed block as it is currently installed in `content`, markers
+/// included. `None` when no managed block is present — including a
+/// hand-written `[mcp_servers.sinter]` that sinter never wrote.
+pub fn codex_installed_block(content: &str) -> Option<&str> {
+    let start = content.find(CODEX_BEGIN)?;
+    let end = content[start..].find(CODEX_END)? + start + CODEX_END.len();
+    Some(&content[start..end])
+}
+
+/// Merge a managed sinter server block into `.codex/config.toml` (marker
+/// replacement, same convention as the AGENTS.md block — no TOML parser
+/// needed for an append-or-replace of our own block).
+fn codex_mcp(repo: &Path) -> Result<()> {
+    let dir = repo.join(".codex");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("config.toml");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let block = codex_block()?;
     let merged = match (existing.find(CODEX_BEGIN), existing.find(CODEX_END)) {
         (Some(start), Some(end)) if end > start => {
             let after = existing[end + CODEX_END.len()..].to_string();
@@ -619,6 +642,34 @@ mod tests {
         assert_eq!(
             codex["mcp_servers"]["sinter"]["required"].as_bool(),
             Some(false)
+        );
+    }
+
+    /// Doctor's drift check compares an installed block against these;
+    /// they must describe exactly what `mcp` just wrote.
+    #[test]
+    fn installed_mcp_blocks_match_what_this_binary_writes() {
+        let dir = tempfile::tempdir().unwrap();
+
+        mcp(dir.path()).unwrap();
+
+        for rel in [".mcp.json", ".cursor/mcp.json"] {
+            let json: Value =
+                serde_json::from_str(&std::fs::read_to_string(dir.path().join(rel)).unwrap())
+                    .unwrap();
+            assert_eq!(json["mcpServers"]["sinter"], mcp_entry(), "{rel}");
+        }
+        let codex = std::fs::read_to_string(dir.path().join(".codex/config.toml")).unwrap();
+        assert_eq!(
+            codex_installed_block(&codex),
+            Some(codex_block().unwrap().as_str())
+        );
+
+        // An older install's `required = true` is drift, not a match.
+        let stale = codex.replace("required = false", "required = true");
+        assert_ne!(
+            codex_installed_block(&stale),
+            Some(codex_block().unwrap().as_str())
         );
     }
 

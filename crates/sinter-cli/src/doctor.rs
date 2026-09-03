@@ -386,27 +386,68 @@ pub fn run(repo: &Path, fix: bool, json: bool, verbose: bool) -> Result<bool> {
             );
         }
     }
-    let codex_registered = std::fs::read_to_string(repo.join(".codex/config.toml"))
-        .is_ok_and(|s| s.contains("[mcp_servers.sinter]"));
-    let registered: Vec<&str> = [
-        (".mcp.json (Claude)", json_registered(".mcp.json")),
+    // Registered is not current: an entry written by an older sinter (or
+    // hand-edited) keeps whatever it said then. The Codex `required =
+    // true` of older installs makes a slow server fatal to the session,
+    // so a registration is only ok when it matches what this binary
+    // writes — the same drift check the skill card and AGENTS block get.
+    let json_current = |rel: &str| {
+        std::fs::read_to_string(repo.join(rel))
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .is_some_and(|v| v["mcpServers"]["sinter"] == install::mcp_entry())
+    };
+    let codex = std::fs::read_to_string(repo.join(".codex/config.toml")).unwrap_or_default();
+    let codex_registered = codex.contains("[mcp_servers.sinter]");
+    let codex_current = install::codex_installed_block(&codex)
+        .is_some_and(|block| install::codex_block().is_ok_and(|ours| block == ours));
+    let clients = [
+        (
+            ".mcp.json (Claude)",
+            json_registered(".mcp.json"),
+            json_current(".mcp.json"),
+        ),
         (
             ".cursor/mcp.json (Cursor)",
             json_registered(".cursor/mcp.json"),
+            json_current(".cursor/mcp.json"),
         ),
-        (".codex/config.toml (Codex)", codex_registered),
-    ]
-    .into_iter()
-    .filter_map(|(name, ok)| ok.then_some(name))
-    .collect();
-    if registered.len() == 3 {
-        r.ok("MCP server registered for Claude, Cursor, and Codex");
-    } else if registered.is_empty() {
+        (
+            ".codex/config.toml (Codex)",
+            codex_registered,
+            codex_current,
+        ),
+    ];
+    let registered: Vec<&str> = clients
+        .iter()
+        .filter_map(|(name, reg, _)| reg.then_some(*name))
+        .collect();
+    let stale: Vec<&str> = clients
+        .iter()
+        .filter_map(|(name, reg, current)| (*reg && !current).then_some(*name))
+        .collect();
+    let missing: Vec<&str> = clients
+        .iter()
+        .filter_map(|(name, reg, _)| (!reg).then_some(*name))
+        .collect();
+    if registered.is_empty() {
         r.ok("MCP not registered (optional; `sinter install --mcp` registers all clients)");
+    } else if stale.is_empty() && missing.is_empty() {
+        r.ok("MCP server registered and current for Claude, Cursor, and Codex");
     } else {
+        let mut parts = Vec::new();
+        if !stale.is_empty() {
+            parts.push(format!(
+                "stale in {} (differs from what this binary writes)",
+                stale.join(", ")
+            ));
+        }
+        if !missing.is_empty() {
+            parts.push(format!("not registered for {}", missing.join(", ")));
+        }
         r.fixable(
-            &format!("MCP registered for {} only", registered.join(", ")),
-            "run `sinter install --mcp` to register every client",
+            &format!("MCP registration {}", parts.join("; ")),
+            "run `sinter install --mcp` to rewrite every client's managed entry",
             || install::mcp(&repo),
         );
     }

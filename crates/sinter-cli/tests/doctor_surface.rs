@@ -65,6 +65,70 @@ fn doctor_reports_old_schema_and_keeps_going() {
     );
 }
 
+/// A registration written by an older sinter keeps whatever it said then.
+/// The Codex `required = true` of older installs makes a slow server fatal
+/// to the session, so doctor must call a drifted managed block stale and
+/// `--fix` must rewrite it.
+#[test]
+fn doctor_flags_and_repairs_a_stale_mcp_registration() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(repo.join("src/lib.rs"), "pub fn entry() {}\n").unwrap();
+    // Doctor resolves to the graph root; without one it would diagnose an
+    // ancestor directory instead of this fixture.
+    let (code, out) = sinter_raw(repo, &["build", "."]);
+    assert_eq!(code, Some(0), "{out}");
+    let (code, out) = sinter_raw(repo, &["install", "--mcp"]);
+    assert_eq!(code, Some(0), "{out}");
+
+    let codex = repo.join(".codex/config.toml");
+    let installed = std::fs::read_to_string(&codex).unwrap();
+    std::fs::write(
+        &codex,
+        installed.replace("required = false", "required = true"),
+    )
+    .unwrap();
+
+    let integration = |out: &str| -> Vec<String> {
+        let report: serde_json::Value =
+            serde_json::from_str(out.lines().last().unwrap()).expect("doctor --json report");
+        report["integration"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| format!("{} {}", f["status"], f["message"]))
+            .collect()
+    };
+
+    let (_, out) = sinter_raw(repo, &["doctor", ".", "--json"]);
+    let rows = integration(&out);
+    let row = rows
+        .iter()
+        .find(|f| f.contains("MCP registration"))
+        .unwrap_or_else(|| panic!("no MCP drift finding: {rows:?}"));
+    assert!(row.contains("stale in .codex/config.toml (Codex)"), "{row}");
+
+    let (_, out) = sinter_raw(repo, &["doctor", ".", "--fix", "--json"]);
+    assert!(
+        integration(&out)
+            .iter()
+            .any(|f| f.contains("FIXED") && f.contains("MCP registration")),
+        "--fix must repair the managed block: {out}"
+    );
+    assert!(
+        std::fs::read_to_string(&codex)
+            .unwrap()
+            .contains("required = false")
+    );
+
+    let rows = integration(&sinter_raw(repo, &["doctor", ".", "--json"]).1);
+    assert!(
+        rows.iter().any(|f| f.contains("registered and current")),
+        "{rows:?}"
+    );
+}
+
 /// `--verbose` is a workspace flag too: the partial-syntax file list is
 /// what it exists for, and workspace mode reports the same gaps per member.
 #[test]
