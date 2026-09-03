@@ -3,8 +3,8 @@
 //! generation until notify reports a repository change.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use notify::{RecursiveMode, Watcher};
@@ -17,60 +17,67 @@ use crate::pipeline;
 pub struct RepoFreshness {
     repo: PathBuf,
     dirty: Arc<AtomicBool>,
-    // None is the safe degradation mode: scan every request.
-    _watcher: Option<notify::RecommendedWatcher>,
+    // None is the safe degradation mode: scan every request. The watcher
+    // arrives from a background thread, so a repository whose recursive
+    // watch takes minutes to install (a 100k-file tree) still answers the
+    // MCP handshake immediately and scans until the watch is live.
+    // Held so the watch outlives installation; never read directly.
+    _watcher: Arc<Mutex<Option<notify::RecommendedWatcher>>>,
+    watching: Arc<AtomicBool>,
+    _installer: Option<std::thread::JoinHandle<()>>,
 }
 
 impl RepoFreshness {
     pub fn new(repo: &Path) -> Result<Self> {
         let repo = repo.canonicalize()?;
         let dirty = Arc::new(AtomicBool::new(true));
-        let callback_dirty = Arc::clone(&dirty);
-        let callback_repo = repo.clone();
-        let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-            let changed = match event {
-                Ok(event) => {
-                    event.need_rescan()
-                        || event
-                            .paths
-                            .iter()
-                            .any(|path| affects_graph(&callback_repo, path))
-                }
-                // Lost events make the clean generation untrustworthy.
-                Err(_) => true,
-            };
-            if changed {
-                callback_dirty.store(true, Ordering::Release);
-            }
-        });
-        let mut watcher = match watcher {
-            Ok(watcher) => watcher,
-            Err(error) => {
-                eprintln!(
-                    "sinter serve: filesystem watcher unavailable ({error}); scanning every tool call"
-                );
-                return Ok(Self {
-                    repo,
-                    dirty,
-                    _watcher: None,
-                });
-            }
+        let watcher: Arc<Mutex<Option<notify::RecommendedWatcher>>> = Arc::new(Mutex::new(None));
+        let watching = Arc::new(AtomicBool::new(false));
+        // Installing a recursive watch walks the whole tree. That is fast on
+        // a normal repository and minutes on a huge one, and the MCP
+        // handshake must not wait for it: hand back a scanning server now
+        // and upgrade it in place when the watch is ready.
+        let installer = {
+            let (callback_dirty, callback_repo) = (Arc::clone(&dirty), repo.clone());
+            let (slot, live) = (Arc::clone(&watcher), Arc::clone(&watching));
+            let watch_root = repo.clone();
+            std::thread::Builder::new()
+                .name("sinter-watch".into())
+                .spawn(move || {
+                    let built =
+                        notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                            let changed = match event {
+                                Ok(event) => {
+                                    event.need_rescan()
+                                        || event
+                                            .paths
+                                            .iter()
+                                            .any(|path| affects_graph(&callback_repo, path))
+                                }
+                                // Lost events make the clean generation untrustworthy.
+                                Err(_) => true,
+                            };
+                            if changed {
+                                callback_dirty.store(true, Ordering::Release);
+                            }
+                        });
+                    let Ok(mut built) = built else { return };
+                    if built.watch(&watch_root, RecursiveMode::Recursive).is_err() {
+                        return;
+                    }
+                    if let Ok(mut guard) = slot.lock() {
+                        *guard = Some(built);
+                        live.store(true, Ordering::Release);
+                    }
+                })
+                .ok()
         };
-        if let Err(error) = watcher.watch(&repo, RecursiveMode::Recursive) {
-            eprintln!(
-                "sinter serve: cannot watch {} ({error}); scanning every tool call",
-                repo.display()
-            );
-            return Ok(Self {
-                repo,
-                dirty,
-                _watcher: None,
-            });
-        }
         Ok(Self {
             repo,
             dirty,
-            _watcher: Some(watcher),
+            _watcher: watcher,
+            watching,
+            _installer: installer,
         })
     }
 
@@ -78,7 +85,8 @@ impl RepoFreshness {
     /// arrives during the build sets the bit again and is handled by the
     /// next call. Failed builds also re-arm it before returning the error.
     pub fn sync(&self) -> Result<()> {
-        let must_scan = self._watcher.is_none() || self.dirty.swap(false, Ordering::AcqRel);
+        let must_scan =
+            !self.watching.load(Ordering::Acquire) || self.dirty.swap(false, Ordering::AcqRel);
         if !must_scan {
             return Ok(());
         }

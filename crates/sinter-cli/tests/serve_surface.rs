@@ -911,3 +911,33 @@ fn impact_expect_matches_cli_json_and_is_omitted_when_unused() {
         responses[1]
     );
 }
+
+/// A recursive watch over a large tree takes minutes to install; the MCP
+/// handshake must not wait for it. Codex gives a server 30 seconds.
+#[test]
+fn the_handshake_answers_before_the_watcher_is_installed() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    // Wide enough that installing a recursive watch is measurable work,
+    // cheap enough to create in a test.
+    for n in 0..400 {
+        let sub = repo.join(format!("pkg{n}"));
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("a.rs"), format!("pub fn f{n}() {{}}\n")).unwrap();
+    }
+    let started = std::time::Instant::now();
+    let responses = serve(
+        repo,
+        &[r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#.to_string()],
+    );
+    assert!(
+        responses[0]["result"]["serverInfo"].is_object(),
+        "{:?}",
+        responses[0]
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "handshake took {:?}",
+        started.elapsed()
+    );
+}
