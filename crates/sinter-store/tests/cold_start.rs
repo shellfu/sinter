@@ -45,20 +45,29 @@ fn cold_query_under_100ms() {
     store.write_graph(&g).unwrap();
     drop(store);
 
-    let start = Instant::now();
-    let store = Store::open(&path).unwrap();
+    // Each attempt opens its own copy, so every one is a cold open. The
+    // budget guards against a pathological open (a full scan, a rebuilt
+    // index); a shared CI runner can stall any single attempt by tens of
+    // milliseconds, so the best attempt is the one that measures the code.
     let target = NodeId::new("n12345");
-    let node = store.node(&target).unwrap().expect("node present");
-    let out = store.out_edges(&target).unwrap();
-    // (12345 * 7 + 131) % 20000 = 6546: a known dst of n12345.
-    let inn = store.in_edges(&NodeId::new("n6546")).unwrap();
-    let elapsed = start.elapsed();
+    let mut best = Duration::from_secs(3600);
+    for attempt in 0..3 {
+        let copy = dir.path().join(format!("cold{attempt}.redb"));
+        std::fs::copy(&path, &copy).unwrap();
+        let start = Instant::now();
+        let store = Store::open(&copy).unwrap();
+        let node = store.node(&target).unwrap().expect("node present");
+        let out = store.out_edges(&target).unwrap();
+        // (12345 * 7 + 131) % 20000 = 6546: a known dst of n12345.
+        let inn = store.in_edges(&NodeId::new("n6546")).unwrap();
+        best = best.min(start.elapsed());
 
-    assert_eq!(node.name, "n12345");
-    assert_eq!(out.len(), 3);
-    assert!(inn.iter().any(|e| e.src == target));
+        assert_eq!(node.name, "n12345");
+        assert_eq!(out.len(), 3);
+        assert!(inn.iter().any(|e| e.src == target));
+    }
     assert!(
-        elapsed < Duration::from_millis(100),
-        "cold open + point query took {elapsed:?}, budget 100ms"
+        best < Duration::from_millis(100),
+        "cold open + point query took {best:?} at best of 3, budget 100ms"
     );
 }
