@@ -192,10 +192,12 @@ enum Command {
     },
     /// Install the assistant integration card (embedded, drift-proof)
     Install {
-        /// Targets: claude (global skill), cursor (.cursor/rules),
-        /// agents (AGENTS.md managed block: Codex/Gemini/etc),
-        /// enforce (Claude Code hooks: sinter-first routing), all —
-        /// e.g. `sinter install enforce`
+        /// Targets, by the assistant each one serves: claude (Claude Code
+        /// global skill card), enforce (Claude Code sinter-first hooks),
+        /// cursor (Cursor rule in .cursor/rules), agents (AGENTS.md block
+        /// — Codex, Gemini, and other AGENTS.md readers), all. `--mcp`
+        /// registers the server for Claude Code, Cursor, and Codex.
+        /// Codex needs both: `sinter install agents --mcp`
         #[arg(value_delimiter = ',', default_value = "claude")]
         targets: Vec<String>,
         /// Deprecated alias for the positional targets
@@ -209,7 +211,8 @@ enum Command {
         /// Claude skill directory override (default: ~/.claude/skills/sinter)
         #[arg(long)]
         dir: Option<PathBuf>,
-        /// Also register the MCP server in the repo's project-scope .mcp.json
+        /// Also register the MCP server for Claude Code (.mcp.json),
+        /// Cursor (.cursor/mcp.json), and Codex (.codex/config.toml)
         #[arg(long)]
         mcp: bool,
         /// Repo for cursor/agents/enforce/--mcp targets

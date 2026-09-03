@@ -521,8 +521,8 @@ pub fn run_targets(
     } else {
         targets.iter().map(String::as_str).collect()
     };
-    for target in expanded {
-        match target {
+    for target in &expanded {
+        match *target {
             "claude" => run(dir.clone())?,
             "cursor" => {
                 let path = cursor(&repo.canonicalize()?)?;
@@ -541,7 +541,55 @@ pub fn run_targets(
     if mcp_flag {
         mcp(repo)?;
     }
+    println!("{}", coverage(&expanded, mcp_flag));
     Ok(())
+}
+
+/// Which assistant each installed target actually serves, and the command
+/// that covers the ones this run left out. Targets are named after the
+/// artifact they write (`agents`, `enforce`), so a run can look complete
+/// while an assistant got nothing — Codex needs `agents` *and* `--mcp`.
+fn coverage(targets: &[&str], mcp_flag: bool) -> String {
+    let has = |t: &str| targets.contains(&t);
+    let assistants = [
+        (
+            "Claude Code",
+            vec![
+                ("skill", has("claude")),
+                ("hooks", has("enforce")),
+                ("MCP", mcp_flag),
+            ],
+            "sinter install claude enforce --mcp",
+        ),
+        (
+            "Cursor",
+            vec![("rule", has("cursor")), ("MCP", mcp_flag)],
+            "sinter install cursor --mcp",
+        ),
+        (
+            "Codex",
+            vec![("AGENTS.md", has("agents")), ("MCP", mcp_flag)],
+            "sinter install agents --mcp",
+        ),
+    ];
+    let mut covered = Vec::new();
+    let mut uncovered = Vec::new();
+    for (name, parts, fix) in assistants {
+        let installed: Vec<&str> = parts
+            .iter()
+            .filter_map(|(part, on)| on.then_some(*part))
+            .collect();
+        if installed.is_empty() {
+            uncovered.push(format!("{name} — run `{fix}`"));
+        } else {
+            covered.push(format!("{name} ({})", installed.join(", ")));
+        }
+    }
+    let mut line = format!("covered: {}", covered.join(", "));
+    if !uncovered.is_empty() {
+        line.push_str(&format!("; not covered: {}", uncovered.join(", ")));
+    }
+    line
 }
 
 pub fn run(dir: Option<PathBuf>) -> Result<()> {
@@ -642,6 +690,28 @@ mod tests {
         assert_eq!(
             codex["mcp_servers"]["sinter"]["required"].as_bool(),
             Some(false)
+        );
+    }
+
+    /// The reported gap is the one that bit a user: `install enforce`
+    /// alone covers Claude Code and nothing else, and Codex needs both
+    /// `agents` and `--mcp`.
+    #[test]
+    fn coverage_names_the_assistant_behind_every_target() {
+        assert_eq!(
+            coverage(&["enforce"], false),
+            "covered: Claude Code (hooks); not covered: \
+             Cursor — run `sinter install cursor --mcp`, \
+             Codex — run `sinter install agents --mcp`"
+        );
+        assert_eq!(
+            coverage(&["agents"], true),
+            "covered: Claude Code (MCP), Cursor (MCP), Codex (AGENTS.md, MCP)"
+        );
+        assert_eq!(
+            coverage(&["claude", "cursor", "agents", "enforce"], true),
+            "covered: Claude Code (skill, hooks, MCP), Cursor (rule, MCP), \
+             Codex (AGENTS.md, MCP)"
         );
     }
 
