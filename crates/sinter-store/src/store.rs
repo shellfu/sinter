@@ -188,6 +188,12 @@ pub fn set_open_budget_secs(secs: u64) {
     OPEN_BUDGET_SECS.store(secs, Ordering::Relaxed);
 }
 
+/// The configured wait budget. Callers that queue behind a concurrent
+/// build (not behind a redb handle) honor the same patience setting.
+pub fn open_budget_secs() -> u64 {
+    OPEN_BUDGET_SECS.load(Ordering::Relaxed)
+}
+
 /// Silence the lock-wait notice. Stdio transports (`sinter serve`) own
 /// stderr and must not narrate on it.
 pub fn quiet_notices() {
