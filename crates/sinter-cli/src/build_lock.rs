@@ -32,12 +32,54 @@ pub enum Acquired {
 /// Guard over `.sinter/build.lock`. Dropping it releases the build.
 pub struct BuildLock {
     path: PathBuf,
+    /// Cleared on drop, which stops the heartbeat thread.
+    beating: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Drop for BuildLock {
     fn drop(&mut self) {
+        self.beating
+            .store(false, std::sync::atomic::Ordering::Release);
         let _ = std::fs::remove_file(&self.path);
     }
+}
+
+/// A live owner rewrites its lock every [`HEARTBEAT`]. That is what makes
+/// abandonment detectable without asking the OS whether a pid is alive —
+/// `kill(pid, 0)` answers that on Unix and nothing dependency-free does on
+/// Windows, where a crashed build would otherwise hold every other build
+/// off for [`MAX_LOCK_AGE`].
+const HEARTBEAT: Duration = Duration::from_secs(5);
+
+/// A lock whose owner has not written for this long is abandoned. Three
+/// missed beats, so a loaded machine does not lose its own build.
+const SILENT_OWNER: Duration = Duration::from_secs(20);
+
+fn start_heartbeat(
+    path: PathBuf,
+    pid: u32,
+    started: u64,
+) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    let beating = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let flag = std::sync::Arc::clone(&beating);
+    let _ = std::thread::Builder::new()
+        .name("sinter-build-lock".into())
+        .spawn(move || {
+            while flag.load(std::sync::atomic::Ordering::Acquire) {
+                std::thread::sleep(HEARTBEAT);
+                if !flag.load(std::sync::atomic::Ordering::Acquire) {
+                    return;
+                }
+                // Same shape the lock was created with; only the third
+                // field, the last beat, moves.
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let _ = std::fs::write(&path, format!("{pid} {started} {now}\n"));
+            }
+        });
+    beating
 }
 
 pub fn lock_path(out_dir: &Path) -> PathBuf {
@@ -68,8 +110,11 @@ pub fn acquire(out_dir: &Path, budget: Duration) -> io::Result<Acquired> {
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                writeln!(file, "{} {stamp}", std::process::id())?;
-                return Ok(Acquired::Held(BuildLock { path }));
+                let pid = std::process::id();
+                writeln!(file, "{pid} {stamp} {stamp}")?;
+                drop(file);
+                let beating = start_heartbeat(path.clone(), pid, stamp);
+                return Ok(Acquired::Held(BuildLock { path, beating }));
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                 let owner = read_owner(&path);
@@ -88,7 +133,9 @@ pub fn acquire(out_dir: &Path, budget: Duration) -> io::Result<Acquired> {
                         std::thread::sleep(Duration::from_millis(5));
                         continue;
                     }
-                    Some((pid, held)) if !pid_alive(pid) || held > MAX_LOCK_AGE => {
+                    Some((pid, held))
+                        if !pid_alive(pid) || held > MAX_LOCK_AGE || silent(&path) =>
+                    {
                         // Reclaim. The winner is whoever's create_new
                         // lands first, so a lost race just loops.
                         let _ = std::fs::remove_file(&path);
@@ -106,6 +153,27 @@ pub fn acquire(out_dir: &Path, budget: Duration) -> io::Result<Acquired> {
             Err(e) => return Err(e),
         }
     }
+}
+
+/// Whether the owner has stopped writing its heartbeat. A lock written by
+/// an older sinter carries no beat; those fall back to the pid and age
+/// checks, so an unbeaten lock is never called silent on its first beat
+/// interval.
+fn silent(path: &Path) -> bool {
+    let Some(last) = last_beat(path) else {
+        return false;
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    Duration::from_secs(now.saturating_sub(last)) > SILENT_OWNER
+}
+
+/// The third field of the lock: when the owner last announced itself.
+fn last_beat(path: &Path) -> Option<u64> {
+    let text = std::fs::read_to_string(path).ok()?;
+    text.split_whitespace().nth(2)?.parse().ok()
 }
 
 /// How long ago the lock file was last written, for a lock whose contents

@@ -167,9 +167,12 @@ fn stale_lock_from_a_dead_process_is_reclaimed() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
+    // Third field is the owner's last heartbeat: stamped long enough ago
+    // that the lock is abandoned on every platform, not only where a pid
+    // liveness check exists.
     std::fs::write(
         repo.join(".sinter/build.lock"),
-        format!("4294967290 {now}\n"),
+        format!("4294967290 {now} {}\n", now - 60),
     )
     .unwrap();
 
